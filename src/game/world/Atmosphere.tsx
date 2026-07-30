@@ -6,6 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
+import { ridgeGeometry } from "./ridgeGeometry";
 import {
   softCircleTexture,
   softCloudTexture,
@@ -138,20 +139,54 @@ export function Atmosphere() {
     });
   }, [q.tier]);
 
+  /**
+   * Two rings of mesas. The near ring reads as terrain you could drive toward;
+   * the far ring is taller, hazier and desaturated so the skyline has depth
+   * (cheap aerial perspective) instead of one flat band of identical cones.
+   */
   const ridges = useMemo(() => {
-    const n = q.tier === "low" ? 10 : 16;
-    return Array.from({ length: n }, (_, i) => {
-      const a = (i / n) * Math.PI * 2 + 0.1;
+    const near = q.tier === "low" ? 10 : 16;
+    const far = q.tier === "low" ? 5 : 9;
+    const out: {
+      x: number;
+      z: number;
+      s: number;
+      h: number;
+      rot: number;
+      seed: number;
+      base: string;
+      peak: string;
+    }[] = [];
+    for (let i = 0; i < near; i++) {
+      const a = (i / near) * Math.PI * 2 + 0.1;
       const r = 160 + (i % 5) * 28;
-      return {
+      out.push({
         x: Math.cos(a) * r,
         z: Math.sin(a) * r,
         s: 32 + (i % 4) * 14,
-        h: 10 + (i % 5) * 5,
+        h: 12 + (i % 5) * 6,
         rot: a + Math.PI / 2,
-        c: i % 2 === 0 ? "#4a3828" : "#5a4430",
-      };
-    });
+        seed: i * 3 + 1,
+        base: i % 2 === 0 ? "#4a3828" : "#523c2a",
+        peak: i % 2 === 0 ? "#7d6144" : "#8a6c4c",
+      });
+    }
+    for (let i = 0; i < far; i++) {
+      const a = (i / far) * Math.PI * 2 + 0.55;
+      const r = 400 + (i % 4) * 70;
+      out.push({
+        x: Math.cos(a) * r,
+        z: Math.sin(a) * r,
+        s: 90 + (i % 3) * 40,
+        h: 46 + (i % 4) * 20,
+        rot: a + Math.PI / 2,
+        seed: 100 + i * 5,
+        // Washed toward the fog colour — distance haze without a second pass.
+        base: "#6b5f57",
+        peak: "#9d8c78",
+      });
+    }
+    return out;
   }, [q.tier]);
 
   const moteGroup = useRef<THREE.Group>(null);
@@ -244,12 +279,20 @@ export function Atmosphere() {
           key={`rd${i}`}
           position={[r.x, r.h * 0.35, r.z]}
           rotation={[0, r.rot, 0]}
-          scale={[r.s, r.h, r.s * 0.55]}
+          scale={[r.s, r.h, r.s * 0.62]}
+          geometry={ridgeGeometry(
+            r.seed,
+            q.tier === "low" ? 9 : 14,
+            q.tier === "low" ? 4 : 6,
+            r.base,
+            r.peak,
+          )}
         >
-          <coneGeometry args={[1, 1, q.tier === "low" ? 4 : 5]} />
+          {/* vertexColors carries the baked strata; flatShading keeps the
+              displaced faces reading as rock facets rather than soft dunes. */}
           <meshStandardMaterial
-            color={r.c}
-            roughness={0.95}
+            vertexColors
+            roughness={0.96}
             metalness={0}
             flatShading
           />

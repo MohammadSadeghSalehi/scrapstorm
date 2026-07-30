@@ -178,7 +178,22 @@ export function preloadPbrLibrary(): Promise<void> {
 
     // Yield to main thread so first frame paints before rest of library
     await new Promise((r) => setTimeout(r, 80));
-    await Promise.all(DEFERRED.map((id) => loadPack(loader, id)));
+
+    // Two packs at a time, yielding between them. JPEG decode and the GPU
+    // upload/mipmap pass both land on the main thread, so firing all nine
+    // deferred packs at once produced a burst of long frames right after the
+    // lights go green — the "sudden drops at first". Trickling them keeps each
+    // frame's decode budget small at the cost of a slightly later finish.
+    const queue = [...DEFERRED];
+    const worker = async () => {
+      for (;;) {
+        const id = queue.shift();
+        if (!id) return;
+        await loadPack(loader, id);
+        await new Promise((r) => setTimeout(r, 60));
+      }
+    };
+    await Promise.all([worker(), worker()]);
     loaded = true;
   })();
 

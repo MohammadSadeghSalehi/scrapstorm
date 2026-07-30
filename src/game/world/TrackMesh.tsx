@@ -79,38 +79,32 @@ function StartGantry({
   const bannerW = 5.5;
   return (
     <group position={[x, y + 0.02, z]} rotation={[0, yaw, 0]}>
-      <mesh position={[-half, 2.6, 0]} castShadow>
-        <boxGeometry args={[0.28, 5.2, 0.28]} />
+      <mesh position={[-half, 4.3, 0]} castShadow>
+        <boxGeometry args={[0.28, 8.6, 0.28]} />
         <meshStandardMaterial color="#292524" metalness={0.55} roughness={0.5} />
       </mesh>
-      <mesh position={[half, 2.6, 0]} castShadow>
-        <boxGeometry args={[0.28, 5.2, 0.28]} />
+      <mesh position={[half, 4.3, 0]} castShadow>
+        <boxGeometry args={[0.28, 8.6, 0.28]} />
         <meshStandardMaterial color="#292524" metalness={0.55} roughness={0.5} />
       </mesh>
-      <mesh position={[0, 5.1, 0]} castShadow>
+      <mesh position={[0, 8.5, 0]} castShadow>
         <boxGeometry args={[half * 2 + 0.4, 0.28, 0.28]} />
         <meshStandardMaterial color="#1c1917" metalness={0.45} roughness={0.55} />
       </mesh>
-      {/* Overhead board only — high enough that chase cam never hits it */}
-      <mesh position={[0, 5.55, 0.35]}>
+      {/*
+        Board sits above the chase camera (which rides ~7.8 world units up), so
+        you drive *under* the gantry instead of into it. At the old 5.55 it was
+        below the camera and filled the frame for the whole opening straight.
+        No emissive either: a white emissive slab feeding bloom was blowing out
+        to a solid glowing wall.
+      */}
+      <mesh position={[0, 8.95, 0.35]}>
         <boxGeometry args={[bannerW, 1.1, 0.08]} />
-        <meshStandardMaterial
-          color="#fafaf9"
-          emissive="#f5f5f4"
-          emissiveIntensity={0.15}
-          roughness={0.65}
-          metalness={0.05}
-        />
+        <meshStandardMaterial color="#e7e5e4" roughness={0.7} metalness={0.05} />
       </mesh>
-      <mesh position={[0, 4.85, 0.38]}>
+      <mesh position={[0, 8.25, 0.38]}>
         <boxGeometry args={[bannerW, 0.28, 0.06]} />
-        <meshStandardMaterial
-          color="#dc2626"
-          emissive="#b91c1c"
-          emissiveIntensity={0.35}
-          roughness={0.5}
-          metalness={0.1}
-        />
+        <meshStandardMaterial color="#dc2626" roughness={0.55} metalness={0.1} />
       </mesh>
       {/* Road paint — thin boxes on the asphalt, not full-width planes */}
       <mesh position={[0, 0.04, 1.4]} receiveShadow>
