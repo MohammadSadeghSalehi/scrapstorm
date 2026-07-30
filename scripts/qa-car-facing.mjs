@@ -86,10 +86,11 @@ console.log(`class=${CLASS}`, JSON.stringify(dbg));
 
 // Distinguish "never renders" from "still warming up": if the world only
 // needs more time (HDRI/PBR packs, terrain bake), the later frame is lit.
-for (const extra of [0, 4000, 6000]) {
+let step = 0;
+for (const extra of [0, 3000, 3000, 3000, 3000, 3000]) {
   if (extra) await page.waitForTimeout(extra);
   const f = await page.screenshot({ timeout: 20000 });
-  writeFileSync(`${OUT}/facing-${CLASS}-t${extra}.png`, f);
+  writeFileSync(`${OUT}/facing-${CLASS}-s${String(step++).padStart(2,"0")}.png`, f);
   const st = await page.evaluate(() => {
     const q = window.__quality?.get?.() ?? {};
     return {
@@ -99,9 +100,17 @@ for (const extra of [0, 4000, 6000]) {
       exposure: window.__renderDebug?.exposure,
       envIntensity: window.__renderDebug?.envIntensity,
       hasEnv: window.__renderDebug?.hasEnv,
+      cam: window.__renderDebug?.cam,
+      draws: window.__renderDebug?.drawCalls,
+      textures: window.__renderDebug?.textures,
+      packs: window.__pbrPacks?.(),
+      car: (() => {
+        const v = window.__scrapstorm?.getState?.()?.vehicles?.find((x) => x.isPlayer);
+        return v ? [+v.x.toFixed(1), +v.y.toFixed(1), +v.z.toFixed(1)] : null;
+      })(),
     };
   });
-  console.log(`  t+${extra}ms: ${(f.length / 1024).toFixed(0)}KB ${JSON.stringify(st)}`);
+  console.log(`  step${step-1}: ${(f.length / 1024).toFixed(0)}KB ${JSON.stringify(st)}`);
 }
 
 // Full frame first — the crop is meaningless if the scene did not render.

@@ -92,6 +92,9 @@ export function FpsMeter({ phase }: { phase: string }) {
       <span className={`ml-2 ${hitch ? "text-red-400" : "text-stone-500"}`}>
         max {snap.worst}ms
       </span>
+      {typeof window !== "undefined" && window.__resScale != null && window.__resScale < 0.999 && (
+        <span className="ml-2 text-sky-400">res {Math.round(window.__resScale * 100)}%</span>
+      )}
     </div>
   );
 }

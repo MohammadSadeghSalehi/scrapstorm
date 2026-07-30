@@ -127,6 +127,7 @@ declare global {
       readonly programs: number;
       readonly textures: number;
       readonly geometries: number;
+      readonly cam: [number, number, number];
     };
   }
 }

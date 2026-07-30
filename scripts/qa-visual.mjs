@@ -175,6 +175,13 @@ const probe = () =>
       programs: window.__renderDebug?.programs,
       textures: window.__renderDebug?.textures,
       hasEnv: window.__renderDebug?.hasEnv,
+      cam: window.__renderDebug?.cam,
+      // Chase camera should stay a few metres from the car; a growing gap
+      // means the camera is diverging and the world falls beyond fog-near.
+      carPos: (() => {
+        const v = window.__scrapstorm?.getState?.()?.vehicles?.find((x) => x.isPlayer);
+        return v ? [+v.x.toFixed(1), +v.y.toFixed(1), +v.z.toFixed(1)] : null;
+      })(),
     };
   });
 
@@ -253,6 +260,11 @@ for (const tier of TIERS) {
   console.log(
     `  draws=${end.drawCalls} tris=${end.triangles} programs=${end.programs} textures=${end.textures}`,
   );
+  for (const [label, s] of [["mid", mid], ["end", end]]) {
+    if (!s.cam || !s.carPos) continue;
+    const d = Math.hypot(s.cam[0] - s.carPos[0], s.cam[1] - s.carPos[1], s.cam[2] - s.carPos[2]);
+    console.log(`  ${label}: cam=[${s.cam}] car=[${s.carPos}] gap=${d.toFixed(1)}`);
+  }
 
   await page.evaluate(() => {
     const s = window.__scrapstorm?.getState?.();

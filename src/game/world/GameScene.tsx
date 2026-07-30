@@ -57,7 +57,14 @@ import { preloadPhRaceProps } from "./polyHavenAssets";
 
 const USE_GLTF_CARS = true;
 const SIM_STEP = 1 / 60;
-const SIM_MAX_STEPS = 3;
+/**
+ * Enough steps to fully consume the clamped frame delta (80ms / 16.67ms = 5).
+ * At 3 the sim could only advance 50ms per rendered frame, so anything under
+ * ~20fps left unconsumed time that the loop then discarded — the world ran in
+ * slow motion rather than merely choppily.
+ */
+const SIM_MAX_STEPS = 5;
+const SIM_DELTA_CLAMP = 0.08;
 
 function VehicleView(props: {
   vehicle: VehicleState;
@@ -547,7 +554,7 @@ function SimDriver({
     // of the frame that follows and the HUD reads a real total.
     state.gl.info.reset();
     if (input.consumePause()) onPauseToggle();
-    acc.current += Math.min(delta, 0.08);
+    acc.current += Math.min(delta, SIM_DELTA_CLAMP);
     let steps = 0;
     let playerInput: PlayerInput | undefined;
     const needInput =
@@ -565,7 +572,12 @@ function SimDriver({
       acc.current -= SIM_STEP;
       steps += 1;
     }
-    if (acc.current > SIM_STEP) acc.current = 0;
+    // Carry the remainder into the next frame rather than discarding it.
+    // Zeroing here leaked real time on any slow frame, so the race clock (and
+    // therefore all physics) advanced slower than wall time — measured at 70%
+    // on a ~14fps capture. Clamp only far enough to prevent a death spiral.
+    const maxCarry = SIM_STEP * SIM_MAX_STEPS;
+    if (acc.current > maxCarry) acc.current = maxCarry;
     if (steps > 0) onHud();
     qualityManager.sampleFrame(delta);
   }, FRAME.SIM);
@@ -715,6 +727,56 @@ function ShowcaseWorld({ sim }: { sim: GameSimulation }) {
 }
 
 /**
+ * Dynamic resolution scaling — hold a playable framerate by trading pixels.
+ *
+ * A fixed dprMax has to be pessimistic enough for the weakest GPU in a tier,
+ * which wastes a strong one, or optimistic enough to look good, which tanks a
+ * weak one. Instead treat the tier's dprMax as a ceiling and scale beneath it
+ * from measured frame time: full resolution when there is headroom, dropping
+ * toward 60% when there is not.
+ *
+ * Resizing the drawing buffer reallocates every render target in the post
+ * chain, so changes are throttled and hysteretic — never per frame.
+ */
+function AdaptiveResolution() {
+  const { gl } = useThree();
+  const scale = useRef(1);
+  const frames = useRef(0);
+  const accum = useRef(0);
+  const cooldown = useRef(0);
+
+  useFrame((_, dt) => {
+    if (dt > 0.25) return; // tab was backgrounded
+    accum.current += dt;
+    frames.current += 1;
+    if (cooldown.current > 0) cooldown.current -= 1;
+    if (frames.current < 45) return;
+
+    const fps = frames.current / accum.current;
+    frames.current = 0;
+    accum.current = 0;
+    if (cooldown.current > 0) return;
+
+    let next = scale.current;
+    if (fps < 48) next = Math.max(0.6, scale.current - 0.12);
+    else if (fps > 58 && scale.current < 1) next = Math.min(1, scale.current + 0.06);
+    if (Math.abs(next - scale.current) < 0.005) return;
+
+    scale.current = next;
+    const q = qualityManager.get();
+    const base = Math.min(
+      typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1,
+      q.dprMax,
+    );
+    gl.setPixelRatio(base * next);
+    if (typeof window !== "undefined") window.__resScale = next;
+    cooldown.current = 90; // ~1.5s before another change
+  }, FRAME.TELEMETRY);
+
+  return null;
+}
+
+/**
  * Precompile shader programs so materials do not stall the first time they
  * become visible.
  *
@@ -856,6 +918,7 @@ function RaceWorld({
       <hemisphereLight args={["#ffc898", "#2a1810", 1.1]} />
       <SunLight sim={sim} q={q} />
       <ShaderWarmup />
+      <AdaptiveResolution />
       <directionalLight position={[-40, 22, 40]} intensity={0.65} color="#88b8e8" />
       {q.tier !== "low" && (
         <directionalLight position={[20, 12, 30]} intensity={0.3} color="#ffd0a0" />
@@ -1009,7 +1072,7 @@ export function GameCanvas({
         stencil: false,
         depth: true,
       }}
-      onCreated={({ gl, scene }) => {
+      onCreated={({ gl, scene, camera }) => {
         const caps = configureWebGL2Renderer(gl, qualityManager.get());
         // KTX2 needs to probe the renderer for supported compressed formats
         // before any glTF referencing a .ktx2 texture is decoded.
@@ -1043,6 +1106,13 @@ export function GameCanvas({
             },
             get geometries() {
               return gl.info.memory.geometries;
+            },
+            get cam() {
+              return [
+                +camera.position.x.toFixed(1),
+                +camera.position.y.toFixed(1),
+                +camera.position.z.toFixed(1),
+              ] as [number, number, number];
             },
           };
         }
@@ -1093,6 +1163,8 @@ declare global {
       getFps: () => number;
     };
     __webgl2Caps?: import("./webgl2/configure").WebGL2Caps;
+    /** Current dynamic-resolution multiplier applied under the tier's dprMax. */
+    __resScale?: number;
     __webgpuProbe?: { status: string; recommendation: string };
     __terrainCull?: unknown;
     __roadRibbon?: unknown;
