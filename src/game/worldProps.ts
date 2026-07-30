@@ -276,6 +276,17 @@ function spawnPropFx(
 }
 
 /** Vehicle ↔ prop collisions (circle). Mutates both. Broadphase: skip far pairs. */
+/** Closing speed (m/s) below which a prop absorbs the hit instead of moving. */
+const PROP_NUDGE_SPEED = 2.2;
+/** Closing speed at which a light prop is fully launched/airborne. */
+const PROP_LAUNCH_SPEED = 11;
+/** Closing speed above which a barrel ruptures rather than tumbling. */
+const BARREL_RUPTURE_SPEED = 19;
+/** Reference prop mass (a light barrel) that reaction is scaled against. */
+const PROP_REF_MASS = 9;
+
+const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
+
 export function collideVehiclesWithProps(
   vehicles: VehicleState[],
   props: PhysProp[],
@@ -344,8 +355,13 @@ export function collideVehiclesWithProps(
         approach > 0.02
           ? (-(1 + restitution) * approach) / invSum
           : -pen * 2.8;
-      // Light props always launch; walls absorb more
-      const jPush = p.dynamic ? Math.min(-5.5, j * 1.25) : Math.min(-2.2, j);
+      // No constant floor for dynamic props: a fixed -5.5 meant a barrel was
+      // launched just as hard by a crawl as by a full-speed hit. Only keep
+      // enough impulse to resolve the penetration; everything above that has
+      // to be earned by actual closing speed.
+      const jPush = p.dynamic
+        ? Math.min(-pen * 2.0, j * 1.25)
+        : Math.min(-2.2, j);
       const jx = jPush * nx;
       const jz = jPush * nz;
 
@@ -354,16 +370,62 @@ export function collideVehiclesWithProps(
       va.vz += jz / massV;
 
       if (p.dynamic) {
-        const launch = 1.85 + Math.min(3.2, Math.abs(velN) * 0.1);
+        const closing = Math.max(0, velN);
+        // Heavier props resist the same hit: an 80kg barrier barely shifts
+        // where an 8kg barrel is thrown clear.
+        const massRatio = PROP_REF_MASS / Math.max(1, p.mass);
+        // 0 at a nudge, 1 once there is enough speed to fully launch.
+        const speedT = clamp01(
+          (closing - PROP_NUDGE_SPEED) / (PROP_LAUNCH_SPEED - PROP_NUDGE_SPEED),
+        );
+
+        const launch = 1 + speedT * 2.6 * massRatio;
         p.vx -= (jx / p.mass) * launch;
         p.vz -= (jz / p.mass) * launch;
-        p.vx += va.vx * 0.42;
-        p.vz += va.vz * 0.42;
-        // Vertical pop for tumbling barrels
-        p.vy = Math.max(p.vy, 2.5 + Math.min(8, Math.abs(velN) * 0.15));
-        p.spin += (nx * va.vz - nz * va.vx) * 0.1 + (Math.random() - 0.5) * 2.5;
-        const impact = Math.abs(velN) + pen * 4;
+        // Drag along with the car — more so at speed, so a slow shunt rolls
+        // the prop aside instead of firing it down the track.
+        const carry = 0.16 + speedT * 0.34;
+        p.vx += va.vx * carry;
+        p.vz += va.vz * carry;
+
+        // Vertical only once the hit can actually lift the prop's own mass.
+        // Previously every contact popped it 2.5m/s upward, so barrels took
+        // flight at walking pace.
+        if (speedT > 0) {
+          p.vy = Math.max(p.vy, speedT * (3.0 + closing * 0.24) * massRatio);
+        }
+        p.spin +=
+          (nx * va.vz - nz * va.vx) * (0.05 + speedT * 0.12) +
+          (Math.random() - 0.5) * (0.5 + speedT * 3.0);
+
+        const impact = closing + pen * 4;
         maxImpact = Math.max(maxImpact, impact);
+
+        // A barrel taken at speed ruptures rather than tumbling away.
+        if (p.kind === "barrel" && closing > BARREL_RUPTURE_SPEED && !p.dead) {
+          p.dead = true;
+          p.hp = 0;
+          const blast = Math.min(2.4, closing / BARREL_RUPTURE_SPEED);
+          p.vy = Math.max(p.vy, 6 * blast);
+          p.spin += (Math.random() - 0.5) * 12;
+          v.hitStun = Math.max(v.hitStun, 0.14 * blast);
+          v.impactFlash = Math.max(v.impactFlash, 0.6);
+          v.health = Math.max(0, v.health - 6 * blast);
+          v.damageVisual = Math.min(
+            1,
+            Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
+          );
+          for (let k = 0; k < 4; k++) {
+            spawnPropFx(
+              particles,
+              p.x + (Math.random() - 0.5) * 1.6,
+              p.y + 0.3 + Math.random() * 1.2,
+              p.z + (Math.random() - 0.5) * 1.6,
+              k < 2 ? "#fb923c" : "#fde68a",
+            );
+          }
+          continue;
+        }
         if (impact > 2.5) {
           p.hp -= impact * 1.4;
           p.dent = Math.min(1, p.dent + impact * 0.07);

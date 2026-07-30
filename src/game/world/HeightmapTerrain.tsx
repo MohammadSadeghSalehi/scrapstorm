@@ -73,7 +73,16 @@ function meshHeight(
 
 export function HeightmapTerrain() {
   const tier = qualityManager.get().tier;
-  const segs = tier === "low" ? 36 : tier === "medium" ? 48 : 64;
+  /**
+   * Sampling resolution of the height field.
+   *
+   * This was 36/48/64 across a ~600-800m span — 10-16m per quad, two to four
+   * times the length of a car. Every octave of sampleDuneField above the very
+   * largest was aliased away, which is why the desert read as a handful of
+   * enormous flat facets. At 256 the quads are ~2.5m, so the meso and ripple
+   * octaves actually survive into the silhouette.
+   */
+  const segs = tier === "low" ? 128 : tier === "medium" ? 256 : 384;
 
   const { geometry, material } = useMemo(() => {
     const { cx, cz, span } = trackCenter();
@@ -103,30 +112,50 @@ export function HeightmapTerrain() {
     }
     pos.needsUpdate = true;
 
+    // Normals first: slope is a far better material cue than raw elevation.
+    // Wind-scoured rock shows on steep faces while sand settles on flats, and
+    // that reads as real landform. Colouring purely by height gave broad
+    // horizontal bands that flattened the whole desert.
+    geo.computeVertexNormals();
+    const nrm = geo.attributes.normal as THREE.BufferAttribute;
+
     const range = Math.max(0.2, maxY - minY);
+    const tmp = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const elev = (ys[i]! - minY) / range;
       const x = pos.getX(i) + cx;
       const z = pos.getZ(i) + cz;
       const rockM = sampleRockMask(x, z);
-      let c: THREE.Color;
-      if (elev < 0.25) c = shadow.clone().lerp(sandLo, elev / 0.25);
-      else if (elev < 0.55) c = sandLo.clone().lerp(sandMid, (elev - 0.25) / 0.3);
-      else c = sandMid.clone().lerp(sandHi, (elev - 0.55) / 0.45);
-      if (rockM > 0.55 && elev > 0.2) c.lerp(rock, (rockM - 0.55) * 1.5);
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
+      // normal.y == 1 on flat ground, falling toward 0 as the face steepens.
+      const slope = Math.min(1, Math.max(0, 1 - nrm.getY(i)));
+
+      if (elev < 0.25) tmp.copy(shadow).lerp(sandLo, elev / 0.25);
+      else if (elev < 0.55) tmp.copy(sandLo).lerp(sandMid, (elev - 0.25) / 0.3);
+      else tmp.copy(sandMid).lerp(sandHi, (elev - 0.55) / 0.45);
+
+      // Steep faces go to rock; the rock mask only biases where, not whether.
+      const rockAmt = Math.min(1, slope * 2.4 * (0.55 + rockM * 0.9));
+      if (rockAmt > 0.02) tmp.lerp(rock, rockAmt);
+      colors[i * 3] = tmp.r;
+      colors[i * 3 + 1] = tmp.g;
+      colors[i * 3 + 2] = tmp.b;
     }
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
+    // One texture tile per ~7m. The old 0.06 scale combined with a repeat of
+    // 32 put a full tile inside every half metre, so the sand averaged out to
+    // flat colour at any normal viewing distance.
+    const UV_PER_METRE = 1 / 7;
     const uv = geo.attributes.uv as THREE.BufferAttribute;
     for (let i = 0; i < uv.count; i++) {
-      uv.setXY(i, (pos.getX(i) + cx) * 0.06, (pos.getZ(i) + cz) * 0.06);
+      uv.setXY(
+        i,
+        (pos.getX(i) + cx) * UV_PER_METRE,
+        (pos.getZ(i) + cz) * UV_PER_METRE,
+      );
     }
     uv.needsUpdate = true;
     geo.setAttribute("uv1", (geo.attributes.uv as THREE.BufferAttribute).clone());
-    geo.computeVertexNormals();
     geo.translate(cx, 0, cz);
 
     // Prefer solid+vertexColor first; maps enhance when loaded
@@ -140,17 +169,16 @@ export function HeightmapTerrain() {
       emissiveIntensity: 0.0,
     });
 
-    // Async PBR maps — don't block mesh spawn
+    // Async PBR maps — don't block mesh spawn. Tiling comes entirely from the
+    // baked UVs above, so repeat stays 1:1 here.
     const loader = new THREE.TextureLoader();
-    const rep = 32;
     const apply = (url: string, key: "map" | "normalMap" | "roughnessMap" | "aoMap", srgb = false) => {
       loader.load(url, (tex) => {
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.repeat.set(rep, rep);
         tex.anisotropy = 8;
         if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
         (mat as any)[key] = tex;
-        if (key === "normalMap") mat.normalScale = new THREE.Vector2(1.5, 1.5);
+        if (key === "normalMap") mat.normalScale = new THREE.Vector2(1.2, 1.2);
         if (key === "aoMap") mat.aoMapIntensity = 1.1;
         mat.needsUpdate = true;
       });

@@ -120,9 +120,18 @@ export function PhysicsPropsView({ sim }: { sim: GameSimulation }) {
         try {
           const g = await loadPhModel(key, targetLenFor(kind, key));
           phTemplates.current[`${kind}:0`] = g;
-        } catch {
-          /* primitives */
+        } catch (e) {
+          // Silently falling back to primitives is why the track was lined
+          // with untextured boxes and cylinders without any visible error.
+          console.warn(`[props] no mesh for ${kind} (${key}) — using primitive`, e);
         }
+      }
+      if (typeof window !== "undefined") {
+        window.__propsDebug = {
+          templates: Object.keys(phTemplates.current).filter(
+            (k) => !!phTemplates.current[k],
+          ),
+        };
       }
       if (alive) setPhReady(true);
     })();
@@ -222,4 +231,11 @@ export function PhysicsPropsView({ sim }: { sim: GameSimulation }) {
   }, FRAME.LATE);
 
   return <group ref={rootRef} />;
+}
+
+declare global {
+  interface Window {
+    /** Which physics-prop templates resolved to real meshes (QA). */
+    __propsDebug?: { templates: string[] };
+  }
 }
