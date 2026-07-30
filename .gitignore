@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.output/
+.vercel/
+.tanstack/
+screenshots/
+artifacts/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.node_modules.lock
+tmp/
+/tmp/
+*.tsbuildinfo
+
+# Heavy 3D assets — placed locally, synced out-of-band, not committed
+public/assets/meshes/
