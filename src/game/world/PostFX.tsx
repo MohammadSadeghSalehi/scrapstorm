@@ -8,6 +8,9 @@ import {
   Vignette,
   ChromaticAberration,
   Noise,
+  SMAA,
+  HueSaturation,
+  BrightnessContrast,
 } from "@react-three/postprocessing";
 import { BlendFunction } from "postprocessing";
 import * as THREE from "three";
@@ -85,6 +88,9 @@ export function PostFX({
       ) : (
         <></>
       )}
+      <HueSaturation saturation={high ? 0.12 : 0.08} hue={0} />
+      <BrightnessContrast brightness={0} contrast={high ? 0.14 : 0.1} />
+      <SMAA />
     </EffectComposer>
   );
 }

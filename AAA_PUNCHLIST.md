@@ -10,11 +10,11 @@ Audit of the live source across Visual / Performance / Feel / Audio.
 - [x] **V** Kill emissive wash on race ground plane + showcase floor — `GameScene.tsx`
 - [x] **V** Add HDRI reflections to garage/showcase hero shot (was missing) — `GameScene.tsx`
 
-## Batch 2 — Post-processing + AA (PENDING, needs typecheck)
-- [ ] **V (HIGH)** Ungate PostFX from `high`-only → `tier !== "low"` so bloom/vignette/grade actually show — `GameScene.tsx` PostFxLive
-- [ ] **V (HIGH)** Add SMAA (or `multisampling={4}`) to EffectComposer — `PostFX.tsx`
+## Batch 2 — Post-processing + AA (APPLIED, typecheck clean)
+- [x] **V (HIGH)** Ungate PostFX from `high`-only → `tier !== "low"` so bloom/vignette/grade actually show — `GameScene.tsx` PostFxLive
+- [x] **V (HIGH)** Add SMAA (or `multisampling={4}`) to EffectComposer — `PostFX.tsx`
 - [ ] **V (MED)** Add ambient occlusion (N8AO/GTAO) + contact shadows under hero — `PostFX.tsx`, `GameScene.tsx`
-- [ ] **V (MED)** Color grade pass (HueSaturation/BrightnessContrast or LUT) for desert-dusk identity — `PostFX.tsx`
+- [x] **V (MED)** Color grade pass (HueSaturation/BrightnessContrast or LUT) for desert-dusk identity — `PostFX.tsx`
 - [ ] **V (MED)** Hero paint: base color back to ~1.0, clearcoat 0.18→0.6 / roughness→0.1 — `GltfCar.tsx`
 - [ ] **V (MED)** Let AI cars cast shadows within distance cap — `GltfCar.tsx`, `quality.ts`
 

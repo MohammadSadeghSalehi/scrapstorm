@@ -622,7 +622,7 @@ function PostFxLive({ sim }: { sim: GameSimulation }) {
   );
 
   useEffect(() => {
-    if (tier !== "high") return;
+    if (tier === "low") return;
     let alive = true;
     void import("./PostFX").then((m) => {
       if (alive) setPostFX(() => m.PostFX);
@@ -649,7 +649,7 @@ function PostFxLive({ sim }: { sim: GameSimulation }) {
     if (d !== drifting) setDrifting(d);
   }, FRAME.LATE);
 
-  if (!on || tier !== "high" || !PostFX) return null;
+  if (!on || tier === "low" || !PostFX) return null;
   return (
     <PostFX boost={boost} hit={hit} speedNorm={speedNorm} drifting={drifting} />
   );
