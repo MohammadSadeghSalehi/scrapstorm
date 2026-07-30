@@ -18,6 +18,21 @@ Audit of the live source across Visual / Performance / Feel / Audio.
 - [ ] **V (MED)** Hero paint: base color back to ~1.0, clearcoat 0.18→0.6 / roughness→0.1 — `GltfCar.tsx`
 - [ ] **V (MED)** Let AI cars cast shadows within distance cap — `GltfCar.tsx`, `quality.ts`
 
+## Batch 2.5 — Set dressing / assets (IN PROGRESS)
+- [x] **V (HIGH)** Cache Poly Haven load failures + per-key URL fallbacks — `polyHavenAssets.ts`
+  Every one of the 14 `PH_MODELS` paths 404s (the `03-polyhaven` / `04-amara` tarballs
+  were never restored), and `SceneryDecor` re-requests each key for all 48–72 decor
+  slots on every tier change → ~78 failed requests per load **and a world with zero
+  scenery props**. Failures are now cached per key, and `barrel` / `barrelAlt` /
+  `tyre` / `rim` / `coveredCar` fall back to equivalents already on disk.
+- [ ] **V (HIGH)** Restore the real Poly Haven 1k pack (~45MB, CC0) so the other 9
+  keys (crate, box, jerrycan, barrier, trash, hydrant, boulder, fence, pipes) populate
+- [ ] **V (MED)** Regenerate the 3 AmaraSpatial props (`AMARA_MESH`: jersey barrier,
+  water-filled barrier, traffic cone) — not on disk, not in the tarballs
+- [x] **QA** Fix `qa-visual.mjs` blank captures (`toDataURL` returns an empty buffer
+  under SwiftShader) → composite `page.screenshot` + flat-frame detection + real
+  failed-request URLs; default to a single tier so the sweep can't saturate the CPU
+
 ## Batch 3 — Gameplay feel (PENDING)
 - [ ] **F (HIGH)** Ramp raw keyboard steer before yaw (kills twitch) — `physics.ts`/`input.ts`
 - [ ] **F (HIGH)** Render interpolation between fixed sim steps (fix 120/144Hz microstutter) — `sim.ts`, `GameScene.tsx`

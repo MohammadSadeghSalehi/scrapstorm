@@ -5,28 +5,86 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
+/**
+ * Candidate URLs per prop, tried in order. The canonical Poly Haven 1k path
+ * comes first; later entries are equivalent assets that already ship in
+ * `public/assets/meshes` under a different layout. Listing both means the set
+ * dressing works before the Poly Haven pack is restored and automatically
+ * upgrades to the full-quality asset once it is.
+ */
 export const PH_MODELS = {
-  barrel: "/assets/meshes/polyhaven/Barrel_01/Barrel_01_1k.gltf",
-  barrelAlt: "/assets/meshes/polyhaven/barrel_03/barrel_03_1k.gltf",
-  crate: "/assets/meshes/polyhaven/plastic_crate_01/plastic_crate_01_1k.gltf",
-  box: "/assets/meshes/polyhaven/cardboard_box_01/cardboard_box_01_1k.gltf",
-  tyre: "/assets/meshes/polyhaven/old_tyre/old_tyre_1k.gltf",
-  rim: "/assets/meshes/polyhaven/rusted_wheel_rim_01/rusted_wheel_rim_01_1k.gltf",
-  jerrycan: "/assets/meshes/polyhaven/metal_jerrycan/metal_jerrycan_1k.gltf",
-  barrier: "/assets/meshes/polyhaven/concrete_road_barrier/concrete_road_barrier_1k.gltf",
-  coveredCar: "/assets/meshes/polyhaven/covered_car/covered_car_1k.gltf",
-  trash: "/assets/meshes/polyhaven/metal_trash_can/metal_trash_can_1k.gltf",
-  hydrant: "/assets/meshes/polyhaven/fire_hydrant/fire_hydrant_1k.gltf",
-  boulder: "/assets/meshes/polyhaven/namaqualand_boulder_02/namaqualand_boulder_02_1k.gltf",
-  fence: "/assets/meshes/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
-  pipes: "/assets/meshes/polyhaven/modular_pipes/modular_pipes_1k.gltf",
+  barrel: [
+    "/assets/meshes/polyhaven/Barrel_01/Barrel_01_1k.gltf",
+    "/assets/meshes/barrel_ph/Barrel_01.gltf",
+  ],
+  barrelAlt: [
+    "/assets/meshes/polyhaven/barrel_03/barrel_03_1k.gltf",
+    "/assets/meshes/barrel_ph/barrel.glb",
+  ],
+  crate: ["/assets/meshes/polyhaven/plastic_crate_01/plastic_crate_01_1k.gltf"],
+  box: ["/assets/meshes/polyhaven/cardboard_box_01/cardboard_box_01_1k.gltf"],
+  tyre: [
+    "/assets/meshes/polyhaven/old_tyre/old_tyre_1k.gltf",
+    "/assets/meshes/kenney/debris-tire.glb",
+  ],
+  rim: [
+    "/assets/meshes/polyhaven/rusted_wheel_rim_01/rusted_wheel_rim_01_1k.gltf",
+    "/assets/meshes/kenney/wheel-dark.glb",
+  ],
+  jerrycan: ["/assets/meshes/polyhaven/metal_jerrycan/metal_jerrycan_1k.gltf"],
+  barrier: [
+    "/assets/meshes/polyhaven/concrete_road_barrier/concrete_road_barrier_1k.gltf",
+  ],
+  coveredCar: [
+    "/assets/meshes/polyhaven/covered_car/covered_car_1k.gltf",
+    "/assets/meshes/cars/covered_car/covered_car.gltf",
+  ],
+  trash: ["/assets/meshes/polyhaven/metal_trash_can/metal_trash_can_1k.gltf"],
+  hydrant: ["/assets/meshes/polyhaven/fire_hydrant/fire_hydrant_1k.gltf"],
+  boulder: [
+    "/assets/meshes/polyhaven/namaqualand_boulder_02/namaqualand_boulder_02_1k.gltf",
+  ],
+  fence: [
+    "/assets/meshes/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
+  ],
+  pipes: ["/assets/meshes/polyhaven/modular_pipes/modular_pipes_1k.gltf"],
 } as const;
 
 export type PhModelKey = keyof typeof PH_MODELS;
 
 const templateCache = new Map<string, THREE.Group>();
 const pending = new Map<string, Promise<THREE.Group>>();
+/**
+ * Keys whose every candidate 404'd. Set dressing asks for the same key across
+ * dozens of decor slots and re-runs on every tier change, so without this the
+ * misses turn into a request storm (~78 per load with the pack absent).
+ */
+const unavailable = new Set<PhModelKey>();
+const resolvedUrl = new Map<PhModelKey, string>();
 const loader = new GLTFLoader();
+
+/** First candidate that loads; remembered so later slots skip the misses. */
+function loadFirstAvailable(key: PhModelKey): Promise<THREE.Group> {
+  const known = resolvedUrl.get(key);
+  const urls = known ? [known] : [...PH_MODELS[key]];
+  const attempt = (i: number): Promise<THREE.Group> =>
+    new Promise<THREE.Group>((resolve, reject) => {
+      loader.load(
+        urls[i],
+        (gltf) => {
+          resolvedUrl.set(key, urls[i]);
+          resolve(gltf.scene);
+        },
+        undefined,
+        reject,
+      );
+    }).catch((err) => {
+      if (i + 1 < urls.length) return attempt(i + 1);
+      unavailable.add(key);
+      throw err;
+    });
+  return attempt(0);
+}
 
 function normalizeRoot(root: THREE.Object3D, targetLen: number) {
   root.traverse((o) => {
@@ -60,32 +118,34 @@ export function loadPhModel(
   key: PhModelKey,
   targetLen = 1.2,
 ): Promise<THREE.Group> {
+  if (unavailable.has(key)) {
+    return Promise.reject(new Error(`ph model unavailable: ${key}`));
+  }
   const ck = `${key}|${targetLen.toFixed(2)}`;
   const tpl = templateCache.get(ck);
   if (tpl) return Promise.resolve(tpl.clone(true) as THREE.Group);
 
   let p = pending.get(ck);
   if (!p) {
-    p = new Promise<THREE.Group>((resolve, reject) => {
-      loader.load(
-        PH_MODELS[key],
-        (gltf) => {
-          const root = gltf.scene;
-          normalizeRoot(root, targetLen);
-          templateCache.set(ck, root);
-          pending.delete(ck);
-          resolve(root);
-        },
-        undefined,
-        (err) => {
-          pending.delete(ck);
-          reject(err);
-        },
-      );
-    });
+    p = loadFirstAvailable(key)
+      .then((root) => {
+        normalizeRoot(root, targetLen);
+        templateCache.set(ck, root);
+        pending.delete(ck);
+        return root;
+      })
+      .catch((err) => {
+        pending.delete(ck);
+        throw err;
+      });
     pending.set(ck, p);
   }
   return p.then((root) => root.clone(true) as THREE.Group);
+}
+
+/** Keys with no loadable candidate this session (QA + set-dressing density). */
+export function unavailablePhKeys(): PhModelKey[] {
+  return [...unavailable];
 }
 
 /** Minimal race-props only — no covered cars / boulders on boot. */

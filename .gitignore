@@ -24,3 +24,6 @@ public/assets/audio/
 # keep the small runtime + attribution files:
 !public/assets/SOURCES.md
 !public/assets/LICENSE.txt
+
+# Claude Code: share the dev-server launch config, keep local permissions out.
+.claude/settings.local.json
