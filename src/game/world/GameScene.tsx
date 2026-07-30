@@ -26,6 +26,7 @@ import {
 } from "./Effects";
 import type { InputController } from "../input";
 import { qualityManager } from "./quality";
+import { initGltfDecoders } from "./gltfLoaders";
 import { GpuDetailDriver } from "./shaders/GpuDetailDriver";
 import { probeWebGpu } from "./shaders/webgpu";
 import {
@@ -914,6 +915,9 @@ export function GameCanvas({
       }}
       onCreated={({ gl }) => {
         const caps = configureWebGL2Renderer(gl, qualityManager.get());
+        // KTX2 needs to probe the renderer for supported compressed formats
+        // before any glTF referencing a .ktx2 texture is decoded.
+        initGltfDecoders(gl);
         if (typeof window !== "undefined") window.__webgl2Caps = caps;
       }}
       style={{ position: "absolute", inset: 0, touchAction: "none" }}

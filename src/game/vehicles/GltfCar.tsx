@@ -5,8 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
+import { createGltfLoader } from "../world/gltfLoaders";
 import type { VehicleState, VehicleClassId } from "../types";
 import { ModularVehicleMesh } from "./meshes";
 import { FRAME } from "../world/framePriority";
@@ -155,13 +154,8 @@ const templatePromise = new Map<string, Promise<THREE.Group>>();
 const mergedCache = new Map<string, MergedPack | null>();
 
 function makeLoader() {
-  const loader = new GLTFLoader();
-  try {
-    loader.setMeshoptDecoder(MeshoptDecoder);
-  } catch {
-    /* optional */
-  }
-  return loader;
+  // Shared factory so vehicles pick up Draco/KTX2 as well as meshopt.
+  return createGltfLoader();
 }
 
 function centerAndMeasure(root: THREE.Object3D) {

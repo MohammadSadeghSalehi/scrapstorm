@@ -3,7 +3,7 @@
  * https://polyhaven.com/license
  */
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { createGltfLoader } from "./gltfLoaders";
 
 /**
  * Candidate URLs per prop, tried in order. The canonical Poly Haven 1k path
@@ -61,7 +61,7 @@ const pending = new Map<string, Promise<THREE.Group>>();
  */
 const unavailable = new Set<PhModelKey>();
 const resolvedUrl = new Map<PhModelKey, string>();
-const loader = new GLTFLoader();
+const loader = createGltfLoader();
 
 /** First candidate that loads; remembered so later slots skip the misses. */
 function loadFirstAvailable(key: PhModelKey): Promise<THREE.Group> {

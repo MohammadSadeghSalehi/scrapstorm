@@ -27,3 +27,7 @@ public/assets/audio/
 
 # Claude Code: share the dev-server launch config, keep local permissions out.
 .claude/settings.local.json
+
+# Draco/KTX2 transcoders copied out of node_modules by scripts/copy-decoders.mjs
+# (wired to predev/prebuild, so they are always regenerated).
+public/decoders/
