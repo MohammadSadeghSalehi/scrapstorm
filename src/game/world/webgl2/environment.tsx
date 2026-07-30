@@ -95,24 +95,6 @@ export function EnvLighting() {
           scene.environmentIntensity =
             tier === "high" ? 1.1 : tier === "medium" ? 0.85 : 0.6;
           texture.dispose();
-          if (typeof window !== "undefined") {
-            // Live getters, not a snapshot: exposure and intensity are rewritten
-            // by configureWebGL2Renderer on every quality-tier change.
-            window.__renderDebug = {
-              get exposure() {
-                return gl.toneMappingExposure;
-              },
-              get envIntensity() {
-                return scene.environmentIntensity;
-              },
-              get hasEnv() {
-                return !!scene.environment;
-              },
-              get toneMapping() {
-                return gl.toneMapping;
-              },
-            };
-          }
         },
         undefined,
         () => {
@@ -135,11 +117,16 @@ export function EnvLighting() {
 
 declare global {
   interface Window {
+    /** Live renderer stats — populated in GameScene's Canvas onCreated. */
     __renderDebug?: {
       readonly exposure: number;
       readonly envIntensity: number;
       readonly hasEnv: boolean;
-      readonly toneMapping: number;
+      readonly drawCalls: number;
+      readonly triangles: number;
+      readonly programs: number;
+      readonly textures: number;
+      readonly geometries: number;
     };
   }
 }

@@ -65,6 +65,7 @@ type EngineKit = {
     onPause: () => void;
   }>;
   GraphicsDebug: ComponentType<{ phase: string }>;
+  FpsMeter: ComponentType<{ phase: string }>;
 };
 
 function loadName() {
@@ -269,6 +270,7 @@ async function loadEngine(
     GameHUD: metaHud.GameHUD,
     MobileControls: mobileMod.MobileControls,
     GraphicsDebug: debugMod.GraphicsDebug,
+    FpsMeter: debugMod.FpsMeter,
   };
 }
 
@@ -672,6 +674,7 @@ export function ScrapstormApp() {
 
       {hud && GameHUD ? <GameHUD hud={hud} onPause={onPause} /> : null}
       {GraphicsDebug ? <GraphicsDebug phase={scenePhase} /> : null}
+      {kit?.FpsMeter ? <kit.FpsMeter phase={scenePhase} /> : null}
       {MobileControls && inputRef.current ? (
         <MobileControls
           input={inputRef.current}

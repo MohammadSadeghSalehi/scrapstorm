@@ -60,9 +60,7 @@ const page = await browser.newPage({
     height: Number(process.env.QA_H) || 720,
   },
 });
-// page.screenshot() waits on document.fonts.ready, which intermittently never
-// settles and times the capture out. Webfonts do not affect what we verify.
-await page.route("**/*.{woff,woff2,ttf,otf,eot}", (r) => r.abort());
+const cdp = await page.context().newCDPSession(page);
 page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text());
 });
@@ -119,17 +117,25 @@ const shot = async (name) => {
     console.log(`  ! no canvas for ${name}`);
     return null;
   }
-  // page.screenshot({clip}) rather than elementHandle.screenshot(): the latter
-  // waits for the element to stop moving, and a live game canvas never does.
   const box = await target.boundingBox();
   if (!box) {
     console.log(`  ! canvas has no box for ${name}`);
     return null;
   }
-  const buf = await page.screenshot({ clip: box, timeout: 15000 }).catch((e) => {
-    console.log(`  ! screenshot failed for ${name}: ${e.message}`);
-    return null;
-  });
+  // Raw CDP capture. Both Playwright paths add waits that a live game canvas
+  // never satisfies: elementHandle.screenshot() waits for the element to stop
+  // moving, and page.screenshot() blocks on document.fonts.ready, which
+  // intermittently never settles here and times the capture out.
+  const buf = await cdp
+    .send("Page.captureScreenshot", {
+      format: "png",
+      clip: { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 },
+    })
+    .then((r) => Buffer.from(r.data, "base64"))
+    .catch((e) => {
+      console.log(`  ! screenshot failed for ${name}: ${e.message}`);
+      return null;
+    });
   if (!buf) return null;
   writeFileSync(`${OUT}/${name}.png`, buf);
   const px = pngSpread(buf);
@@ -164,6 +170,11 @@ const probe = () =>
         : null,
       builtYaw: window.__carDebug?.yaw,
       orient: window.__carDebug?.orient,
+      drawCalls: window.__renderDebug?.drawCalls,
+      triangles: window.__renderDebug?.triangles,
+      programs: window.__renderDebug?.programs,
+      textures: window.__renderDebug?.textures,
+      hasEnv: window.__renderDebug?.hasEnv,
     };
   });
 
@@ -237,7 +248,10 @@ for (const tier of TIERS) {
   const end = await probe();
   report.tiers[tier] = { mid, end };
   console.log(
-    `  fps=${end.fps} shadows=${end.shadowMapSize}${end.softShadows ? "/soft" : ""} hdri=${end.hdriEnv} car=${end.car}`,
+    `  fps=${end.fps} shadows=${end.shadowMapSize}${end.softShadows ? "/soft" : ""} hdri=${end.hdriEnv} env=${end.hasEnv} car=${end.car}`,
+  );
+  console.log(
+    `  draws=${end.drawCalls} tris=${end.triangles} programs=${end.programs} textures=${end.textures}`,
   );
 
   await page.evaluate(() => {

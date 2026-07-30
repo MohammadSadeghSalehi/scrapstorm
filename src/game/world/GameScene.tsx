@@ -25,7 +25,7 @@ import {
   VehicleFX,
 } from "./Effects";
 import type { InputController } from "../input";
-import { qualityManager } from "./quality";
+import { qualityManager, type QualitySettings } from "./quality";
 import { initGltfDecoders } from "./gltfLoaders";
 import { GpuDetailDriver } from "./shaders/GpuDetailDriver";
 import { probeWebGpu } from "./shaders/webgpu";
@@ -542,7 +542,10 @@ function SimDriver({
   lastInput: React.MutableRefObject<PlayerInput | null>;
 }) {
   const acc = useRef(0);
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
+    // Earliest band (FRAME.SIM), so the counters accumulate across every pass
+    // of the frame that follows and the HUD reads a real total.
+    state.gl.info.reset();
     if (input.consumePause()) onPauseToggle();
     acc.current += Math.min(delta, 0.08);
     let steps = 0;
@@ -701,11 +704,118 @@ function ShowcaseWorld({ sim }: { sim: GameSimulation }) {
           emissiveIntensity={0.0}
         />
       </mesh>
-      {qualityManager.get().hdriEnv && <EnvLighting />}
+      {/* Always mounted: EnvLighting picks the HDRI or the cheap procedural
+          gradient itself, so low tier still gets image-based lighting. */}
+      <EnvLighting />
       <LiveVehicles sim={sim} />
       <GaragePilot sim={sim} />
       <LiveCamera sim={sim} />
     </>
+  );
+}
+
+/**
+ * Precompile shader programs so materials do not stall the first time they
+ * become visible.
+ *
+ * three compiles a program lazily, the first frame a material/light/shadow
+ * combination is actually rendered. In a racing scene that means a hitch every
+ * time something new comes into view — a prop type, a weapon FX, the first
+ * shadow caster. compileAsync uses KHR_parallel_shader_compile, so the work
+ * happens off the critical path instead of blocking a frame like compile().
+ *
+ * Two passes: the countdown covers what exists at grid time, and a later pass
+ * catches materials created by assets that finished loading afterwards.
+ */
+function ShaderWarmup() {
+  const { gl, scene, camera } = useThree();
+
+  useEffect(() => {
+    let cancelled = false;
+    const timers: number[] = [];
+    const warm = () => {
+      if (cancelled) return;
+      const r = gl as THREE.WebGLRenderer & {
+        compileAsync?: (
+          scene: THREE.Object3D,
+          camera: THREE.Camera,
+        ) => Promise<unknown>;
+      };
+      try {
+        if (typeof r.compileAsync === "function") {
+          void r.compileAsync(scene, camera);
+        } else {
+          // Synchronous fallback: still better than hitching mid-race.
+          gl.compile(scene, camera);
+        }
+      } catch {
+        /* warmup is best-effort */
+      }
+    };
+    timers.push(window.setTimeout(warm, 600));
+    timers.push(window.setTimeout(warm, 4000));
+    return () => {
+      cancelled = true;
+      for (const t of timers) window.clearTimeout(t);
+    };
+  }, [gl, scene, camera]);
+
+  return null;
+}
+
+/** Half-extent of the sun's shadow frustum, in world units. */
+const SHADOW_EXTENT = 42;
+
+/**
+ * Key light whose shadow frustum tracks the player.
+ *
+ * The sun used to sit at a fixed position with its target left at the world
+ * origin, so the ±42 unit shadow box only ever covered the middle of the map —
+ * drive away from spawn and every shadow silently disappeared. Keeping the
+ * light direction constant while sliding the light and its target along with
+ * the car gives full-track shadows at the same map resolution (effectively a
+ * single tight cascade).
+ *
+ * The centre is snapped to whole shadow-map texels: without that, sub-texel
+ * movement makes shadow edges crawl and shimmer as you drive.
+ */
+function SunLight({ sim, q }: { sim: GameSimulation; q: QualitySettings }) {
+  const ref = useRef<THREE.DirectionalLight>(null);
+  // Direction only — magnitude just needs to clear the shadow-camera near plane.
+  const dir = useMemo(() => new THREE.Vector3(55, 70, -25), []);
+
+  useFrame(() => {
+    const light = ref.current;
+    if (!light) return;
+    const p = sim.state.vehicles.find((v) => v.isPlayer);
+    if (!p) return;
+    const texel = (SHADOW_EXTENT * 2) / Math.max(1, q.shadowMapSize);
+    const cx = Math.round(p.x / texel) * texel;
+    const cz = Math.round(p.z / texel) * texel;
+    light.position.set(cx + dir.x, dir.y, cz + dir.z);
+    light.target.position.set(cx, 0, cz);
+    light.target.updateMatrixWorld();
+    light.updateMatrixWorld();
+  }, FRAME.LATE);
+
+  return (
+    <directionalLight
+      ref={ref}
+      position={[55, 70, -25]}
+      intensity={3.0}
+      color="#ffe8c8"
+      castShadow={q.shadowEnabled}
+      shadow-mapSize-width={q.shadowMapSize}
+      shadow-mapSize-height={q.shadowMapSize}
+      shadow-camera-near={5}
+      shadow-camera-far={200}
+      shadow-camera-left={-SHADOW_EXTENT}
+      shadow-camera-right={SHADOW_EXTENT}
+      shadow-camera-top={SHADOW_EXTENT}
+      shadow-camera-bottom={-SHADOW_EXTENT}
+      shadow-bias={-0.00025}
+      shadow-normalBias={0.035}
+    />
   );
 }
 
@@ -744,22 +854,8 @@ function RaceWorld({
       <fog attach="fog" args={["#c8b090", fogNear, fogFar]} />
       <ambientLight intensity={0.62} color="#f4e4c8" />
       <hemisphereLight args={["#ffc898", "#2a1810", 1.1]} />
-      <directionalLight
-        position={[55, 70, -25]}
-        intensity={3.0}
-        color="#ffe8c8"
-        castShadow={q.shadowEnabled}
-        shadow-mapSize-width={q.shadowMapSize}
-        shadow-mapSize-height={q.shadowMapSize}
-        shadow-camera-near={5}
-        shadow-camera-far={140}
-        shadow-camera-left={-42}
-        shadow-camera-right={42}
-        shadow-camera-top={42}
-        shadow-camera-bottom={-42}
-        shadow-bias={-0.00025}
-        shadow-normalBias={0.035}
-      />
+      <SunLight sim={sim} q={q} />
+      <ShaderWarmup />
       <directionalLight position={[-40, 22, 40]} intensity={0.65} color="#88b8e8" />
       {q.tier !== "low" && (
         <directionalLight position={[20, 12, 30]} intensity={0.3} color="#ffd0a0" />
@@ -767,7 +863,7 @@ function RaceWorld({
       {q.tier !== "low" && <GpuDetailDriver />}
       <TerrainCullDriver />
       <CullStatsPublisher />
-      {q.hdriEnv && <EnvLighting />}
+      <EnvLighting />
       <Atmosphere />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.25, 0]} receiveShadow>
         <planeGeometry args={[900, 900]} />
@@ -913,12 +1009,43 @@ export function GameCanvas({
         stencil: false,
         depth: true,
       }}
-      onCreated={({ gl }) => {
+      onCreated={({ gl, scene }) => {
         const caps = configureWebGL2Renderer(gl, qualityManager.get());
         // KTX2 needs to probe the renderer for supported compressed formats
         // before any glTF referencing a .ktx2 texture is decoded.
         initGltfDecoders(gl);
-        if (typeof window !== "undefined") window.__webgl2Caps = caps;
+        if (typeof window !== "undefined") {
+          window.__webgl2Caps = caps;
+          // Live getters, not a snapshot: gl.info.autoReset is on, so these
+          // read the last frame's real numbers, and exposure/intensity are
+          // rewritten on every quality-tier change.
+          window.__renderDebug = {
+            get exposure() {
+              return gl.toneMappingExposure;
+            },
+            get envIntensity() {
+              return scene.environmentIntensity;
+            },
+            get hasEnv() {
+              return !!scene.environment;
+            },
+            get drawCalls() {
+              return gl.info.render.calls;
+            },
+            get triangles() {
+              return gl.info.render.triangles;
+            },
+            get programs() {
+              return gl.info.programs?.length ?? 0;
+            },
+            get textures() {
+              return gl.info.memory.textures;
+            },
+            get geometries() {
+              return gl.info.memory.geometries;
+            },
+          };
+        }
       }}
       style={{ position: "absolute", inset: 0, touchAction: "none" }}
     >

@@ -72,8 +72,11 @@ export function configureWebGL2Renderer(
   // Avoid auto-clear fights with multi-pass FX
   gl.autoClear = true;
 
-  // Debug info budget (optional HUD)
-  gl.info.autoReset = true;
+  // Reset once per frame from the sim loop instead of after every render.
+  // With autoReset on, each EffectComposer pass clears the counters, so the
+  // HUD only ever saw the final fullscreen quad (1 call / 1 triangle) rather
+  // than the frame's real draw count.
+  gl.info.autoReset = false;
 
   let renderer = "unknown";
   let vendor = "unknown";
