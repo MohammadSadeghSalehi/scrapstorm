@@ -35,11 +35,30 @@ mkdirSync(OUT, { recursive: true });
 
 const errors = [];
 const failedUrls = new Map(); // url -> count, so a 404 storm is legible
+// Chrome >=120 refuses to hand out a software WebGL context unless
+// --enable-unsafe-swiftshader is set. Without it getContext() succeeds but
+// getContextAttributes() returns null, so three.js draws nothing and
+// EffectComposer.setRenderer throws "Cannot read properties of null (reading
+// 'alpha')" — which reads like a game bug but is purely a harness one.
 const browser = await chromium.launch({
   headless: !HEADED,
-  args: ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-gpu-blocklist", "--enable-gpu"],
+  args: [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--ignore-gpu-blocklist",
+    ...(HEADED
+      ? ["--enable-gpu"]
+      : ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader"]),
+  ],
 });
-const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+// Smaller viewport = quadratically less software rasterisation. Pin it down
+// (QA_W/QA_H) when sharing the machine with another GPU/CPU-heavy app.
+const page = await browser.newPage({
+  viewport: {
+    width: Number(process.env.QA_W) || 1280,
+    height: Number(process.env.QA_H) || 720,
+  },
+});
 page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text());
 });
@@ -111,9 +130,28 @@ const probe = () =>
     };
   });
 
-const report = { url: URL, headed: HEADED, tiers: {}, frames: {}, errors: [], failedRequests: {} };
+/** Confirm a real WebGL2 context exists before trusting any frame. */
+const glInfo = () =>
+  page.evaluate(() => {
+    const c = document.createElement("canvas");
+    const gl = c.getContext("webgl2") ?? c.getContext("webgl");
+    if (!gl) return { ok: false, why: "no webgl context" };
+    const attrs = gl.getContextAttributes();
+    if (!attrs) return { ok: false, why: "getContextAttributes() null (software GL blocked)" };
+    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    return {
+      ok: true,
+      webgl2: !!c.getContext("webgl2"),
+      renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "unknown",
+    };
+  });
+
+const report = { url: URL, headed: HEADED, gl: null, tiers: {}, frames: {}, errors: [], failedRequests: {} };
 console.log(`Booting ${URL} (${HEADED ? "headed/GPU" : "headless"}) tiers=${TIERS.join(",")}`);
 await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60000 });
+report.gl = await glInfo();
+console.log(`  gl: ${report.gl.ok ? `${report.gl.renderer} (webgl2=${report.gl.webgl2})` : `UNAVAILABLE — ${report.gl.why}`}`);
+if (!report.gl.ok) console.log("  !! every frame will be blank; captures below are meaningless");
 await page.waitForFunction(() => !!window.__scrapstorm, null, { timeout: 60000 }).catch(() => {
   console.log("  ! __scrapstorm never appeared — engine did not boot");
 });

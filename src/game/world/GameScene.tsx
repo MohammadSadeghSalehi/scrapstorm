@@ -903,7 +903,12 @@ export function GameCanvas({
         antialias: q.antialias,
         alpha: false,
         powerPreference: "high-performance",
-        preserveDrawingBuffer: true,
+        // Keeping the backbuffer alive costs bandwidth on every frame and
+        // blocks the driver from discarding it. QA captures through the
+        // compositor now (page.screenshot), so only opt in behind ?capture.
+        preserveDrawingBuffer:
+          typeof window !== "undefined" &&
+          new URLSearchParams(window.location.search).has("capture"),
         stencil: false,
         depth: true,
       }}
@@ -956,7 +961,7 @@ declare global {
       setAuto: (on: boolean) => void;
       getFps: () => number;
     };
-    __webgl2Caps?: unknown;
+    __webgl2Caps?: import("./webgl2/configure").WebGL2Caps;
     __webgpuProbe?: { status: string; recommendation: string };
     __terrainCull?: unknown;
     __roadRibbon?: unknown;

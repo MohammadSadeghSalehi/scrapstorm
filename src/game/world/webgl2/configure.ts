@@ -36,9 +36,13 @@ export function configureWebGL2Renderer(
 ): WebGL2Caps {
   THREE.ColorManagement.enabled = true;
 
-  // Prefer WebGL2 (R3F already requests it when available)
+  // Three dropped WebGL1 in r163 and removed `capabilities.isWebGL2` with it —
+  // @types/three still declares it, so `caps.isWebGL2` silently reads
+  // `undefined` and every consumer sees WebGL2 as unavailable. Ask the context.
   const caps = gl.capabilities;
-  const isWebGL2 = !!caps.isWebGL2;
+  const isWebGL2 =
+    typeof WebGL2RenderingContext !== "undefined" &&
+    gl.getContext() instanceof WebGL2RenderingContext;
   const maxAnisotropy = Math.max(1, caps.getMaxAnisotropy?.() ?? 4);
   maxAniso = Math.min(maxAnisotropy, q.anisotropy > 0 ? Math.max(q.anisotropy, 1) : maxAnisotropy);
 
