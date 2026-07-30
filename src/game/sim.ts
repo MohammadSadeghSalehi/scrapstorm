@@ -450,7 +450,6 @@ export class GameSimulation {
   }
 
   setPhase(phase: MatchPhase) {
-    const prev = this.state.phase;
     if (phase === "countdown") {
       this.startCountdown();
       return;
@@ -465,8 +464,14 @@ export class GameSimulation {
       this.state.phase = "paused";
       return;
     }
+    // Only "racing", "finished" and a non-racing "paused" reach here, and none
+    // of them change world content — the track, vehicles and props are already
+    // whatever startCountdown/rebuildShowcase built. worldEpoch feeds sceneKey,
+    // and WorldContent is keyed on it, so bumping here tore down and rebuilt
+    // the entire 3D scene (terrain, ~70 scenery props, every car, the effect
+    // composer) on countdown -> racing — i.e. precisely when the lights go
+    // green. The transitions that really do rebuild bump the epoch themselves.
     this.state.phase = phase;
-    if (phase !== prev) this.worldEpoch += 1;
   }
 
   startCountdown() {

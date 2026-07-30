@@ -13,7 +13,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright";
 
 const CLASS = process.argv[2] || "interceptor";
-const URL = (process.env.QA_URL || "http://127.0.0.1:8081/") + "?capture=1";
+// No ?capture: frames come from the compositor (page.screenshot), which does
+// not need preserveDrawingBuffer.
+const URL = process.env.QA_URL || "http://127.0.0.1:8081/";
 const OUT = "screenshots";
 mkdirSync(OUT, { recursive: true });
 
@@ -66,6 +68,16 @@ const dbg = await page.evaluate(() => ({
   size: window.__carDebug?.size,
 }));
 console.log(`class=${CLASS}`, JSON.stringify(dbg));
+
+// Distinguish "never renders" from "still warming up": if the world only
+// needs more time (HDRI/PBR packs, terrain bake), the later frame is lit.
+for (const extra of [0, 4000, 6000]) {
+  if (extra) await page.waitForTimeout(extra);
+  const f = await page.screenshot({ timeout: 20000 });
+  writeFileSync(`${OUT}/facing-${CLASS}-t${extra}.png`, f);
+  const fps = await page.evaluate(() => Math.round(window.__quality?.getFps?.() ?? 0));
+  console.log(`  t+${extra}ms: ${(f.length / 1024).toFixed(0)}KB fps=${fps}`);
+}
 
 // Full frame first — the crop is meaningless if the scene did not render.
 const full = await page.screenshot({ timeout: 20000 });
