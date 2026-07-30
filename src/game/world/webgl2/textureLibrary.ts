@@ -132,29 +132,21 @@ async function loadPack(
   if (cache.has(id)) return;
   const spec = PACK_PATHS[id];
   try {
-    const map = await loadOne(loader, `${spec.base}/diff.jpg`, true);
-    const normalMap = await loadOne(loader, `${spec.base}/nor.jpg`, false);
-    const roughnessMap = await loadOne(
-      loader,
-      `${spec.base}/rough.jpg`,
-      false,
-    );
-    let metalnessMap: THREE.Texture | null = null;
-    let aoMap: THREE.Texture | null = null;
-    if (spec.hasMetal) {
-      try {
-        metalnessMap = await loadOne(loader, `${spec.base}/metal.jpg`, false);
-      } catch {
-        metalnessMap = null;
-      }
-    }
-    if (spec.hasAo) {
-      try {
-        aoMap = await loadOne(loader, `${spec.base}/ao.jpg`, false);
-      } catch {
-        aoMap = null;
-      }
-    }
+    // The maps of a pack are independent — chaining them made each pack cost
+    // 3-5 serial round-trips, so the critical set alone was ~4 requests deep
+    // before the road could paint. Optional maps resolve to null on miss.
+    const [map, normalMap, roughnessMap, metalnessMap, aoMap] =
+      await Promise.all([
+        loadOne(loader, `${spec.base}/diff.jpg`, true),
+        loadOne(loader, `${spec.base}/nor.jpg`, false),
+        loadOne(loader, `${spec.base}/rough.jpg`, false),
+        spec.hasMetal
+          ? loadOne(loader, `${spec.base}/metal.jpg`, false).catch(() => null)
+          : Promise.resolve(null),
+        spec.hasAo
+          ? loadOne(loader, `${spec.base}/ao.jpg`, false).catch(() => null)
+          : Promise.resolve(null),
+      ]);
     const q = qualityManager.get();
     map.anisotropy = Math.min(getMaxAnisotropy(), q.anisotropy || 4);
     cache.set(id, {
