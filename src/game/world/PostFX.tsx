@@ -75,7 +75,10 @@ export function PostFX({
           distanceFalloff={1.0}
           intensity={high ? 2.0 : 1.5}
           quality={high ? "medium" : "performance"}
-          halfRes={!high}
+          // Half-res on every tier: AO is a full-screen pass and the upsample
+          // is depth-aware, so the cost saving is worth far more than the
+          // marginal sharpness at full res.
+          halfRes
           depthAwareUpsampling
           color="#1c1207"
         />

@@ -740,10 +740,22 @@ function ShowcaseWorld({ sim }: { sim: GameSimulation }) {
  */
 function AdaptiveResolution() {
   const { gl } = useThree();
-  const scale = useRef(1);
+  // Start below the ceiling and climb into it. Opening at full dprMax means a
+  // weak GPU renders its first seconds at 4x the pixels before the scaler can
+  // react; a strong one reaches 100% within a couple of measurement windows.
+  const scale = useRef(0.8);
   const frames = useRef(0);
   const accum = useRef(0);
   const cooldown = useRef(0);
+
+  // Apply the conservative starting scale immediately, before the first
+  // measurement window has had a chance to run.
+  useEffect(() => {
+    const q = qualityManager.get();
+    const base = Math.min(window.devicePixelRatio || 1, q.dprMax);
+    gl.setPixelRatio(base * scale.current);
+    window.__resScale = scale.current;
+  }, [gl]);
 
   useFrame((_, dt) => {
     if (dt > 0.25) return; // tab was backgrounded
