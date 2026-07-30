@@ -137,20 +137,27 @@ export function SceneryDecor() {
     if (!g) return;
     while (g.children.length) g.remove(g.children[0]);
 
+    // Place concurrently, not in a sequential await chain. Every distinct
+    // (key,targetLen) template is deduped inside loadPhModel, so this issues
+    // ~20 glTF fetches rather than serialising ~70 round-trips behind each
+    // other — the difference between a multi-second stall on race start and
+    // props popping in as they arrive.
     void (async () => {
-      for (const item of list) {
-        try {
-          const mesh = await loadPhModel(item.key, item.targetLen);
-          if (!alive || !group.current) return;
-          mesh.position.set(item.x, item.y, item.z);
-          mesh.rotation.y = item.yaw;
-          mesh.scale.multiplyScalar(item.scale);
-          group.current.add(mesh);
-          nodes.current.push(mesh);
-        } catch {
-          /* skip missing */
-        }
-      }
+      await Promise.all(
+        list.map(async (item) => {
+          try {
+            const mesh = await loadPhModel(item.key, item.targetLen);
+            if (!alive || !group.current) return;
+            mesh.position.set(item.x, item.y, item.z);
+            mesh.rotation.y = item.yaw;
+            mesh.scale.multiplyScalar(item.scale);
+            group.current.add(mesh);
+            nodes.current.push(mesh);
+          } catch {
+            /* key unavailable — loadPhModel caches the miss */
+          }
+        }),
+      );
       if (alive) setReady((n) => n + 1);
     })();
 

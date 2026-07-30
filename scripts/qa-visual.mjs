@@ -19,6 +19,7 @@
  * yields blank PNGs that look like a successful run.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { chromium } from "playwright";
 
 const URL = process.env.QA_URL || "http://127.0.0.1:8080/";
@@ -70,29 +71,43 @@ page.on("response", (r) => {
   }
 });
 
-/** Mean/variance of a downscaled draw — catches an all-black or blank frame. */
-const pixelStats = () =>
-  page.evaluate(() => {
-    const c = document.querySelector("canvas.game-canvas") ?? document.querySelector("canvas");
-    if (!c) return null;
-    const s = document.createElement("canvas");
-    s.width = 32;
-    s.height = 18;
-    const ctx = s.getContext("2d");
-    if (!ctx) return null;
-    ctx.drawImage(c, 0, 0, 32, 18);
-    const d = ctx.getImageData(0, 0, 32, 18).data;
-    let sum = 0;
-    const lum = [];
-    for (let i = 0; i < d.length; i += 4) {
-      const l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
-      lum.push(l);
-      sum += l;
-    }
-    const mean = sum / lum.length;
-    const varc = lum.reduce((a, l) => a + (l - mean) ** 2, 0) / lum.length;
-    return { mean: +mean.toFixed(1), stdev: +Math.sqrt(varc).toFixed(1), w: c.width, h: c.height };
-  });
+/**
+ * Spread of the decompressed PNG payload. Deliberately measured on the capture
+ * rather than by reading the canvas back: drawImage/toDataURL on a WebGL canvas
+ * return an empty buffer unless preserveDrawingBuffer is on, which would make
+ * the detector report every frame blank the moment that flag is (correctly)
+ * turned off in production.
+ */
+function pngSpread(buf) {
+  let off = 8;
+  const idat = [];
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString("ascii", off + 4, off + 8);
+    if (type === "IDAT") idat.push(buf.subarray(off + 8, off + 8 + len));
+    if (type === "IEND") break;
+    off += 12 + len;
+  }
+  if (!idat.length) return null;
+  let raw;
+  try {
+    raw = inflateSync(Buffer.concat(idat));
+  } catch {
+    return null;
+  }
+  const step = Math.max(1, Math.floor(raw.length / 20000));
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < raw.length; i += step) {
+    sum += raw[i];
+    n++;
+  }
+  const mean = sum / Math.max(1, n);
+  let varc = 0;
+  for (let i = 0; i < raw.length; i += step) varc += (raw[i] - mean) ** 2;
+  varc /= Math.max(1, n);
+  return { mean: +mean.toFixed(1), stdev: +Math.sqrt(varc).toFixed(1) };
+}
 
 const shot = async (name) => {
   const el = await page.$("canvas.game-canvas");
@@ -101,19 +116,26 @@ const shot = async (name) => {
     console.log(`  ! no canvas for ${name}`);
     return null;
   }
-  const buf = await target.screenshot({ timeout: 15000 }).catch((e) => {
+  // page.screenshot({clip}) rather than elementHandle.screenshot(): the latter
+  // waits for the element to stop moving, and a live game canvas never does.
+  const box = await target.boundingBox();
+  if (!box) {
+    console.log(`  ! canvas has no box for ${name}`);
+    return null;
+  }
+  const buf = await page.screenshot({ clip: box, timeout: 15000 }).catch((e) => {
     console.log(`  ! screenshot failed for ${name}: ${e.message}`);
     return null;
   });
   if (!buf) return null;
   writeFileSync(`${OUT}/${name}.png`, buf);
-  const px = await pixelStats();
-  // stdev ~0 means a flat frame: the scene never rendered.
-  const flat = px && px.stdev < 1.5;
+  const px = pngSpread(buf);
+  // A uniform frame compresses to near-constant bytes; real scenes do not.
+  const flat = !!px && px.stdev < 8;
   console.log(
-    `  + ${name}.png (${(buf.length / 1024).toFixed(0)}KB) ${px ? `${px.w}x${px.h} mean=${px.mean} stdev=${px.stdev}` : ""}${flat ? "  <-- FLAT/BLANK" : ""}`,
+    `  + ${name}.png (${(buf.length / 1024).toFixed(0)}KB) ${px ? `spread=${px.stdev}` : ""}${flat ? "  <-- FLAT/BLANK" : ""}`,
   );
-  return { bytes: buf.length, ...px, flat: !!flat };
+  return { bytes: buf.length, ...px, flat };
 };
 
 const probe = () =>
@@ -127,6 +149,18 @@ const probe = () =>
       hdriEnv: q.hdriEnv,
       phase: window.__scrapstorm?.getState?.()?.phase,
       car: window.__carDebug?.url?.split("/").pop(),
+      // Which build path the mesh took decides which orientation rule applied.
+      buildPath: window.__carDebug
+        ? window.__carDebug.textured
+          ? "texturedHero"
+          : window.__carDebug.kenney
+            ? "kenney"
+            : window.__carDebug.merged
+              ? "merged"
+              : "unmerged"
+        : null,
+      builtYaw: window.__carDebug?.yaw,
+      orient: window.__carDebug?.orient,
     };
   });
 
@@ -163,9 +197,22 @@ for (const tier of TIERS) {
   await page.evaluate((t) => window.__quality?.setTier?.(t), tier);
   await page.waitForTimeout(1200);
 
-  // Garage / showcase — hero paint + HDRI reflections
-  await page.evaluate(() => window.__scrapstorm?.getState?.() && (window.__scrapstorm.getState().phase = "garage"));
-  await page.waitForTimeout(2000);
+  // Garage / showcase — hero paint + HDRI reflections. Needs the shell's
+  // setPhase: mutating sim state alone leaves the showcase scene unmounted.
+  const garageVia = await page.evaluate(() => {
+    if (window.__scrapstorm?.setPhase) {
+      window.__scrapstorm.setPhase("garage");
+      return "setPhase";
+    }
+    if (window.__scrapstorm?.getState?.()) {
+      window.__scrapstorm.getState().phase = "garage";
+      return "mutate(fallback)";
+    }
+    return "unavailable";
+  });
+  await page.waitForTimeout(3000);
+  const garagePhase = await page.evaluate(() => window.__scrapstorm?.getState?.()?.phase);
+  console.log(`  garage via ${garageVia} -> phase=${garagePhase}`);
   report.frames[`${tier}-1-garage`] = await shot(`${tier}-1-garage`);
 
   // Race

@@ -35,12 +35,15 @@ const FALLBACK_URL = "/assets/meshes/kenney/race.glb";
  * Calibrated against SM_MeshGen customs (native axes differ per asset).
  */
 const CUSTOM_ORIENT: Record<string, [number, number, number]> = {
-  // Native long on +X → yaw puts length on Z; +PI aims nose to -Z
-  SM_MeshGen_WastelandCustomCar: [0, Math.PI / 2 + Math.PI, 0],
-  // Native already long on Z; +PI aims nose to -Z
-  SM_MeshGen_CustomWidebodyHatchback: [0, Math.PI, 0],
-  // Native long on Z, tall roof-gun on Y — no roll; +PI aims nose -Z
-  SM_MeshGen_DesertCombatVehicle: [0, Math.PI, 0],
+  // Intentionally empty. The geometric path below (align long axis to Z, then
+  // flip so the taller half — the cabin — ends up at +Z) derives the right
+  // facing for every current asset; verified against the raw vertex data with
+  //   node scripts/inspect-mesh-orientation.mjs public/assets/meshes/custom/*.glb
+  //
+  // The hand-calibrated entries that used to live here carried an extra +PI on
+  // WastelandCustomCar (PI/2 -> 3PI/2) and CustomWidebodyHatchback (0 -> PI),
+  // so those two rendered exactly backwards. Only add an override when the
+  // heuristic demonstrably fails for an asset, and record the measurement.
 };
 
 function assetKeyFromUrl(url: string): string {
@@ -58,8 +61,14 @@ function alignLongAxisToZ(root: THREE.Group) {
   }
 }
 
+/**
+ * Put length on Z and the nose on -Z (the sim's forward, see physics.ts where
+ * forward = [-sin(yaw), -cos(yaw)]). Both steps are geometric, so a new asset
+ * orients itself without hand calibration.
+ */
 function faceForwardLongAxis(root: THREE.Group) {
   alignLongAxisToZ(root);
+  orientRearTowardPosZ(root);
 }
 
 function orientRearTowardPosZ(root: THREE.Group) {
@@ -500,7 +509,8 @@ function buildKenneyVehicle(
   bodyGroup.add(clone);
   const len = (tpl.userData.nativeLen as number) || 4;
   root.scale.setScalar(TARGET_LEN[classId] / len);
-  root.rotation.y = Math.PI;
+  // No blanket +PI — faceForwardLongAxis decides the flip from geometry.
+  root.rotation.set(0, 0, 0);
   faceForwardLongAxis(root);
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);
@@ -559,7 +569,7 @@ function buildFromMerged(
 
   const s = TARGET_LEN[classId] / pack.nativeLen;
   root.scale.setScalar(s);
-  root.rotation.y = Math.PI;
+  root.rotation.set(0, 0, 0);
   faceForwardLongAxis(root);
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);
@@ -587,7 +597,7 @@ function paintUnmerged(
   const clone = tpl.clone(true);
   const len = (tpl.userData.nativeLen as number) || 4;
   clone.scale.setScalar(TARGET_LEN[classId] / len);
-  clone.rotation.y = Math.PI;
+  clone.rotation.set(0, 0, 0);
   faceForwardLongAxis(clone);
   const mats = makeMats(color, accent, ghost, hero);
   let kept = 0;

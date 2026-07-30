@@ -387,6 +387,18 @@ export function ScrapstormApp() {
             sim.setPhase("countdown");
             setSceneEpoch(sim.worldEpoch);
           },
+          /**
+           * QA hook. Mutating `getState().phase` only moves the sim — the
+           * React shell keeps its own phase, so the garage/showcase scene
+           * never mounts and captures come back empty. Drive both.
+           */
+          setPhase: (p: MatchPhase) => {
+            shellPhaseRef.current = p;
+            setShellPhase(p);
+            sim.setPhase(p);
+            setSceneEpoch(sim.worldEpoch);
+            setMenuState(snapshotMenu(sim.state));
+          },
           pause: () => sim.togglePause(),
           resume: () => sim.resume(),
           restart: () => {
