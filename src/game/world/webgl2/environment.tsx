@@ -45,7 +45,7 @@ export function EnvLighting() {
           scene.environment = envTex;
           const tier = qualityManager.get().tier;
           scene.environmentIntensity =
-            tier === "high" ? 0.75 : tier === "medium" ? 0.55 : 0.4;
+            tier === "high" ? 1.1 : tier === "medium" ? 0.85 : 0.6;
           texture.dispose();
         },
         undefined,

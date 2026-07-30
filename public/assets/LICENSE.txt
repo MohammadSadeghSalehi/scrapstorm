@@ -1,0 +1,2 @@
+Vendored assets are free / open licenses only (CC0 or Khronos sample terms).
+See SOURCES.md for per-file attribution.

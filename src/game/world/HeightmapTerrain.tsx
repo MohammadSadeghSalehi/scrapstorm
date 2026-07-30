@@ -125,6 +125,7 @@ export function HeightmapTerrain() {
       uv.setXY(i, (pos.getX(i) + cx) * 0.06, (pos.getZ(i) + cz) * 0.06);
     }
     uv.needsUpdate = true;
+    geo.setAttribute("uv1", (geo.attributes.uv as THREE.BufferAttribute).clone());
     geo.computeVertexNormals();
     geo.translate(cx, 0, cz);
 
@@ -136,7 +137,7 @@ export function HeightmapTerrain() {
       metalness: 0.02,
       envMapIntensity: 1.05,
       emissive: new THREE.Color("#7a5430"),
-      emissiveIntensity: 0.18,
+      emissiveIntensity: 0.0,
     });
 
     // Async PBR maps — don't block mesh spawn

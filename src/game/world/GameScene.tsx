@@ -697,9 +697,10 @@ function ShowcaseWorld({ sim }: { sim: GameSimulation }) {
           roughness={1}
           metalness={0}
           emissive="#1a120c"
-          emissiveIntensity={0.4}
+          emissiveIntensity={0.0}
         />
       </mesh>
+      {qualityManager.get().hdriEnv && <EnvLighting />}
       <LiveVehicles sim={sim} />
       <GaragePilot sim={sim} />
       <LiveCamera sim={sim} />
@@ -774,7 +775,7 @@ function RaceWorld({
           roughness={1}
           metalness={0}
           emissive="#8a6038"
-          emissiveIntensity={0.35}
+          emissiveIntensity={0.0}
         />
       </mesh>
       <PbrBootstrap>

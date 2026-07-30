@@ -15,5 +15,12 @@ tmp/
 /tmp/
 *.tsbuildinfo
 
-# Heavy 3D assets — placed locally, synced out-of-band, not committed
+# --- Heavy art assets: restored locally from the part tarballs, never committed ---
+# (see AAA_PUNCHLIST.md / assemble-assets.sh; keeps the clone small)
 public/assets/meshes/
+public/assets/textures/
+public/assets/hdri/
+public/assets/audio/
+# keep the small runtime + attribution files:
+!public/assets/SOURCES.md
+!public/assets/LICENSE.txt

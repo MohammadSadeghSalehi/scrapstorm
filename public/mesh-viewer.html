@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><style>
+html,body{margin:0;background:#1a1612;overflow:hidden}
+#label{position:fixed;left:12px;top:12px;color:#fff;font:13px/1.4 sans-serif;z-index:2;text-shadow:0 1px 3px #000;max-width:90%}
+</style></head><body>
+<div id="label">loading...</div>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.170.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.170.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const params = new URLSearchParams(location.search);
+const url = params.get('url');
+const yaw = parseFloat(params.get('yaw')||'0');
+const label = document.getElementById('label');
+
+const renderer = new THREE.WebGLRenderer({antialias:true, preserveDrawingBuffer:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#2a2118');
+const camera = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.05, 200);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const sun = new THREE.DirectionalLight(0xffe0b5, 1.9);
+sun.position.set(6, 10, 4); scene.add(sun);
+scene.add(new THREE.DirectionalLight(0x7dd3fc, 0.5).translateX(-5).translateY(3).translateZ(-2));
+
+// ground + axes: -Z is FORWARD (green arrow)
+const ground = new THREE.Mesh(new THREE.CircleGeometry(10, 48), new THREE.MeshStandardMaterial({color:'#3d3226', roughness:0.95}));
+ground.rotation.x = -Math.PI/2; scene.add(ground);
+const forward = new THREE.ArrowHelper(new THREE.Vector3(0,0,-1), new THREE.Vector3(0,0.2,0), 5, 0x22c55e, 0.5, 0.35);
+scene.add(forward);
+const right = new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(0,0.2,0), 2.5, 0xef4444, 0.3, 0.2);
+scene.add(right);
+// camera BEHIND car looking along forward (-Z), like race cam
+camera.position.set(0, 2.2, 7.5);
+camera.lookAt(0, 0.8, 0);
+
+const loader = new GLTFLoader();
+loader.load(url, (gltf) => {
+  const root = gltf.scene;
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    const m = o.material;
+    if (m?.map) { m.map.colorSpace = THREE.SRGBColorSpace; m.map.needsUpdate = true; }
+    // NO team tint — preserve author colors
+    if (m) {
+      const phys = new THREE.MeshPhysicalMaterial({
+        map: m.map, metalnessMap: m.metalnessMap||m.roughnessMap, roughnessMap: m.roughnessMap,
+        color: 0xffffff, metalness: 0.35, roughness: 0.5, clearcoat: 0.45, clearcoatRoughness: 0.25,
+        envMapIntensity: 0.9,
+      });
+      o.material = phys;
+    }
+  });
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= box.min.y;
+  root.rotation.y = yaw;
+  // scale to ~4m long
+  root.updateMatrixWorld(true);
+  const box1 = new THREE.Box3().setFromObject(root);
+  const s1 = box1.getSize(new THREE.Vector3());
+  const len = Math.max(s1.x, s1.z);
+  root.scale.setScalar(4.1 / len);
+  root.updateMatrixWorld(true);
+  const box2 = new THREE.Box3().setFromObject(root);
+  if (Number.isFinite(box2.min.y)) root.position.y -= box2.min.y;
+  scene.add(root);
+  label.textContent = `${url.split('/').pop()} | yaw=${yaw.toFixed(2)} | green=-Z forward | camera from behind`;
+  renderer.render(scene, camera);
+  window.__shot = renderer.domElement.toDataURL('image/jpeg', 0.92);
+  window.__ready = true;
+}, undefined, e => { label.textContent='ERR '+e; window.__ready=true; });
+</script></body></html>
