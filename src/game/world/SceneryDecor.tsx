@@ -122,59 +122,157 @@ function buildDecorList(tier: string): DecorItem[] {
   return items.slice(0, 72);
 }
 
+/** One InstancedMesh plus the per-instance data needed to distance-cull it. */
+type Batch = {
+  mesh: THREE.InstancedMesh;
+  base: THREE.Matrix4[];
+  cx: Float32Array;
+  cz: Float32Array;
+};
+
+/** Collapsed instance transform, reused so culling allocates nothing. */
+const HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
+
 export function SceneryDecor() {
   const group = useRef<THREE.Group>(null);
   const [ready, setReady] = useState(0);
-  const nodes = useRef<THREE.Object3D[]>([]);
+  const batches = useRef<Batch[]>([]);
+  const shown = useRef<Uint8Array[]>([]);
+  const tick = useRef(0);
   const { camera } = useThree();
   const tier = qualityManager.get().tier;
   const list = useMemo(() => buildDecorList(tier), [tier]);
 
   useEffect(() => {
     let alive = true;
-    nodes.current = [];
+    batches.current = [];
+    shown.current = [];
     const g = group.current;
     if (!g) return;
     while (g.children.length) g.remove(g.children[0]);
 
-    // Place concurrently, not in a sequential await chain. Every distinct
-    // (key,targetLen) template is deduped inside loadPhModel, so this issues
-    // ~20 glTF fetches rather than serialising ~70 round-trips behind each
-    // other — the difference between a multi-second stall on race start and
-    // props popping in as they arrive.
     void (async () => {
-      await Promise.all(
-        list.map(async (item) => {
-          try {
-            const mesh = await loadPhModel(item.key, item.targetLen);
-            if (!alive || !group.current) return;
-            mesh.position.set(item.x, item.y, item.z);
-            mesh.rotation.y = item.yaw;
-            mesh.scale.multiplyScalar(item.scale);
-            group.current.add(mesh);
-            nodes.current.push(mesh);
-          } catch {
-            /* key unavailable — loadPhModel caches the miss */
-          }
-        }),
+      // Bucket by template, then draw each bucket as a single InstancedMesh.
+      // Previously every decor slot was an independent cloned Group, so ~70
+      // props meant ~70+ draw calls and ~70 clones; now it is one call per
+      // distinct prop geometry (~15-20 total).
+      const buckets = new Map<
+        string,
+        { key: PhModelKey; targetLen: number; items: DecorItem[] }
+      >();
+      for (const it of list) {
+        const k = `${it.key}|${it.targetLen.toFixed(2)}`;
+        let b = buckets.get(k);
+        if (!b) {
+          b = { key: it.key, targetLen: it.targetLen, items: [] };
+          buckets.set(k, b);
+        }
+        b.items.push(it);
+      }
+
+      const groups = [...buckets.values()];
+      // Concurrent, not a sequential await chain: loadPhModel dedupes per
+      // template, so this is ~20 fetches in flight instead of ~70 back to back.
+      const tpls = await Promise.all(
+        groups.map((gr) => loadPhModel(gr.key, gr.targetLen).catch(() => null)),
       );
+      if (!alive || !group.current) return;
+
+      const itemM = new THREE.Matrix4();
+      const quat = new THREE.Quaternion();
+      const pos = new THREE.Vector3();
+      const scl = new THREE.Vector3();
+      const inst = new THREE.Matrix4();
+
+      for (let gi = 0; gi < groups.length; gi++) {
+        const tpl = tpls[gi];
+        if (!tpl) continue;
+        const items = groups[gi].items;
+        tpl.updateMatrixWorld(true);
+
+        // A Poly Haven template can hold several meshes; each becomes its own
+        // batch, carrying the mesh's transform within the template.
+        const parts: {
+          geo: THREE.BufferGeometry;
+          mat: THREE.Material;
+          rel: THREE.Matrix4;
+          cast: boolean;
+          receive: boolean;
+        }[] = [];
+        tpl.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh || !m.geometry) return;
+          const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+          if (!mat) return;
+          parts.push({
+            geo: m.geometry,
+            mat,
+            rel: m.matrixWorld.clone(),
+            cast: m.castShadow,
+            receive: m.receiveShadow,
+          });
+        });
+
+        for (const part of parts) {
+          const im = new THREE.InstancedMesh(part.geo, part.mat, items.length);
+          im.castShadow = part.cast;
+          im.receiveShadow = part.receive;
+          im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+          im.frustumCulled = false; // instances span the track; cull per-instance
+          const base: THREE.Matrix4[] = [];
+          const cxs = new Float32Array(items.length);
+          const czs = new Float32Array(items.length);
+          for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), it.yaw);
+            pos.set(it.x, it.y, it.z);
+            scl.setScalar(it.scale);
+            itemM.compose(pos, quat, scl);
+            inst.multiplyMatrices(itemM, part.rel);
+            base.push(inst.clone());
+            im.setMatrixAt(i, inst);
+            cxs[i] = it.x;
+            czs[i] = it.z;
+          }
+          im.instanceMatrix.needsUpdate = true;
+          group.current.add(im);
+          batches.current.push({ mesh: im, base, cx: cxs, cz: czs });
+          shown.current.push(new Uint8Array(items.length).fill(1));
+        }
+      }
       if (alive) setReady((n) => n + 1);
     })();
 
     return () => {
       alive = false;
+      for (const b of batches.current) b.mesh.dispose();
+      batches.current = [];
+      shown.current = [];
     };
   }, [list]);
 
   useFrame(() => {
+    // Per-instance distance culling by collapsing the transform. Throttled —
+    // the visible set barely changes frame to frame at race speeds.
+    if (tick.current++ % 8 !== 0) return;
     const maxD = tier === "low" ? 70 : tier === "medium" ? 110 : 150;
     const maxD2 = maxD * maxD;
-    const cx = camera.position.x;
-    const cz = camera.position.z;
-    for (const n of nodes.current) {
-      const dx = n.position.x - cx;
-      const dz = n.position.z - cz;
-      n.visible = dx * dx + dz * dz < maxD2;
+    const camX = camera.position.x;
+    const camZ = camera.position.z;
+    for (let bi = 0; bi < batches.current.length; bi++) {
+      const b = batches.current[bi];
+      const vis = shown.current[bi];
+      let dirty = false;
+      for (let i = 0; i < b.base.length; i++) {
+        const dx = b.cx[i] - camX;
+        const dz = b.cz[i] - camZ;
+        const on = dx * dx + dz * dz < maxD2 ? 1 : 0;
+        if (on === vis[i]) continue;
+        vis[i] = on;
+        b.mesh.setMatrixAt(i, on ? b.base[i] : HIDDEN);
+        dirty = true;
+      }
+      if (dirty) b.mesh.instanceMatrix.needsUpdate = true;
     }
   }, FRAME.LATE);
 

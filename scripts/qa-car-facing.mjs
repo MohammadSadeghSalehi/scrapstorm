@@ -30,8 +30,23 @@ const browser = await chromium.launch({
   ],
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+// page.screenshot() blocks on document.fonts.ready, which intermittently never
+// settles here and times the capture out. Webfonts are irrelevant to 3D checks
+// (HUD falls back to a system face), and a failed load still settles the promise.
+await page.route("**/*.{woff,woff2,ttf,otf,eot}", (r) => r.abort());
 await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 60000 });
 await page.waitForFunction(() => !!window.__scrapstorm, null, { timeout: 60000 });
+// Pin the tier: software GL runs slow enough that the adaptive manager drops
+// to "low", which disables the HDRI environment entirely — so an unpinned
+// capture shows the low-end lighting path, not what a real GPU renders.
+const TIER = process.env.QA_TIER || "medium";
+// __quality is registered by GameScene's effect, which runs after __scrapstorm
+// exists — setting the tier earlier silently no-ops through the ?. chain.
+await page.waitForFunction(() => !!window.__quality, null, { timeout: 60000 });
+await page.evaluate((t) => {
+  window.__quality.setAuto(false);
+  window.__quality.setTier(t);
+}, TIER);
 await page.waitForTimeout(1500);
 
 // Select the class through the sim so worldEpoch/sceneKey stay in sync —
@@ -75,8 +90,18 @@ for (const extra of [0, 4000, 6000]) {
   if (extra) await page.waitForTimeout(extra);
   const f = await page.screenshot({ timeout: 20000 });
   writeFileSync(`${OUT}/facing-${CLASS}-t${extra}.png`, f);
-  const fps = await page.evaluate(() => Math.round(window.__quality?.getFps?.() ?? 0));
-  console.log(`  t+${extra}ms: ${(f.length / 1024).toFixed(0)}KB fps=${fps}`);
+  const st = await page.evaluate(() => {
+    const q = window.__quality?.get?.() ?? {};
+    return {
+      fps: Math.round(window.__quality?.getFps?.() ?? 0),
+      tier: q.tier,
+      auto: window.__quality?.isAuto?.(),
+      exposure: window.__renderDebug?.exposure,
+      envIntensity: window.__renderDebug?.envIntensity,
+      hasEnv: window.__renderDebug?.hasEnv,
+    };
+  });
+  console.log(`  t+${extra}ms: ${(f.length / 1024).toFixed(0)}KB ${JSON.stringify(st)}`);
 }
 
 // Full frame first — the crop is meaningless if the scene did not render.

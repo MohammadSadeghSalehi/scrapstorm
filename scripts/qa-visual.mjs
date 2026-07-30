@@ -60,6 +60,9 @@ const page = await browser.newPage({
     height: Number(process.env.QA_H) || 720,
   },
 });
+// page.screenshot() waits on document.fonts.ready, which intermittently never
+// settles and times the capture out. Webfonts do not affect what we verify.
+await page.route("**/*.{woff,woff2,ttf,otf,eot}", (r) => r.abort());
 page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text());
 });

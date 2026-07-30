@@ -11,6 +11,7 @@ import {
   SMAA,
   HueSaturation,
   BrightnessContrast,
+  N8AO,
 } from "@react-three/postprocessing";
 import { BlendFunction } from "postprocessing";
 import * as THREE from "three";
@@ -61,6 +62,26 @@ export function PostFX({
 
   return (
     <EffectComposer multisampling={0} enableNormalPass={false}>
+      {/*
+        AO first: it darkens creases and contact points, and everything after
+        (bloom, grade) should see that darkening rather than blooming light
+        that ought to be occluded. This is the main cue that grounds props and
+        vehicles on the terrain instead of leaving them floating.
+        Half-res on medium keeps it roughly free; high pays for full res.
+      */}
+      {!low ? (
+        <N8AO
+          aoRadius={high ? 2.2 : 1.8}
+          distanceFalloff={1.0}
+          intensity={high ? 2.0 : 1.5}
+          quality={high ? "medium" : "performance"}
+          halfRes={!high}
+          depthAwareUpsampling
+          color="#1c1207"
+        />
+      ) : (
+        <></>
+      )}
       <Bloom
         intensity={bloomIntensity}
         luminanceThreshold={threshold}

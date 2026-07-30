@@ -53,7 +53,7 @@ const PRESETS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
     hdriEnv: false,
   },
   medium: {
-    dprMax: 1.15,
+    dprMax: 1.5,
     antialias: true,
     shadowEnabled: true,
     shadowMapSize: 1024,
@@ -75,7 +75,12 @@ const PRESETS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
     hdriEnv: true,
   },
   high: {
-    dprMax: 1.35,
+    // Render at the display's native pixel density (up to 2x). The previous
+    // 1.35 cap meant a 2x-DPI screen rendered at ~46% of its pixel count and
+    // was upscaled — the single biggest reason a strong GPU still looked soft.
+    // setPixelRatio() takes min(devicePixelRatio, dprMax), so 1x displays are
+    // unaffected and the adaptive tier drop remains the safety net.
+    dprMax: 2,
     antialias: true,
     shadowEnabled: true,
     shadowMapSize: 2048,
@@ -178,8 +183,10 @@ class QualityManager {
     } else if (fps > 56) {
       this.highFrames++;
       this.lowFrames = 0;
-      // Slow climb only — avoid thrash
-      if (this.highFrames > 360) {
+      // Climb after ~3s of headroom. This was 360 frames, but sampleFrame was
+      // being called twice per frame, so it actually fired at 180 — keep the
+      // real-world timing now that the double sample is gone.
+      if (this.highFrames > 180) {
         this.highFrames = 0;
         if (this.settings.tier === "low") this.setTier("medium");
         else if (this.settings.tier === "medium") this.setTier("high");

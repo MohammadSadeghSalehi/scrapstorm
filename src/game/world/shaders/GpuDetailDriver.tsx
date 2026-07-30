@@ -53,8 +53,10 @@ export function GpuDetailDriver() {
     });
   }, [gl, scene]);
 
-  useFrame((state, dt) => {
-    qualityManager.sampleFrame(dt);
+  useFrame((state) => {
+    // No sampleFrame here — GameScene's sim loop already samples once per
+    // frame. Sampling in both drove the tier counters at 2x, so the drop
+    // trigger fired after 6 real frames instead of 12 and the tier thrashed.
     updateGpuDetailFrame(camera.position, state.clock.elapsedTime);
   }, FRAME.LATE);
 
