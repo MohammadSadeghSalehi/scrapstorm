@@ -19,6 +19,12 @@ export interface PlayerInput {
   steering: number; // -1..1, + = left
   throttle: number; // 0..1
   brake: boolean;
+  /**
+   * Held S / down. Distinct from `brake`, which Shift also sets for the
+   * handbrake — you should not roll backwards out of a drift. Optional so
+   * replay/ghost/AI input producers stay valid without change.
+   */
+  reverse?: boolean;
   firePrimary: boolean;
   useDefense: boolean;
   useUltimate: boolean;

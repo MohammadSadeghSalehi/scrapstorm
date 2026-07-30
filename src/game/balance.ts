@@ -21,7 +21,10 @@ export const HANDLING = {
   lateralDecay: 8.2,
   minSteerSpeed: 1.6,
   reverseEnterSpeed: 1.5,
-  reverseMaxFrac: 0.1,
+  /** Reverse top speed as a fraction of forward Vmax. */
+  reverseMaxFrac: 0.22,
+  /** Reverse acceleration as a fraction of forward accel. */
+  reverseAccelMul: 0.55,
 
   driftGrip: 0.16,
   driftTurnMul: 1.85,

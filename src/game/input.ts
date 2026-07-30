@@ -108,6 +108,12 @@ export class InputController {
       this.keys.has("KeyS") ||
       this.keys.has("ArrowDown");
 
+    // S/down only — Shift is the handbrake and must not back the car up.
+    const reverse =
+      this.touchBrake ||
+      this.keys.has("KeyS") ||
+      this.keys.has("ArrowDown");
+
     const firePrimary =
       this.touchFire || this.keys.has("KeyJ") || this.keys.has("Space");
     const useDefense = this.touchDefense || this.keys.has("KeyK");
@@ -119,6 +125,7 @@ export class InputController {
       steering: steer,
       throttle,
       brake,
+      reverse,
       firePrimary,
       useDefense,
       useUltimate,

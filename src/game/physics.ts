@@ -217,9 +217,14 @@ export function stepVehicle(
       (HANDLING.brakeForceMul ?? 2.2) *
       (1 + surf.factor * 0.15) *
       (1 + Math.min(0.35, Math.abs(v.speed) / 120));
-    if (v.speed > 0) {
+    if (v.speed > 0.4) {
       v.speed -= accel * brakeMul * dt;
       if (v.speed < 0) v.speed = 0;
+    } else if (input.reverse) {
+      // Rolled to a stop with S still held: pull away backwards instead of
+      // sitting pinned at zero. reverseMaxFrac below caps it well under the
+      // forward top speed, and Shift-only braking never reaches this branch.
+      v.speed -= accel * (HANDLING.reverseAccelMul ?? 0.55) * torqueMul * dt;
     } else if (v.speed < 0) {
       v.speed += accel * Math.max(brakeMul, 1.3) * dt;
       if (v.speed > 0) v.speed = 0;
