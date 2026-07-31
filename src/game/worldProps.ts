@@ -46,10 +46,16 @@ export function spawnWorldProps(): PhysProp[] {
   // Fresh grid — every post stands again.
   resetEdgeDamage();
 
-  // Soft barriers from edge markers. Stride 8 rather than 5: only every Nth
-  // post carries a collider anyway, and at 5 the track edge was dense enough
-  // that clipping a corner meant hitting something almost immediately.
-  for (let i = 0; i < EDGE_MARKERS.length; i += 8) {
+  // Soft barriers from edge markers. Stride 10 rather than 5: only every Nth
+  // post carries a collider anyway, and dense colliders meant clipping a
+  // corner put you into something almost immediately.
+  //
+  // GRID_CLEAR skips the markers flanking the start line entirely. Four cars
+  // launching abreast fan out across the full width, so barrier colliders
+  // right there turned a normal start into an instant collision.
+  const GRID_CLEAR = Math.min(26, Math.floor(EDGE_MARKERS.length * 0.05));
+  for (let i = 0; i < EDGE_MARKERS.length; i += 10) {
+    if (i < GRID_CLEAR || i > EDGE_MARKERS.length - GRID_CLEAR) continue;
     const m = EDGE_MARKERS[i];
     props.push({
       id: nid("bar"),
@@ -477,6 +483,42 @@ export function collideVehiclesWithProps(
               k < 2 ? "#fb923c" : "#fde68a",
             );
           }
+          // Blast radius: throws nearby props and hurts nearby cars, so a
+          // cluster of barrels chain-reacts instead of each one popping in
+          // isolation. This is what makes them worth aiming at.
+          const R = 6.5 * blast;
+          const R2 = R * R;
+          for (const o of props) {
+            if (o === p || o.dead || !o.dynamic) continue;
+            const ox = o.x - p.x;
+            const oz = o.z - p.z;
+            const od2 = ox * ox + oz * oz;
+            if (od2 > R2 || od2 < 1e-6) continue;
+            const od = Math.sqrt(od2);
+            const falloff = (1 - od / R) * blast;
+            const push = (26 * falloff) / Math.max(1, o.mass);
+            o.vx += (ox / od) * push;
+            o.vz += (oz / od) * push;
+            o.vy = Math.max(o.vy, 4 * falloff);
+            o.spin += (Math.random() - 0.5) * 8 * falloff;
+            o.hp -= 22 * falloff;
+            if (o.hp <= 0) o.dead = true;
+          }
+          for (const other of vehicles) {
+            if (!other.alive || other.wreckTimer > 0) continue;
+            const ox = other.x - p.x;
+            const oz = other.z - p.z;
+            const od2 = ox * ox + oz * oz;
+            if (od2 > R2) continue;
+            const falloff = (1 - Math.sqrt(od2) / R) * blast;
+            other.health = Math.max(0, other.health - 9 * falloff);
+            other.damageVisual = Math.min(
+              1,
+              Math.max(other.damageVisual, 1 - other.health / other.maxHealth),
+            );
+            other.impactFlash = Math.max(other.impactFlash, 0.5 * falloff);
+            other.hitStun = Math.max(other.hitStun, 0.1 * falloff);
+          }
           continue;
         }
         if (impact > 2.5) {
@@ -485,13 +527,15 @@ export function collideVehiclesWithProps(
           v.impactFlash = Math.max(v.impactFlash, 0.22);
           if (impact > 6) {
             v.hitStun = Math.max(v.hitStun, 0.08);
-            if (p.kind === "scrap" || p.kind === "crate") {
-              v.health = Math.max(0, v.health - impact * 0.12);
-              v.damageVisual = Math.min(
-                1,
-                Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-              );
-            }
+            // Barrels used to be excluded here, so ramming one below the
+            // rupture threshold cost nothing at all — they read as scenery.
+            // Lighter than a scrap pile, but no longer free.
+            const dmgMul = p.kind === "barrel" ? 0.07 : 0.12;
+            v.health = Math.max(0, v.health - impact * dmgMul);
+            v.damageVisual = Math.min(
+              1,
+              Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
+            );
             spawnPropFx(
               particles,
               p.x,

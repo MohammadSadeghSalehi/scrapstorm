@@ -21,6 +21,8 @@ export function MenuOverlay({
   onRestart,
   onSelectPaint,
   onUnlockPaint,
+  ghostOn,
+  onGhostToggle,
 }: {
   state: SimState;
   name: string;
@@ -36,6 +38,8 @@ export function MenuOverlay({
   onRestart: () => void;
   onSelectPaint: (paintId: string) => void;
   onUnlockPaint: (paintId: string) => void;
+  ghostOn: boolean;
+  onGhostToggle: (on: boolean) => void;
 }) {
   if (state.phase === "paused") {
     return (
@@ -81,6 +85,8 @@ export function MenuOverlay({
         onBackMenu={onBackMenu}
         onSelectPaint={onSelectPaint}
         onUnlockPaint={onUnlockPaint}
+        ghostOn={ghostOn}
+        onGhostToggle={onGhostToggle}
       />
     );
   }
@@ -129,6 +135,8 @@ function GaragePanel({
   onBackMenu,
   onSelectPaint,
   onUnlockPaint,
+  ghostOn,
+  onGhostToggle,
 }: {
   state: SimState;
   name: string;
@@ -140,6 +148,8 @@ function GaragePanel({
   onBackMenu: () => void;
   onSelectPaint: (paintId: string) => void;
   onUnlockPaint: (paintId: string) => void;
+  ghostOn: boolean;
+  onGhostToggle: (on: boolean) => void;
 }) {
   const activeId = state.selectedClass;
   const c = VEHICLE_CLASSES[activeId];
@@ -280,6 +290,21 @@ function GaragePanel({
               );
             })}
           </div>
+
+          <label className="mt-2.5 flex cursor-pointer items-center justify-between rounded-lg border border-border/70 bg-bg/25 px-2.5 py-2">
+            <span className="text-[0.7rem] text-fg/90">
+              Replay ghost
+              <span className="ml-1.5 text-[0.6rem] text-muted">
+                translucent car of your best lap
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              checked={ghostOn}
+              onChange={(e) => onGhostToggle(e.target.checked)}
+              className="h-4 w-4 accent-amber-500"
+            />
+          </label>
 
           <details className="mt-2.5 rounded-lg border border-border/70 bg-bg/25">
             <summary className="cursor-pointer select-none px-2.5 py-1.5 text-[0.65rem] font-medium uppercase tracking-wider text-muted">

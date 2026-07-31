@@ -87,6 +87,12 @@ function loadTrack(): TrackId {
   return "ash_spire";
 }
 
+/** Replay ghost is opt-in — a translucent car on the grid reads as a bug. */
+function loadGhostOn(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem("scrapstorm-ghost") === "1";
+}
+
 function emptyTires(): VehicleState["tires"] {
   return [0, 1, 2, 3].map(() => ({
     compress: 0.15,
@@ -300,6 +306,7 @@ export function ScrapstormApp() {
   const lastHudSig = useRef("");
   const bootGen = useRef(0);
   const prefs = useRef({ name: loadName(), classId: loadClass(), trackId: loadTrack() });
+  const [ghostOn, setGhostOn] = useState(() => loadGhostOn());
   const shellPhaseRef = useRef<MatchPhase>("menu");
 
   const refreshHud = useCallback(() => {
@@ -369,6 +376,7 @@ export function ScrapstormApp() {
         const p = prefs.current;
         const sim = new loaded.GameSimulation(p.name, p.classId, p.trackId);
         const input = new loaded.InputController();
+        sim.ghostEnabled = loadGhostOn();
         sim.setGuest(p.name, p.classId);
         sim.setTrack(p.trackId);
         if (shellPhaseRef.current === "garage") sim.setPhase("garage");
@@ -565,6 +573,23 @@ export function ScrapstormApp() {
     setHud(k.snapshotHud(sim.state));
   };
 
+  const onGhostToggle = useCallback((on: boolean) => {
+    setGhostOn(on);
+    try {
+      localStorage.setItem("scrapstorm-ghost", on ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+    const sim = simRef.current;
+    if (sim) {
+      sim.ghostEnabled = on;
+      // Re-resolve immediately so the garage reflects the choice without a
+      // race restart.
+      sim.setTrack(sim.state.selectedTrack);
+      setSceneEpoch(sim.worldEpoch);
+    }
+  }, []);
+
   const onBackMenu = () => {
     setShellPhase("menu");
     shellPhaseRef.current = "menu";
@@ -670,6 +695,8 @@ export function ScrapstormApp() {
         onRestart={onRestart}
         onSelectPaint={onSelectPaint}
         onUnlockPaint={onUnlockPaint}
+        ghostOn={ghostOn}
+        onGhostToggle={onGhostToggle}
       />
 
       {hud && GameHUD ? <GameHUD hud={hud} onPause={onPause} /> : null}

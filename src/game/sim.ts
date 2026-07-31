@@ -377,6 +377,11 @@ export class GameSimulation {
   state: SimState;
   worldEpoch = 0;
   activeGhost: GhostRun | null = null;
+  /**
+   * Replay ghost is opt-in (menu toggle, default off). A translucent duplicate
+   * car sharing the grid reads as a rendering bug unless you asked for it.
+   */
+  ghostEnabled = false;
   accumulator = 0;
   lastPlayerHealth = 999;
   ghostRecorder = new GhostRecorder();
@@ -388,7 +393,7 @@ export class GameSimulation {
     trackId: TrackId = "ash_spire",
   ) {
     this.state = createState(guestName, classId, trackId);
-    this.activeGhost = getGhost(trackId);
+    this.activeGhost = this.ghostEnabled ? getGhost(trackId) : null;
     this.lastPlayerHealth =
       this.state.vehicles.find((v) => v.isPlayer)?.health ?? 999;
   }
@@ -409,7 +414,7 @@ export class GameSimulation {
     this.state.selectedTrack = trackId;
     setActiveTrack(trackId);
     this.state.props = spawnWorldProps();
-    this.activeGhost = getGhost(trackId);
+    this.activeGhost = this.ghostEnabled ? getGhost(trackId) : null;
     if (
       this.state.phase === "menu" ||
       this.state.phase === "garage" ||
@@ -443,7 +448,7 @@ export class GameSimulation {
     this.state.bestLapThisRace = null;
     this.state.ghostBeaten = false;
     this.state.ghostSaved = false;
-    this.activeGhost = getGhost(this.state.selectedTrack);
+    this.activeGhost = this.ghostEnabled ? getGhost(this.state.selectedTrack) : null;
     this.worldEpoch += 1;
     this.lastPlayerHealth =
       this.state.vehicles.find((v) => v.isPlayer)?.health ?? 999;
@@ -479,7 +484,7 @@ export class GameSimulation {
     runtime.clear();
     this.ghostRecorder.reset();
     this.ghostFinalized = false;
-    this.activeGhost = getGhost(this.state.selectedTrack);
+    this.activeGhost = this.ghostEnabled ? getGhost(this.state.selectedTrack) : null;
     this.state.vehicles = buildField(
       this.state.guestName,
       this.state.selectedClass,
@@ -741,6 +746,6 @@ export class GameSimulation {
     if (prev && run.totalTime < prev.totalTime) {
       this.state.ghostBeaten = true;
     }
-    if (saved) this.activeGhost = run;
+    if (saved && this.ghostEnabled) this.activeGhost = run;
   }
 }
