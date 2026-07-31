@@ -668,9 +668,22 @@ function hasEmbeddedTextures(tpl: THREE.Object3D): boolean {
 }
 
 /**
+ * Hero paint constants, shared by the build path and the damage pass.
+ *
+ * They live together because the damage pass used to hard-code its own values
+ * and silently overwrote whatever the material was constructed with — it runs
+ * once on mount at damage 0, so raising clearcoat at construction alone had no
+ * visible effect at all.
+ */
+const PAINT_ROUGHNESS = 0.42;
+const PAINT_CLEARCOAT = 0.6;
+const PAINT_CLEARCOAT_ROUGHNESS = 0.1;
+
+/**
  * MeshGen GLBs ship metallicFactor=1 + a non-standard MR map that turns
  * bodies into black chrome. Keep albedo, force readable metal/rough,
- * skip metalnessMap. Brighten base color so dark albedos stay visible.
+ * skip metalnessMap. Base colour stays at ~1.0 — the earlier 1.25 lift was
+ * compensating for a missing specular response, not for dark albedos.
  */
 function buildTexturedHero(
   tpl: THREE.Group,
@@ -707,10 +720,17 @@ function buildTexturedHero(
     const emissiveMap = src?.emissiveMap ?? null;
 
     const metalness = 0.18;
-    const roughness = 0.55;
+    // Hero paint is glossier than the AI satin. This is a uniform value on a
+    // material that already compiles, so the hero benefits on every tier while
+    // the three background cars are untouched.
+    const roughness = hero ? PAINT_ROUGHNESS : 0.55;
+    // Back to ~1.0. At 1.25 the albedo was already past white before ACES got
+    // to it, so the paint clipped to a single flat value and there was nothing
+    // for a specular highlight to sit *on top of* — the main reason the cars
+    // read as matte plastic rather than lacquer.
     const baseColor = ghost
       ? new THREE.Color(color).multiplyScalar(0.55)
-      : new THREE.Color(1.25, 1.22, 1.18);
+      : new THREE.Color(1.0, 0.99, 0.97);
 
     let mat: THREE.Material;
     if (usePhysical) {
@@ -721,9 +741,14 @@ function buildTexturedHero(
         color: baseColor,
         metalness,
         roughness,
-        clearcoat: 0.18,
-        clearcoatRoughness: 0.42,
-        envMapIntensity: 1.15,
+        // Automotive paint is a pigmented base under a thin, near-mirror
+        // lacquer. At 0.18/0.42 the coat was both too weak and too rough to
+        // separate from the base lobe, so it cost a shader branch and bought
+        // nothing. USE_CLEARCOAT is already defined at any non-zero value, so
+        // raising it is a uniform change with no extra per-frame cost.
+        clearcoat: PAINT_CLEARCOAT,
+        clearcoatRoughness: PAINT_CLEARCOAT_ROUGHNESS,
+        envMapIntensity: 1.25,
         emissive: new THREE.Color(accent),
         emissiveIntensity: 0.04,
         transparent: ghost,
@@ -738,7 +763,7 @@ function buildTexturedHero(
         color: baseColor,
         metalness,
         roughness,
-        envMapIntensity: 1.05,
+        envMapIntensity: hero ? 1.15 : 1.05,
         emissive: new THREE.Color(accent),
         emissiveIntensity: ghost ? 0.02 : 0.04,
         transparent: ghost,
@@ -790,6 +815,10 @@ function buildTexturedHero(
   root.userData.kenney = false;
   root.userData.textured = true;
   root.userData.customUrl = url;
+  // Undamaged targets the damage pass ramps away from, so it can never quietly
+  // undo the paint the car was actually built with.
+  root.userData.paintRoughness = hero ? PAINT_ROUGHNESS : 0.55;
+  root.userData.paintClearcoat = usePhysical ? PAINT_CLEARCOAT : 0;
   root.userData.bodyMat = bodyMat;
   root.userData.bodyGroup = bodyGroup;
   root.userData.wheelSpinners = [];
@@ -872,15 +901,23 @@ function applyDamageLook(root: THREE.Object3D, colorHex: string, dmg: number) {
   if (root.userData.textured && "map" in body && body.map) {
     const dirt = Math.min(0.55, dmg * 0.55);
     body.color.setRGB(
-      1.25 - dirt * 0.35,
-      1.22 - dirt * 0.35,
-      1.18 - dirt * 0.35,
+      1.0 - dirt * 0.3,
+      0.99 - dirt * 0.3,
+      0.97 - dirt * 0.3,
     );
-    body.roughness = Math.min(0.92, 0.45 + dmg * 0.4);
-    if ("clearcoat" in body) {
-      (body as THREE.MeshPhysicalMaterial).clearcoat = Math.max(
-        0.05,
-        0.28 - dmg * 0.25,
+    // Ramp away from what the car was built with rather than from a second,
+    // hard-coded set of values — otherwise this call flattens the hero's paint
+    // back to AI satin the moment it first runs at damage 0.
+    const baseRough = (root.userData.paintRoughness as number) ?? 0.45;
+    const baseCoat = (root.userData.paintClearcoat as number) ?? 0;
+    body.roughness = Math.min(0.92, baseRough + dmg * 0.45);
+    if ("clearcoat" in body && baseCoat > 0) {
+      const phys = body as THREE.MeshPhysicalMaterial;
+      // Damage scuffs and dulls the lacquer; it does not strip it off.
+      phys.clearcoat = Math.max(0.12, baseCoat - dmg * 0.45);
+      phys.clearcoatRoughness = Math.min(
+        0.55,
+        PAINT_CLEARCOAT_ROUGHNESS + dmg * 0.45,
       );
     }
     body.emissiveIntensity = 0.04 + dmg * 0.08;

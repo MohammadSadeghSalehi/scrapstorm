@@ -48,6 +48,23 @@ export const PH_MODELS = {
     "/assets/meshes/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
   ],
   pipes: ["/assets/meshes/polyhaven/modular_pipes/modular_pipes_1k.gltf"],
+
+  /*
+   * Refinery skyline set — the background scenery in CullableScenery. Fetched
+   * by `node scripts/fetch-polyhaven.mjs`; slugs verified against the Poly
+   * Haven assets API (the intuitive names like shipping_container / water_tower
+   * do not exist there).
+   *
+   * `gantry` and `pipeRig` are multi-part *kits*, not single props — consumers
+   * must pick the mesh they want by node name rather than instancing the whole
+   * template, or one prop costs a draw call per loose part.
+   */
+  gantry: ["/assets/meshes/polyhaven/overhead_crane/overhead_crane_1k.gltf"],
+  tank: ["/assets/meshes/polyhaven/propane_tank/propane_tank_1k.gltf"],
+  pipeRig: [
+    "/assets/meshes/polyhaven/modular_industrial_pipes_01/modular_industrial_pipes_01_1k.gltf",
+  ],
+  rack: ["/assets/meshes/polyhaven/worn_metal_rack/worn_metal_rack_1k.gltf"],
 } as const;
 
 export type PhModelKey = keyof typeof PH_MODELS;
@@ -144,8 +161,28 @@ export function loadPhModel(
 }
 
 /**
- * Warm every template SceneryDecor places, so set dressing is resident before
- * the countdown instead of popping in over the opening lap.
+ * Normalisation length used for every skyline template, shared with
+ * CullableScenery so a template is fetched, normalised and cached exactly once.
+ *
+ * `templateCache` is keyed by `${key}|${targetLen}`, so asking for the same
+ * model at two lengths costs a second fetch, parse and geometry upload. Only
+ * `gantry` is placed at its normalised size (it is assembled from several
+ * meshes, so the relative transforms have to survive); the rest are rescaled
+ * from their own bounding box at placement time, which makes their number here
+ * arbitrary — `barrel` deliberately matches preloadPhRaceProps so the drums in
+ * a scrap pile reuse the race-prop template instead of loading a second copy.
+ */
+export const SCENERY_TEMPLATE_LEN = {
+  gantry: 18,
+  tank: 3,
+  pipeRig: 2,
+  rack: 2,
+  barrel: 1.05,
+} as const satisfies Partial<Record<PhModelKey, number>>;
+
+/**
+ * Warm every template SceneryDecor and CullableScenery place, so set dressing
+ * is resident before the countdown instead of popping in over the opening lap.
  *
  * Deliberately broader than preloadPhRaceProps (which only covers the four
  * race-critical props) and tolerant of misses — an unavailable key should not
@@ -162,6 +199,7 @@ export function preloadSceneryModels(): Promise<void> {
     ["rim", 0.9],
     ["pipes", 6],
     ["fence", 4],
+    ...(Object.entries(SCENERY_TEMPLATE_LEN) as [PhModelKey, number][]),
   ];
   return Promise.all(
     jobs.map(([k, len]) => loadPhModel(k, len).catch(() => null)),

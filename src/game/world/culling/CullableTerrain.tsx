@@ -2,10 +2,15 @@
  * Cullable terrain pieces — wire into TrackMesh.
  * Visibility driven by TerrainCullDriver buses (mesh.visible, no remount).
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { SCENERY } from "../../track";
 import { createProcMaterial } from "../procmat";
+import {
+  loadPhModel,
+  SCENERY_TEMPLATE_LEN,
+  type PhModelKey,
+} from "../polyHavenAssets";
 import { qualityManager } from "../quality";
 import {
   buildGroundTiles,
@@ -23,11 +28,16 @@ type CullBus = typeof duneCullBus;
 /**
  * Keep mesh refs in a stable array; toggle .visible from bus without React re-render.
  */
-function useCullVisibility(bus: CullBus, count: number) {
+function useCullVisibility(bus: CullBus, count: number, epoch = 0) {
   const refs = useRef<(THREE.Object3D | null)[]>([]);
   const lastKey = useRef("");
 
   useEffect(() => {
+    // `epoch` bumps when the set of subscribed objects is swapped out (scenery
+    // falling back to primitives). Without it the signature guard below would
+    // still hold the previous key and leave freshly mounted meshes at their
+    // default `visible = true` until the camera happened to move.
+    lastKey.current = "";
     return bus.subscribe((visible) => {
       // stable signature — skip if unchanged
       const key =
@@ -44,7 +54,7 @@ function useCullVisibility(bus: CullBus, count: number) {
         if (obj) obj.visible = set.has(i);
       }
     });
-  }, [bus, count]);
+  }, [bus, count, epoch]);
 
   return refs;
 }
@@ -191,6 +201,353 @@ export function CullableDunes({
   );
 }
 
+/* ── scenery: reclaimed refinery skyline ──────────────────────────── */
+
+type SceneryKind = (typeof SCENERY)[number]["kind"];
+type Tier = "low" | "medium" | "high";
+type SkylineKey = keyof typeof SCENERY_TEMPLATE_LEN;
+
+const TIER_RANK: Record<Tier, number> = { low: 0, medium: 1, high: 2 };
+const UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * One glTF piece placed in a scenery item's local frame (metres, +Y up).
+ *
+ * Half of what Poly Haven publishes under an industrial name is a *kit*, not a
+ * prop: modular_industrial_pipes_01 is eight loose pipe sections in one file,
+ * modular_pipes is 106. Instancing every mesh in such a template would cost a
+ * draw call per loose part, so `node` picks the single piece we want and the
+ * rest of the file is never uploaded (three.js uploads geometry lazily, on
+ * first render).
+ */
+type ScenerySlot = {
+  key: SkylineKey;
+  /** Mesh selector, tested against the mesh name and each ancestor up to the
+   *  template root. Omit to take every mesh in the template. */
+  node?: RegExp;
+  /** Keep the template-relative transform so a model assembled from several
+   *  meshes (the gantry crane) stays assembled. `len`/`thick` are ignored. */
+  assembled?: boolean;
+  /** Target height, measured on this piece's own bounding box — which is why
+   *  SCENERY_TEMPLATE_LEN can be arbitrary for everything but the crane. */
+  len?: number;
+  /** Extra girth on the piece's own X/Z, applied before `rot`. Lets one thin
+   *  pipe section serve as a 1.3 m flare stack and a 0.8 m trestle leg. */
+  thick?: number;
+  pos?: [number, number, number];
+  /** Euler XYZ. Used to lay pipe sections down into horizontal runs. */
+  rot?: [number, number, number];
+  /** Cheapest tier that draws this piece — the only LOD lever we have, since
+   *  Poly Haven ships no decimated variants. */
+  minTier?: Tier;
+};
+
+/**
+ * What each SCENERY kind is built from. Triangle counts are per scenery item,
+ * measured off the 1k glTFs; the whole point of the composition is to spend
+ * them on silhouette (tall verticals, a wide gantry) rather than on detail
+ * nobody resolves from 34 m away.
+ */
+const SCENERY_KITS: Record<SceneryKind, ScenerySlot[]> = {
+  /* Two storage vessels and a flare stack ≈ 12.1k tris. The stack is one
+   * 648-triangle pipe section stretched to 12 m: the tallest thing on the
+   * skyline for the price of a cylinder. */
+  tower: [
+    { key: "tank", len: 8.5 },
+    { key: "tank", len: 5.2, pos: [4.6, 0, 1.9], rot: [0, 2.1, 0] },
+    { key: "pipeRig", node: /pipe02$/, len: 12, pos: [-3.8, 0, 1.5] },
+    {
+      key: "pipeRig",
+      node: /pipe03$/,
+      len: 3.4,
+      pos: [2.4, 0, -2.8],
+      rot: [0, 1.1, 0],
+      minTier: "medium",
+    },
+  ],
+
+  /* Poly Haven's overhead_crane is a ceiling-mounted gantry with no legs, so
+   * two pipe sections stand in as trestles and it reads as free-standing. The
+   * beam is 49.6k tris and the (dropped) winch was another 40.3k for a 4.5 m
+   * hoist block — four times the triangles per metre of silhouette, so it is
+   * not instanced at any tier. Low tier drops the beam too and keeps just the
+   * 56-triangle rail girder on its legs, which still reads as a gantry. */
+  crane: [
+    { key: "gantry", node: /rails$/, assembled: true },
+    {
+      key: "gantry",
+      node: /^overhead_crane$/,
+      assembled: true,
+      minTier: "medium",
+    },
+    { key: "pipeRig", node: /pipe02$/, len: 2.9, thick: 2.6, pos: [-7.5, 0, 1.5] },
+    { key: "pipeRig", node: /pipe02$/, len: 2.9, thick: 2.6, pos: [7.5, 0, 1.5] },
+  ],
+
+  /* Scrap heap. `barrel` is normalised at 1.05 to match preloadPhRaceProps, so
+   * these drums reuse the race-prop template rather than loading a second copy
+   * of the same mesh at a different key. */
+  pile: [
+    { key: "barrel", len: 1.7 },
+    { key: "barrel", len: 1.7, pos: [1.3, 0, 0.7], rot: [0, 0.9, 0] },
+    { key: "barrel", len: 1.7, pos: [-0.5, 0, 1.5], rot: [0, 2.2, 0] },
+    {
+      key: "barrel",
+      len: 1.6,
+      pos: [0.4, 1.55, 0.4],
+      rot: [0, 0.5, 0],
+      minTier: "medium",
+    },
+    {
+      key: "rack",
+      len: 3,
+      pos: [-2.2, 0, -0.8],
+      rot: [0, 0.4, 0],
+      minTier: "medium",
+    },
+    // Tipped drum: rotated onto its side, then lifted by its own radius so it
+    // rests on the sand instead of sinking half-way into it.
+    {
+      key: "barrel",
+      len: 1.7,
+      pos: [2.4, 0.54, -1.2],
+      rot: [Math.PI / 2, 0, 0],
+      minTier: "high",
+    },
+  ],
+
+  /* Elevated pipe run on trestles. The run is a pipe section rotated -90° about
+   * Z, which maps its local +Y length onto world +X; `pos.x` then re-centres
+   * the 9 m span on the item origin. */
+  pipe: [
+    {
+      key: "pipeRig",
+      node: /pipe02$/,
+      len: 9,
+      thick: 1.8,
+      rot: [0, 0, -Math.PI / 2],
+      pos: [-4.5, 2.6, 0],
+    },
+    { key: "pipeRig", node: /pipe02$/, len: 2.6, thick: 2.8, pos: [-3.6, 0, 0] },
+    { key: "pipeRig", node: /pipe02$/, len: 2.6, thick: 2.8, pos: [3.6, 0, 0] },
+    {
+      key: "pipeRig",
+      node: /pipe03$/,
+      len: 3.6,
+      pos: [4.4, 0, 1.6],
+      rot: [0, 0.8, 0],
+      minTier: "medium",
+    },
+    // No valve cluster here on purpose: pipe08 is 5.8k triangles for a 1.4 m
+    // fitting that covers a couple of pixels at this distance.
+  ],
+};
+
+/** Cull sphere per kind, sized to the kit above rather than the old boxes. */
+const KIND_SPHERE: Record<SceneryKind, { y: number; r: number }> = {
+  tower: { y: 5, r: 8 },
+  crane: { y: 4, r: 11 },
+  pile: { y: 1.5, r: 4 },
+  pipe: { y: 2, r: 6 },
+};
+
+/** An InstancedMesh plus what the cull bus needs to rebuild its stream. */
+type SceneryBatch = {
+  mesh: THREE.InstancedMesh;
+  /** Full transform per instance, in creation order. */
+  base: THREE.Matrix4[];
+  /** SCENERY index each instance belongs to. */
+  item: Int32Array;
+};
+
+/** True if `re` matches the mesh's name or any ancestor's up to `root`. */
+function nodeMatches(
+  mesh: THREE.Object3D,
+  root: THREE.Object3D,
+  re: RegExp,
+): boolean {
+  let o: THREE.Object3D | null = mesh;
+  while (o) {
+    if (re.test(o.name)) return true;
+    if (o === root) return false;
+    o = o.parent;
+  }
+  return false;
+}
+
+/**
+ * Transform putting one template mesh into the slot's local frame: centred on
+ * X/Z, sitting on y = 0, scaled so its own height is `len`.
+ */
+function partMatrix(mesh: THREE.Mesh, slot: ScenerySlot): THREE.Matrix4 {
+  const rel = mesh.matrixWorld;
+  if (slot.assembled) return rel.clone();
+  const geo = mesh.geometry;
+  if (!geo.boundingBox) geo.computeBoundingBox();
+  const bb = geo.boundingBox!.clone().applyMatrix4(rel);
+  const k = (slot.len ?? 1) / Math.max(bb.max.y - bb.min.y, 1e-4);
+  const t = slot.thick ?? 1;
+  return new THREE.Matrix4()
+    .makeScale(k * t, k, k * t)
+    .multiply(
+      new THREE.Matrix4().makeTranslation(
+        -(bb.min.x + bb.max.x) * 0.5,
+        -bb.min.y,
+        -(bb.min.z + bb.max.z) * 0.5,
+      ),
+    )
+    .multiply(rel);
+}
+
+function slotMatrix(slot: ScenerySlot): THREE.Matrix4 {
+  const [px, py, pz] = slot.pos ?? [0, 0, 0];
+  const [rx, ry, rz] = slot.rot ?? [0, 0, 0];
+  return new THREE.Matrix4().compose(
+    new THREE.Vector3(px, py, pz),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)),
+    new THREE.Vector3(1, 1, 1),
+  );
+}
+
+/**
+ * Build the instanced skyline for the current tier.
+ *
+ * Placements are bucketed by (geometry, material) rather than by slot, so a
+ * pipe section reused as a flare stack, a trestle leg and a pipe run collapses
+ * into a single InstancedMesh — roughly a dozen draw calls for the whole
+ * skyline, against the ~55 loose meshes the primitive version drew.
+ *
+ * Returns the kinds that actually got geometry; anything missing (404, renamed
+ * node) is simply absent, and the caller keeps drawing primitives for it.
+ */
+async function buildSceneryBatches(
+  items: typeof SCENERY,
+  tier: Tier,
+): Promise<{ batches: SceneryBatch[]; kinds: SceneryKind[] }> {
+  const rank = TIER_RANK[tier];
+  const kinds = Object.keys(SCENERY_KITS) as SceneryKind[];
+  const allowed = (s: ScenerySlot) => TIER_RANK[s.minTier ?? "low"] <= rank;
+
+  const needed = new Set<SkylineKey>();
+  for (const k of kinds) {
+    for (const slot of SCENERY_KITS[k]) if (allowed(slot)) needed.add(slot.key);
+  }
+
+  const loaded = new Map<SkylineKey, THREE.Group>();
+  await Promise.all(
+    [...needed].map(async (key) => {
+      try {
+        const tpl = await loadPhModel(
+          key as PhModelKey,
+          SCENERY_TEMPLATE_LEN[key],
+        );
+        tpl.updateMatrixWorld(true);
+        loaded.set(key, tpl);
+      } catch {
+        /* Missing asset — that slot's kind stays on its primitive. */
+      }
+    }),
+  );
+
+  // Which SCENERY entries each kind owns. Low tier keeps every other item, the
+  // same thinning the primitive path has always applied.
+  const byKind = new Map<SceneryKind, number[]>();
+  for (let i = 0; i < items.length; i++) {
+    if (tier === "low" && i % 2 === 1) continue;
+    const list = byKind.get(items[i].kind);
+    if (list) list.push(i);
+    else byKind.set(items[i].kind, [i]);
+  }
+
+  type Bucket = {
+    geo: THREE.BufferGeometry;
+    mat: THREE.Material;
+    list: { m: THREE.Matrix4; item: number }[];
+  };
+  const buckets = new Map<string, Bucket>();
+  const covered = new Set<SceneryKind>();
+
+  const itemM = new THREE.Matrix4();
+  const pos = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  const scl = new THREE.Vector3();
+
+  for (const kind of kinds) {
+    const idx = byKind.get(kind);
+    if (!idx?.length) continue;
+    for (const slot of SCENERY_KITS[kind]) {
+      if (!allowed(slot)) continue;
+      const tpl = loaded.get(slot.key);
+      if (!tpl) continue;
+
+      const picked: THREE.Mesh[] = [];
+      tpl.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || !m.geometry) return;
+        if (slot.node && !nodeMatches(m, tpl, slot.node)) return;
+        picked.push(m);
+      });
+      // A renamed node upstream must not silently empty the skyline.
+      if (!picked.length) continue;
+
+      const local = slotMatrix(slot);
+      for (const m of picked) {
+        const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+        if (!mat) continue;
+        const full = new THREE.Matrix4().multiplyMatrices(
+          local,
+          partMatrix(m, slot),
+        );
+        const bk = `${m.geometry.uuid}|${mat.uuid}`;
+        let b = buckets.get(bk);
+        if (!b) {
+          b = { geo: m.geometry, mat, list: [] };
+          buckets.set(bk, b);
+        }
+        for (const i of idx) {
+          const s = items[i];
+          itemM.compose(
+            pos.set(s.x, 0, s.z),
+            quat.setFromAxisAngle(UP, s.rot),
+            scl.setScalar(s.scale),
+          );
+          b.list.push({
+            m: new THREE.Matrix4().multiplyMatrices(itemM, full),
+            item: i,
+          });
+        }
+        covered.add(kind);
+      }
+    }
+  }
+
+  const batches: SceneryBatch[] = [];
+  for (const b of buckets.values()) {
+    const im = new THREE.InstancedMesh(b.geo, b.mat, b.list.length);
+    // Background dressing 34 m+ off the racing line: nothing casts onto it and
+    // its own shadows never land anywhere the player looks, so it stays out of
+    // both shadow passes. This is strictly fewer casters than the boxes it
+    // replaces, which cast whenever allVehicleShadows was on.
+    im.castShadow = false;
+    im.receiveShadow = false;
+    // Instances span the whole circuit, so three's per-object frustum test is
+    // useless here — sceneryCullBus drives visibility per instance instead.
+    im.frustumCulled = false;
+    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const item = new Int32Array(b.list.length);
+    const base: THREE.Matrix4[] = [];
+    for (let i = 0; i < b.list.length; i++) {
+      im.setMatrixAt(i, b.list[i].m);
+      base.push(b.list[i].m);
+      item[i] = b.list[i].item;
+    }
+    im.instanceMatrix.needsUpdate = true;
+    batches.push({ mesh: im, base, item });
+  }
+
+  return { batches, kinds: [...covered] };
+}
+
 export function CullableScenery() {
   const items = useMemo(() => SCENERY, []);
   const mats = useMemo(() => {
@@ -212,30 +569,98 @@ export function CullableScenery() {
     return { rust, metal, dark };
   }, []);
 
+  const tier = qualityManager.get().tier;
+  const instRoot = useRef<THREE.Group>(null);
+  const batches = useRef<SceneryBatch[]>([]);
+  const flags = useRef<Uint8Array>(new Uint8Array(0));
+  const lastKey = useRef("");
+  /** Kinds currently drawn as glTF; the rest keep their primitive. */
+  const [modelled, setModelled] = useState<SceneryKind[]>([]);
+
   useEffect(() => {
     sceneryCullBus.setSpheres(
       items.map((s) => {
-        const r =
-          s.kind === "crane"
-            ? 12 * s.scale
-            : s.kind === "tower"
-              ? 6 * s.scale
-              : s.kind === "pile"
-                ? 4 * s.scale
-                : 5 * s.scale;
-        return { x: s.x, y: 3, z: s.z, r };
+        const k = KIND_SPHERE[s.kind];
+        return { x: s.x, y: k.y * s.scale, z: s.z, r: k.r * s.scale };
       }),
     );
   }, [items]);
 
-  const refs = useCullVisibility(sceneryCullBus, items.length);
+  // Build the instanced skyline. Templates are warmed by preloadSceneryModels
+  // during the loading screen, so in practice this resolves on the first frame
+  // and the primitives below are never seen.
+  useEffect(() => {
+    let alive = true;
+    const root = instRoot.current;
+    if (!root) return;
+
+    void (async () => {
+      const built = await buildSceneryBatches(items, tier);
+      if (!alive || !instRoot.current) {
+        for (const b of built.batches) b.mesh.dispose();
+        return;
+      }
+      for (const b of built.batches) instRoot.current.add(b.mesh);
+      batches.current = built.batches;
+      flags.current = new Uint8Array(items.length);
+      lastKey.current = "";
+      // Empty when every template 404'd — primitives simply stay up.
+      setModelled(built.kinds);
+    })();
+
+    return () => {
+      alive = false;
+      for (const b of batches.current) {
+        root.remove(b.mesh);
+        // Disposes the instance buffers only; geometry and materials belong to
+        // the shared template cache and must outlive this component.
+        b.mesh.dispose();
+      }
+      batches.current = [];
+      lastKey.current = "";
+    };
+  }, [items, tier]);
+
+  // Same sceneryCullBus that drove mesh.visible, applied to instance streams:
+  // visible instances are packed to the front and `count` is trimmed. Collapsing
+  // hidden instances to a zero matrix (the usual trick) would still run the
+  // vertex shader for every one of the crane's 49.6k triangles.
+  useEffect(() => {
+    return sceneryCullBus.subscribe((visible) => {
+      const bs = batches.current;
+      if (!bs.length) return;
+      const key =
+        visible.length === items.length ? "all" : visible.join(",");
+      if (key === lastKey.current) return;
+      lastKey.current = key;
+
+      const flag = flags.current;
+      flag.fill(0);
+      for (const i of visible) flag[i] = 1;
+
+      for (const b of bs) {
+        let n = 0;
+        for (let i = 0; i < b.item.length; i++) {
+          if (flag[b.item[i]]) b.mesh.setMatrixAt(n++, b.base[i]);
+        }
+        b.mesh.count = n;
+        b.mesh.instanceMatrix.needsUpdate = true;
+      }
+    });
+  }, [items.length]);
+
+  const covered = useMemo(() => new Set(modelled), [modelled]);
+  const refs = useCullVisibility(sceneryCullBus, items.length, covered.size);
   const cast = qualityManager.get().allVehicleShadows;
-  const low = qualityManager.get().tier === "low";
+  const low = tier === "low";
 
   return (
     <group>
+      <group ref={instRoot} />
       {items.map((s, i) => {
         if (low && i % 2 === 1) return null;
+        // Fallback only: a kind with real geometry draws no primitive.
+        if (covered.has(s.kind)) return null;
         const y = 0;
         const body =
           s.kind === "tower" ? (

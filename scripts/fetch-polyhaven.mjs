@@ -29,6 +29,28 @@ const SLUGS = [
   "namaqualand_boulder_02",
   "modular_chainlink_fence",
   "modular_pipes",
+  /*
+   * Refinery skyline set — replaces the untextured box "towers/cranes/pipes"
+   * in CullableScenery (see SCENERY_KITS there for how each is composed).
+   *
+   * Every slug below was verified against https://api.polyhaven.com/assets?t=models.
+   * The obvious guesses all 404 — Poly Haven has no shipping_container,
+   * water_tower, chimney, scaffolding, steel_frame, industrial_pipe,
+   * electrical_box, concrete_barrier or rusty_barrel. Do not "fix" these names;
+   * re-query the assets endpoint instead.
+   *
+   * Kept deliberately small: every extra slug is a permanent material + 1k
+   * texture set resident in VRAM for background geometry nobody looks at.
+   * Rejected after measuring: modular_electricity_poles and modular_pipes-style
+   * kits (100+ loose parts, 200k tris), namaqualand_cliff_01 (94k tris for one
+   * rock), old_military_compressor (79k), industrial_storage_cart (19k tris for
+   * a prop that is 1 m wide at 34 m away).
+   */
+  "overhead_crane", // 90k tris, 3 separable parts -> kind: "crane" (tier LOD)
+  "propane_tank", // 5.2k tris, upscaled to 8.5 m -> refinery vessel, "tower"
+  "modular_industrial_pipes_01", // 8 pipe sections, 0.6-5.8k tris each -> "pipe"
+  "Barrel_01", // 2.7k tris oil drum -> "pile" (also upgrades PH_MODELS.barrel)
+  "worn_metal_rack", // 6.4k tris rusted shelving -> "pile"
 ];
 
 const want = process.argv.slice(2).filter((a) => !a.startsWith("-"));

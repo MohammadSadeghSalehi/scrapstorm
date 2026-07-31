@@ -213,6 +213,34 @@ export function SceneryDecor() {
           });
         });
 
+        // Cap parts per template.
+        //
+        // One InstancedMesh is created per mesh INSIDE the template, which is
+        // fine for a single-mesh prop and pathological for a kit: the `pipes`
+        // key resolves to modular_pipes, a 106-mesh set, so one decorative prop
+        // near the start line was costing ~106 draw calls — every pipe scaled
+        // down to a few centimetres and individually invisible. `fence` is the
+        // same shape of asset.
+        //
+        // Keep the largest parts by bounding-box volume: at decor scale the
+        // silhouette comes from the big pieces, and the small ones are below a
+        // pixel anyway.
+        const MAX_PARTS = 6;
+        if (parts.length > MAX_PARTS) {
+          const bb = new THREE.Box3();
+          const sz = new THREE.Vector3();
+          parts.sort((a, b) => {
+            const va = bb.setFromBufferAttribute(
+              a.geo.attributes.position as THREE.BufferAttribute,
+            ).getSize(sz).x * sz.y * sz.z;
+            const vb = bb.setFromBufferAttribute(
+              b.geo.attributes.position as THREE.BufferAttribute,
+            ).getSize(sz).x * sz.y * sz.z;
+            return vb - va;
+          });
+          parts.length = MAX_PARTS;
+        }
+
         for (const part of parts) {
           const im = new THREE.InstancedMesh(part.geo, part.mat, items.length);
           im.castShadow = part.cast;

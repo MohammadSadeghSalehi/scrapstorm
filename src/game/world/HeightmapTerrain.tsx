@@ -7,6 +7,8 @@ import * as THREE from "three";
 import { TRACK_SAMPLES } from "../track";
 import { sampleDuneField, sampleRockMask } from "./terrainHeight";
 import { qualityManager } from "./quality";
+import { attachGpuDetail } from "./shaders/gpuDetail";
+import { getMaxAnisotropy } from "./webgl2/configure";
 
 function trackCenter() {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -261,15 +263,41 @@ export function HeightmapTerrain() {
     geo.translate(cx, 0, cz);
 
     // Prefer solid+vertexColor first; maps enhance when loaded
+    const q = qualityManager.get();
     const mat = new THREE.MeshStandardMaterial({
       color: "#f5dcac",
       vertexColors: true,
-      roughness: 0.88,
+      // Dry sand is not a mirror, but at 0.88 the dunes had no terminator
+      // sheen at all — they lit like flat paper. 0.82 is enough for the crests
+      // to catch the low sun without turning the desert glossy.
+      roughness: 0.82,
       metalness: 0.02,
       envMapIntensity: 1.05,
+      // Set here, not only in the normalMap callback, so the value is correct
+      // no matter which map resolves first. Nudged up because at 7m-per-tile
+      // the map's ripple frequency is low and 1.2 barely registered.
+      normalScale: new THREE.Vector2(1.5, 1.5),
       emissive: new THREE.Color("#7a5430"),
       emissiveIntensity: 0.0,
     });
+
+    /**
+     * Second, finer detail layer — near the camera only.
+     *
+     * One 7m sand tile is unmistakably *one tile* from inside a car: the same
+     * ripple repeats every couple of car lengths and the ground reads as flat
+     * wallpaper. attachGpuDetail lays non-repeating fBm over albedo, roughness
+     * and (band 3 only) the normal, at roughly half the wavelength of the
+     * photo tile, which breaks the seam exactly where it is visible.
+     *
+     * It is cheap because it is distance-banded: full detail inside lodNear
+     * (20m on high), reduced to a single value-noise tap by lodMid, and
+     * skipped entirely past lodFar — so the 700m dune field beyond the near
+     * band pays only a compare. Low tier runs gpuDetail at 0 and is skipped.
+     */
+    if (q.gpuDetail > 0.15) {
+      attachGpuDetail(mat, { kind: "sand", detailScale: 16, quality: q });
+    }
 
     // Async PBR maps — don't block mesh spawn. Tiling comes entirely from the
     // baked UVs above, so repeat stays 1:1 here.
@@ -277,10 +305,17 @@ export function HeightmapTerrain() {
     const apply = (url: string, key: "map" | "normalMap" | "roughnessMap" | "aoMap", srgb = false) => {
       loader.load(url, (tex) => {
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.anisotropy = 8;
+        // The UVs run to hundreds of metres, so grazing-angle sampling is the
+        // whole game here — this is the one place anisotropy actually buys
+        // sharpness on the terrain. Read the cap inside the callback: the
+        // renderer may not have been configured yet when the mesh was built,
+        // and getMaxAnisotropy() still reports its conservative default then.
+        tex.anisotropy = Math.min(
+          getMaxAnisotropy(),
+          qualityManager.get().anisotropy || 8,
+        );
         if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
         (mat as any)[key] = tex;
-        if (key === "normalMap") mat.normalScale = new THREE.Vector2(1.2, 1.2);
         if (key === "aoMap") mat.aoMapIntensity = 1.1;
         mat.needsUpdate = true;
       });
