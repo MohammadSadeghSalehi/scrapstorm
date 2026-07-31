@@ -214,6 +214,7 @@ function VehicleView(props: {
   sim?: GameSimulation;
   ghost?: boolean;
   forceHero?: boolean;
+  decoy?: boolean;
 }) {
   if (USE_GLTF_CARS && !props.ghost) {
     return (
@@ -223,6 +224,7 @@ function VehicleView(props: {
         sim={props.sim}
         ghost={props.ghost}
         forceHero={props.forceHero}
+        decoy={props.decoy}
       />
     );
   }
@@ -677,18 +679,30 @@ function LiveVehicles({ sim }: { sim: GameSimulation }) {
           forceHero={v.isPlayer}
         />
       ))}
+      {/*
+        Holo Decoy (trickster defence). Mounting is driven by React state, so it
+        appears within a HUD tick of the ability firing — but the POSE must not
+        be. The decoy is handed the sim and the SOURCE vehicle's id so the mesh
+        resolves the live car every frame and applies the offset itself.
+
+        The previous version copied the pose into a snapshot object here, which
+        meant the decoy stepped at the React render rate (~10-20Hz, driven by
+        the HUD signature in ScrapstormApp) while the car beside it moved at
+        60-144Hz. A see-through car juddering next to a smooth one is read as a
+        rendering fault, not as an ability — which is how it was reported.
+      */}
       {!showcase &&
         vehicles
           .filter((v) => v.decoyActive > 0)
-          .map((v) => {
-            const ghost = {
-              ...v,
-              x: v.x + Math.cos(v.yaw) * 4,
-              z: v.z - Math.sin(v.yaw) * 4,
-              id: `${v.id}-decoy`,
-            };
-            return <VehicleView key={ghost.id} vehicle={ghost} ghost />;
-          })}
+          .map((v) => (
+            <VehicleView
+              key={`${v.id}-decoy`}
+              vehicle={v}
+              vehicleId={v.id}
+              sim={sim}
+              decoy
+            />
+          ))}
     </>
   );
 }

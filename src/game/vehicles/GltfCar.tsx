@@ -424,6 +424,121 @@ function makeMats(
   };
 }
 
+/**
+ * Holo Decoy — the trickster's defensive ability (classes.ts calls it "Holo
+ * Decoy"; combat.ts sets decoyActive = 3.2s, and AI tricksters fire it too).
+ *
+ * It used to render as a second copy of the rival built from the procedural box
+ * car at 35% opacity, in the rival's own paint, offset 4m to the side, with its
+ * pose refreshed only when React re-rendered. Nothing about that says "ability":
+ * a washed-out car in the rival's colours, overlapping the rival's silhouette,
+ * is exactly what "a rival gets half invisible" describes. The decoy keeps the
+ * silhouette of the car it impersonates — that is the whole point of a decoy —
+ * but is shaded as something that is plainly not bodywork.
+ */
+const DECOY_COLOR = "#7dd3fc";
+const DECOY_BASE_OPACITY = 0.55;
+/** Metres the decoy peels out to. Lateral, not ahead — see the pose code. */
+const DECOY_OFFSET = 4;
+/** Seconds to materialise and peel clear of the car. */
+const DECOY_DEPLOY = 0.32;
+/** Seconds of collapse at the tail of decoyActive. */
+const DECOY_COLLAPSE = 0.45;
+
+/**
+ * One material shared by every decoy on screen.
+ *
+ * Per-instance materials would compile a new shader program the first time each
+ * decoy appears — a hitch in the middle of a fight, which is precisely when
+ * decoys fire. One module-level unlit material is one program for the session,
+ * and four simultaneous decoys add nothing to it.
+ *
+ * depthWrite MUST stay false. The old decoy inherited the modular car's ~40
+ * depth-writing transparent boxes, so it punched holes in itself and in every
+ * effect quad that happened to be drawn behind it.
+ *
+ * fog is off because the blend is additive: fogging an additive surface adds the
+ * fog colour instead of fading toward it, so a distant decoy would get brighter
+ * rather than softer.
+ */
+let decoyMaterial: THREE.MeshBasicMaterial | null = null;
+function getDecoyMaterial(): THREE.MeshBasicMaterial {
+  if (!decoyMaterial) {
+    decoyMaterial = new THREE.MeshBasicMaterial({
+      color: DECOY_COLOR,
+      transparent: true,
+      opacity: DECOY_BASE_OPACITY,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+      fog: false,
+      side: THREE.FrontSide,
+    });
+  }
+  return decoyMaterial;
+}
+
+/**
+ * Shimmer, written straight onto the shared material.
+ *
+ * Idempotent and driven off a shared clock, so it does not matter that every
+ * live decoy runs it — the cost is two sines per decoy per frame, and only
+ * while a decoy exists. A steady fade reads as a transparency bug; a signal
+ * that stutters reads as a projection, which is the entire point here.
+ */
+function updateDecoyShimmer(t: number) {
+  const mat = getDecoyMaterial();
+  const pulse = 0.82 + 0.18 * Math.sin(t * 9.3);
+  const dropout = Math.sin(t * 2.7) > 0.93 ? 0.35 : 1;
+  mat.opacity = DECOY_BASE_OPACITY * pulse * dropout;
+}
+
+const decoyShellCache = new Map<string, THREE.Group>();
+
+/**
+ * Decoys mount mid-race, so building one has to be cheap.
+ *
+ * buildTexturedHero runs five full Box3.setFromObject passes over a 26k-triangle
+ * mesh to derive facing and grounding. That is fine once per car at grid time
+ * and a visible hitch if it runs every time somebody fires a decoy. Build one
+ * oriented prototype per class and clone that: clone(true) copies three nodes
+ * and shares both the geometry and the single material.
+ *
+ * The prototype's userData is flattened to plain values first. Object3D.copy
+ * round-trips userData through JSON.stringify (three.core.js), and the build
+ * leaves live Material and Object3D references in there — both implement
+ * toJSON(), so cloning would quietly serialise the whole shell on every spawn.
+ * Dropping bodyGroup here is also what keeps the damage/dent pass off a
+ * hologram: the pose code skips it when the key is absent.
+ */
+function getDecoyShell(
+  url: string,
+  tpl: THREE.Group,
+  classId: VehicleClassId,
+): THREE.Group {
+  let proto = decoyShellCache.get(url);
+  if (!proto) {
+    proto = buildTexturedHero(
+      tpl,
+      classId,
+      DECOY_COLOR,
+      DECOY_COLOR,
+      false,
+      false,
+      url,
+      false,
+      true,
+    );
+    proto.userData = {
+      decoy: true,
+      meshCount: proto.userData.meshCount,
+      drawCalls: proto.userData.drawCalls,
+    };
+    decoyShellCache.set(url, proto);
+  }
+  return proto.clone(true);
+}
+
 const WHEEL_SPECS = [
   { name: /^wheel-front-left$/i, isFront: true, side: -1, idx: 0 },
   { name: /^wheel-front-right$/i, isFront: true, side: 1, idx: 1 },
@@ -694,6 +809,7 @@ function buildTexturedHero(
   castShadow: boolean,
   url = "",
   hero = true,
+  decoy = false,
 ): THREE.Group {
   const root = new THREE.Group();
   const bodyGroup = new THREE.Group();
@@ -710,6 +826,17 @@ function buildTexturedHero(
     const mesh = o as THREE.Mesh;
     if (!mesh.isMesh || !mesh.geometry) return;
     meshCount++;
+    if (decoy) {
+      // A projection has no albedo, no normal map and casts nothing. Skipping
+      // all of it is what makes a decoy one cheap unlit draw rather than a
+      // second fully shaded car.
+      mesh.material = getDecoyMaterial();
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = true;
+      if (!bodyMat) bodyMat = mesh.material;
+      return;
+    }
     const src = (
       Array.isArray(mesh.material) ? mesh.material[0] : mesh.material
     ) as THREE.MeshStandardMaterial | undefined;
@@ -841,7 +968,11 @@ function cloneForVehicle(
   ghost: boolean,
   castShadow: boolean,
   hero: boolean,
+  decoy = false,
 ): THREE.Group {
+  // Ahead of every other path: a decoy is always the holo shell regardless of
+  // which asset backed it, including the Kenney fallback.
+  if (decoy) return getDecoyShell(url, tpl, classId);
   if (isKenneyStyle(tpl)) {
     return buildKenneyVehicle(tpl, classId, color, accent, ghost, castShadow);
   }
@@ -945,18 +1076,22 @@ export function GltfVehicleMesh({
   sim,
   ghost = false,
   forceHero = false,
+  decoy = false,
 }: {
   vehicle: VehicleState;
   vehicleId?: string;
   sim?: { state: { vehicles: VehicleState[] } };
   ghost?: boolean;
   forceHero?: boolean;
+  /** Holo Decoy projection of `vehicleId`, not a car in its own right. */
+  decoy?: boolean;
 }) {
   const group = useRef<THREE.Group>(null);
   const [shell, setShell] = useState<THREE.Object3D | null>(null);
   const [failed, setFailed] = useState(false);
   const live = useRef(vehicle);
   const spinAccum = useRef([0, 0, 0, 0]);
+  const decoyAge = useRef(0);
   const { camera } = useThree();
   const id = vehicleId ?? vehicle.id;
   const color = vehicle.color || "#5eead4";
@@ -968,7 +1103,9 @@ export function GltfVehicleMesh({
         : "#99f6e4";
 
   const wantsGltf = !ghost;
-  const hero = vehicle.isPlayer || forceHero;
+  // A decoy is never hero, even when the player is the one projecting it: it
+  // takes the decimated AI mesh and skips clearcoat, shadows and normal maps.
+  const hero = !decoy && (vehicle.isPlayer || forceHero);
 
   useEffect(() => {
     if (!wantsGltf) return;
@@ -986,6 +1123,7 @@ export function GltfVehicleMesh({
         ghost,
         cast,
         hero,
+        decoy,
       );
       const meshes = (clone.userData.meshCount as number) || 0;
       if (meshes < 1) {
@@ -994,7 +1132,7 @@ export function GltfVehicleMesh({
       }
       setShell(clone);
       setFailed(false);
-      if (vehicle.isPlayer && typeof window !== "undefined") {
+      if (vehicle.isPlayer && !decoy && typeof window !== "undefined") {
         clone.updateMatrixWorld(true);
         const bb = new THREE.Box3().setFromObject(clone);
         const sz = bb.getSize(new THREE.Vector3());
@@ -1054,12 +1192,15 @@ export function GltfVehicleMesh({
     wantsGltf,
     accent,
     hero,
+    decoy,
   ]);
 
   useEffect(() => {
-    if (!shell) return;
+    // A hologram does not take paint damage, and the shared decoy material must
+    // never be written per instance — every decoy on screen shares it.
+    if (!shell || decoy) return;
     applyDamageLook(shell, color, vehicle.damageVisual);
-  }, [shell, color, vehicle.damageVisual]);
+  }, [shell, color, vehicle.damageVisual, decoy]);
 
   useFrame((_, dt) => {
     if (sim) {
@@ -1092,6 +1233,29 @@ export function GltfVehicleMesh({
     g.position.set(v.x, v.y - rideSink, v.z);
     g.rotation.order = "YXZ";
     g.rotation.y = v.yaw;
+
+    if (decoy) {
+      decoyAge.current += dt;
+      /*
+       * Peel out sideways instead of popping in already 4m clear. Watching the
+       * projection split off the car is what makes it read as an ability; a
+       * translucent car that simply appears alongside reads as a duplicate.
+       *
+       * Lateral, NOT ahead, despite how it looks: the sim's forward is
+       * (-sin yaw, -cos yaw) (physics.ts), and (cos yaw, -sin yaw) is
+       * perpendicular to that.
+       */
+      const deploy = Math.min(1, decoyAge.current / DECOY_DEPLOY);
+      const peel = 1 - (1 - deploy) ** 3;
+      g.position.x += Math.cos(v.yaw) * DECOY_OFFSET * peel;
+      g.position.z -= Math.sin(v.yaw) * DECOY_OFFSET * peel;
+      // Projected up out of nothing and collapsed back into it. This envelope
+      // is per-object on purpose — the shimmer lives on a shared material and
+      // cannot carry a per-decoy lifetime.
+      const collapse = Math.min(1, v.decoyActive / DECOY_COLLAPSE);
+      g.scale.set(1, Math.max(0.02, peel * collapse), 1);
+      updateDecoyShimmer(performance.now() * 0.001);
+    }
 
     const bank = THREE.MathUtils.clamp(
       -v.lateral * 0.04 - v.speed * 0.001 + v.bodyRoll,
@@ -1152,7 +1316,10 @@ export function GltfVehicleMesh({
       }
     }
 
-    if (v.isPlayer && typeof window !== "undefined") {
+    // !decoy: a player-projected decoy resolves to the player's own state, and
+    // without this guard it would overwrite the player's telemetry with the
+    // hologram's every frame.
+    if (v.isPlayer && !decoy && typeof window !== "undefined") {
       (
         window as unknown as { __playerMesh?: Record<string, unknown> }
       ).__playerMesh = {
@@ -1175,7 +1342,17 @@ export function GltfVehicleMesh({
       };
     }
 
-    if (!v.isPlayer && !forceHero) {
+    if (decoy) {
+      const dx = camera.position.x - v.x;
+      const dz = camera.position.z - v.z;
+      // Same 220m cut the real cars get. The old decoy path had none at all, so
+      // it kept drawing after the car it belonged to had been culled — a lone
+      // translucent car with nothing beside it.
+      const near = dx * dx + dz * dz < 220 * 220;
+      // Hard stutter as the projection dies, on top of the scale collapse.
+      g.visible =
+        near && (v.decoyActive > 0.18 || Math.sin(v.decoyActive * 120) > -0.2);
+    } else if (!v.isPlayer && !forceHero) {
       const dx = camera.position.x - v.x;
       const dz = camera.position.z - v.z;
       const d2 = dx * dx + dz * dz;
