@@ -24,34 +24,123 @@ function trackCenter() {
   };
 }
 
-function buildTrackIndex() {
-  const step = Math.max(1, Math.floor(TRACK_SAMPLES.length / 100));
-  const pts: { x: number; z: number; half: number; y: number }[] = [];
-  for (let i = 0; i < TRACK_SAMPLES.length; i += step) {
-    const s = TRACK_SAMPLES[i]!;
-    pts.push({ x: s.x, z: s.z, half: s.width * 0.5, y: s.y });
-  }
-  return pts;
-}
+type Seg = {
+  ax: number;
+  az: number;
+  ay: number;
+  ah: number;
+  dx: number;
+  dz: number;
+  dy: number;
+  dh: number;
+  len2: number;
+};
 
-function meshHeight(
-  pts: { x: number; z: number; half: number; y: number }[],
-  x: number,
-  z: number,
-): number {
-  let best = 1e12;
-  let half = 13;
-  let roadY = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const s = pts[i]!;
-    const d = (x - s.x) * (x - s.x) + (z - s.z) * (z - s.z);
-    if (d < best) {
-      best = d;
-      half = s.half;
-      roadY = s.y;
+/** Cell size and query reach of the segment lookup grid, in world metres. */
+const GRID_CELL = 32;
+/** Must cover the full apron+deep falloff (half + 70) so the blend stays exact. */
+const GRID_REACH = 96;
+
+type TrackField = {
+  segs: Seg[];
+  grid: Map<number, number[]>;
+  coarse: Seg[];
+};
+
+const cellKey = (cx: number, cz: number) => cx * 73856093 + cz * 19349663;
+
+/**
+ * Track as a polyline of segments, plus a uniform grid for lookup.
+ *
+ * The old index decimated to ~100 points and measured point distance. Between
+ * two consecutive points the true distance to the *road* is much smaller than
+ * the distance to either endpoint, so the corridor was never carved there and
+ * dunes pushed up through the tarmac — the mountains-in-the-road bug. Exact
+ * point-to-segment distance over every sample removes the gap entirely.
+ */
+function buildTrackField(): TrackField {
+  const n = TRACK_SAMPLES.length;
+  const segs: Seg[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = TRACK_SAMPLES[i]!;
+    const b = TRACK_SAMPLES[(i + 1) % n]!;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    segs.push({
+      ax: a.x,
+      az: a.z,
+      ay: a.y,
+      ah: a.width * 0.5,
+      dx,
+      dz,
+      dy: b.y - a.y,
+      dh: b.width * 0.5 - a.width * 0.5,
+      len2: Math.max(1e-6, dx * dx + dz * dz),
+    });
+  }
+
+  // Bucket each segment into every cell within GRID_REACH of its extent, so a
+  // lookup only ever tests a handful of candidates instead of all ~400.
+  const grid = new Map<number, number[]>();
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i]!;
+    const minX = Math.min(s.ax, s.ax + s.dx) - GRID_REACH;
+    const maxX = Math.max(s.ax, s.ax + s.dx) + GRID_REACH;
+    const minZ = Math.min(s.az, s.az + s.dz) - GRID_REACH;
+    const maxZ = Math.max(s.az, s.az + s.dz) + GRID_REACH;
+    for (let cx = Math.floor(minX / GRID_CELL); cx <= Math.floor(maxX / GRID_CELL); cx++) {
+      for (let cz = Math.floor(minZ / GRID_CELL); cz <= Math.floor(maxZ / GRID_CELL); cz++) {
+        const k = cellKey(cx, cz);
+        let list = grid.get(k);
+        if (!list) grid.set(k, (list = []));
+        list.push(i);
+      }
     }
   }
-  const dist = Math.sqrt(best);
+
+  // Far from the track only the dune field matters, so a decimated scan is
+  // enough to recover an approximate road height out there.
+  const step = Math.max(1, Math.floor(segs.length / 64));
+  const coarse: Seg[] = [];
+  for (let i = 0; i < segs.length; i += step) coarse.push(segs[i]!);
+
+  return { segs, grid, coarse };
+}
+
+/** Exact distance to the track centreline, with road height and half-width. */
+function nearestTrack(field: TrackField, x: number, z: number) {
+  const list = field.grid.get(
+    cellKey(Math.floor(x / GRID_CELL), Math.floor(z / GRID_CELL)),
+  );
+  let best = Infinity;
+  let roadY = 0;
+  let half = 13;
+
+  const test = (s: Seg) => {
+    const t = Math.min(
+      1,
+      Math.max(0, ((x - s.ax) * s.dx + (z - s.az) * s.dz) / s.len2),
+    );
+    const ddx = x - (s.ax + s.dx * t);
+    const ddz = z - (s.az + s.dz * t);
+    const d2 = ddx * ddx + ddz * ddz;
+    if (d2 < best) {
+      best = d2;
+      roadY = s.ay + s.dy * t;
+      half = s.ah + s.dh * t;
+    }
+  };
+
+  if (list) {
+    for (let i = 0; i < list.length; i++) test(field.segs[list[i]!]!);
+  } else {
+    for (let i = 0; i < field.coarse.length; i++) test(field.coarse[i]!);
+  }
+  return { dist: Math.sqrt(best), roadY, half };
+}
+
+function meshHeight(field: TrackField, x: number, z: number): number {
+  const { dist, roadY, half } = nearestTrack(field, x, z);
   if (dist <= half + 2) return roadY;
   const dune = sampleDuneField(x, z);
   const rock = sampleRockMask(x, z);
@@ -86,7 +175,7 @@ export function HeightmapTerrain() {
 
   const { geometry, material } = useMemo(() => {
     const { cx, cz, span } = trackCenter();
-    const pts = buildTrackIndex();
+    const field = buildTrackField();
     const geo = new THREE.PlaneGeometry(span, span, segs, segs);
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -104,7 +193,7 @@ export function HeightmapTerrain() {
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i) + cx;
       const z = pos.getZ(i) + cz;
-      const y = meshHeight(pts, x, z);
+      const y = meshHeight(field, x, z);
       ys[i] = y;
       pos.setY(i, y);
       if (y < minY) minY = y;

@@ -83,6 +83,20 @@ export function FpsMeter({ phase }: { phase: string }) {
 
   if (!on || phase === "menu") return null;
   const hitch = snap.worst > 33;
+  // Browsers never expose CUDA — WebGL runs through ANGLE to D3D11/Vulkan — so
+  // the renderer string is the only way to tell whether Chrome picked the
+  // discrete card or the iGPU. Surface it here rather than only in the panel.
+  const caps = getWebGL2Caps();
+  const r = caps?.renderer ?? "";
+  const discrete = /nvidia|geforce|rtx|gtx|radeon|rx\s?\d|arc\b|apple m\d/i.test(r);
+  const integrated = /intel|uhd|iris|vega\s?\d|swiftshader|llvmpipe|software/i.test(r);
+  const gpuShort = r
+    .replace(/^ANGLE \(/, "")
+    .replace(/\).*$/, "")
+    .split(",")
+    .slice(0, 2)
+    .join(",")
+    .slice(0, 42);
   return (
     <div className="pointer-events-none absolute right-3 top-20 z-30 rounded bg-stone-950/70 px-2 py-1 font-mono text-[11px] leading-tight text-stone-200 backdrop-blur-sm">
       <span className={snap.fps < 45 ? "text-amber-400" : "text-emerald-400"}>
@@ -94,6 +108,19 @@ export function FpsMeter({ phase }: { phase: string }) {
       </span>
       {typeof window !== "undefined" && window.__resScale != null && window.__resScale < 0.999 && (
         <span className="ml-2 text-sky-400">res {Math.round(window.__resScale * 100)}%</span>
+      )}
+      {gpuShort && (
+        <div
+          className={
+            integrated && !discrete
+              ? "text-[10px] text-amber-400"
+              : "text-[10px] text-stone-500"
+          }
+          title={r}
+        >
+          {integrated && !discrete ? "⚠ " : ""}
+          {gpuShort}
+        </div>
       )}
     </div>
   );

@@ -1,5 +1,25 @@
 # Scrapstorm League — AAA Punch-List
 
+## Measured baseline (medium tier, 960x540)
+`draws=302  tris=1.17M  programs=92  textures=101`
+Player-reported on a real GPU: **57fps / 17.5ms / max 27.9ms**.
+
+## Next up, in leverage order
+1. **Vehicle LODs** — each custom car is ~100k tris (`scripts/inspect-mesh-orientation.mjs`
+   reports 96-105k) with no LOD, so a 4-car grid spends ~400k tris/frame on vehicles.
+   Needs offline decimation (`@gltf-transform/cli` + meshoptimizer).
+2. **KTX2 + Draco compression** — 43MB JPEG / 45MB meshes / 22MB HDRI still
+   uncompressed. Decoders are already wired (`gltfLoaders.ts`), transcoders staged
+   by `scripts/copy-decoders.mjs`. This is the remaining cause of first-load hitching.
+3. **Baked lightmaps** + true multi-cascade CSM (three's `CSM.js` is bundled).
+4. **TAA** over SMAA — also unlocks temporal upsampling.
+5. Terrain: triplanar/slope-blended detail maps; the heightmap is now sampled
+   properly but still uses a single tiled sand set.
+
+_Not safe as originally written:_ `shadowMap.autoUpdate = false` — vehicles move,
+so freezing the map freezes their shadows. Needs split static/dynamic lights.
+
+
 Audit of the live source across Visual / Performance / Feel / Audio.
 `[x]` = applied, `[ ]` = pending. Batches are verified with `npx tsc --noEmit` once deps are installed.
 

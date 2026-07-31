@@ -417,9 +417,26 @@ export function getSurfaceAt(
     zone: "race" as const,
     s: 0,
   };
-  const dx = x - sample.x;
-  const dz = z - sample.z;
-  const dist = Math.hypot(dx, dz);
+  // Refine against the two adjacent centreline segments rather than trusting
+  // the distance to the nearest sample point. Midway between two samples the
+  // point distance reads as half their spacing even when you are dead centre
+  // on the road, which pushed the apron/dune blend inward and disagreed with
+  // the visual mesh (see buildTrackField in HeightmapTerrain).
+  const n = TRACK_SAMPLES.length;
+  let dist = Math.hypot(x - sample.x, z - sample.z);
+  if (n > 1) {
+    for (let k = -1; k <= 0; k++) {
+      const a = TRACK_SAMPLES[(idx + k + n) % n]!;
+      const b = TRACK_SAMPLES[(idx + k + 1 + n) % n]!;
+      const sx = b.x - a.x;
+      const sz = b.z - a.z;
+      const len2 = sx * sx + sz * sz;
+      if (len2 < 1e-6) continue;
+      const t = Math.min(1, Math.max(0, ((x - a.x) * sx + (z - a.z) * sz) / len2));
+      const d = Math.hypot(x - (a.x + sx * t), z - (a.z + sz * t));
+      if (d < dist) dist = d;
+    }
+  }
   const half = sample.width * 0.5;
 
   let kind: SurfaceKind = "asphalt";

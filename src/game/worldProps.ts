@@ -99,14 +99,19 @@ export function spawnWorldProps(): PhysProp[] {
     });
   }
 
-  // Dense ram corridor near grid — first 200m always has clutter
-  for (let k = 0; k < 14; k++) {
-    const idx = 3 + k * 2;
+  // Light clutter near the grid. This was 14 rows on BOTH sides packed 2
+  // samples apart — 28 extra props inside the first ~200m, on top of the
+  // distribution above. That is the densest part of the track arriving exactly
+  // when the whole grid is accelerating into it, so it cost both frame time
+  // and a clean launch. Halved the rows and doubled the spacing, and each row
+  // now populates one side only so there is always a clear line through.
+  for (let k = 0; k < 7; k++) {
+    const idx = 5 + k * 4;
     const s = TRACK_SAMPLES[idx % TRACK_SAMPLES.length];
     if (!s) continue;
     const rx = Math.cos(s.yaw);
     const rz = -Math.sin(s.yaw);
-    for (const side of [-1, 1] as const) {
+    for (const side of [k % 2 === 0 ? -1 : 1] as const) {
       const kind: PropKind = k % 3 === 0 ? "crate" : k % 3 === 1 ? "barrel" : "scrap";
       props.push({
         id: nid(kind),
