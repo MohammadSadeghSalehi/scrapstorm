@@ -15,6 +15,7 @@ import { BlendFunction } from "postprocessing";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
 import { GradeEffect } from "./GradeEffect";
+import { MotionBlurEffect } from "./MotionBlurEffect";
 
 /**
  * The grade replaces the HueSaturation + BrightnessContrast pair it supersedes:
@@ -27,6 +28,21 @@ import { GradeEffect } from "./GradeEffect";
  */
 const Grade = forwardRef<GradeEffect>(function Grade(_props, ref) {
   const effect = useMemo(() => new GradeEffect(), []);
+  return <primitive ref={ref} object={effect} dispose={null} />;
+});
+
+/**
+ * Kept mounted at every non-low tier even when the strength is zero: adding or
+ * removing an effect rebuilds the EffectPass and its shader, and crossing the
+ * speed threshold is something the player does constantly. The zero case is
+ * handled inside the shader by a uniform branch instead, which is free.
+ */
+const MotionBlur = forwardRef<
+  MotionBlurEffect,
+  { samples: number; strength: number; swirl: number }
+>(function MotionBlur({ samples, strength, swirl }, ref) {
+  const effect = useMemo(() => new MotionBlurEffect({ samples }), [samples]);
+  effect.setSpeed(strength, swirl);
   return <primitive ref={ref} object={effect} dispose={null} />;
 });
 
@@ -51,6 +67,19 @@ export function PostFX({
     const v = base + sn * 0.0014;
     return new THREE.Vector2(v, v * 0.82);
   }, [boost, hit, drifting, sn]);
+
+  // Blur arrives at the same speed SpeedStreaks do (~28 of the 84 m/s that
+  // normalises to 1), so the two speed cues read as one. Quadratic keeps the
+  // mid range calm and loads the effect into the top of the band, which is
+  // where the streaks and the FOV push are already doing their work.
+  const ramp = Math.max(0, (sn - 0.34) / 0.66);
+  // Offsets are in UV at the frame edge; the shader scales them further by
+  // distance from centre, so the corners get roughly 1.4x these numbers.
+  const blurStrength =
+    ramp * ramp * (high ? 0.045 : 0.032) +
+    (boost ? (high ? 0.018 : 0.013) * (0.35 + 0.65 * ramp) : 0) +
+    (hit ? 0.012 * (0.3 + 0.7 * ramp) : 0);
+  const blurSwirl = drifting ? 0.22 * ramp : 0;
 
   const bloomIntensity = low
     ? boost
@@ -94,6 +123,25 @@ export function PostFX({
           halfRes
           depthAwareUpsampling
           color="#1c1207"
+        />
+      ) : (
+        <></>
+      )}
+      {/*
+        Must stay the first Effect in the chain — it samples the pass input
+        buffer, which only equals the running colour for the first effect of an
+        EffectPass (see MotionBlurEffect). Being first also puts blur ahead of
+        bloom, matching the order every engine uses: bloom is read from the
+        sharp frame so highlights keep their punch instead of being smeared
+        twice. It merges into the same pass as Bloom and Vignette, so it adds
+        taps to a shader that already runs rather than another full-screen pass.
+        Low tier never gets here (GameScene does not mount PostFX at all).
+      */}
+      {!low ? (
+        <MotionBlur
+          samples={high ? 8 : 5}
+          strength={blurStrength}
+          swirl={blurSwirl}
         />
       ) : (
         <></>

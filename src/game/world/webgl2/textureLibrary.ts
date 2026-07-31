@@ -1,9 +1,19 @@
 /**
  * PBR texture library — Poly Haven + ambientCG CC0 packs under /assets/textures.
  * Progressive load: critical road/sand first, rest after first paint.
+ *
+ * Every map is preferred as .ktx2 and falls back to the original .jpg. The two
+ * are not equivalent in cost: a JPEG is small on the wire but decodes to RGBA8,
+ * so a 1024x1024 map occupies ~5.3MB of VRAM with its mip chain regardless of
+ * how well it compressed. KTX2 stays block-compressed on the GPU, so the same
+ * map costs ~0.7MB (ETC1S) or ~1.4MB (UASTC).
+ *
+ * Run `node scripts/compress-textures.mjs` to produce the .ktx2 files.
  */
 import * as THREE from "three";
+import type { KTX2Loader } from "three/examples/jsm/loaders/KTX2Loader.js";
 import { applyTextureQuality, getMaxAnisotropy } from "./configure";
+import { getKtx2Loader } from "../gltfLoaders";
 import { qualityManager } from "../quality";
 import type { RecipeId } from "../procmat/recipes";
 
@@ -107,27 +117,97 @@ let loadPromise: Promise<void> | null = null;
 let loaded = false;
 let criticalReady = false;
 
-function loadOne(
+/**
+ * Names of the maps that exist as .ktx2, as "<dir>/<map>" (e.g. "asphalt/diff").
+ *
+ * Written by scripts/compress-textures.mjs. Consulting a manifest rather than
+ * just requesting the .ktx2 and catching the 404 is what keeps the fallback
+ * free: without it, an un-encoded checkout would eat one failed request per map
+ * — around fifty — before a single texture appeared. A missing manifest costs
+ * exactly one 404 and puts the whole library on the JPEG path.
+ */
+const MANIFEST_URL = "/assets/textures/ktx2-manifest.json";
+let manifestPromise: Promise<ReadonlySet<string>> | null = null;
+
+function loadKtx2Manifest(): Promise<ReadonlySet<string>> {
+  if (manifestPromise) return manifestPromise;
+  manifestPromise = (async () => {
+    const files = new Set<string>();
+    try {
+      const res = await fetch(MANIFEST_URL);
+      if (res.ok) {
+        const json: unknown = await res.json();
+        const list = (json as { files?: unknown })?.files;
+        if (Array.isArray(list)) {
+          for (const f of list) if (typeof f === "string") files.add(f);
+        }
+      }
+    } catch {
+      // Offline, no manifest, or malformed — treated the same as "not encoded".
+    }
+    return files;
+  })();
+  return manifestPromise;
+}
+
+/**
+ * Shared post-load setup for both paths.
+ *
+ * applyTextureQuality is the single place colour space is decided, and it runs
+ * identically for KTX2 and JPEG: `colorMap` maps to SRGBColorSpace, everything
+ * else to NoColorSpace. That assignment is what makes three select the sRGB or
+ * the linear GL internal format when the texture is uploaded, so a normal,
+ * roughness, metalness or AO map tagged sRGB by mistake would be silently
+ * gamma-decoded — hence deriving the flag from the call site rather than from
+ * the file. It also overrides the colour space KTX2Loader infers from the
+ * container, so the two paths cannot drift apart.
+ */
+function finishTexture(tex: THREE.Texture, colorMap: boolean): THREE.Texture {
+  applyTextureQuality(tex, qualityManager.get(), { colorMap });
+
+  if ((tex as THREE.CompressedTexture).isCompressedTexture) {
+    // applyTextureQuality asks for runtime mipmap generation, which is right
+    // for a decoded JPEG but invalid on a block-compressed texture — WebGL
+    // rejects glGenerateMipmap for compressed formats and three calls it
+    // unconditionally whenever generateMipmaps is set. The chain is already
+    // baked into the .ktx2 by the encode script, so use that instead.
+    const levels = (tex as THREE.CompressedTexture).mipmaps?.length ?? 0;
+    tex.generateMipmaps = false;
+    tex.minFilter =
+      levels > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  }
+  return tex;
+}
+
+/**
+ * Load one map, preferring KTX2. Falls back to the JPEG whenever the encoder
+ * has not been run, the renderer has not been probed for compressed-format
+ * support, or the transcode fails outright.
+ */
+async function loadOne(
   loader: THREE.TextureLoader,
-  url: string,
+  base: string,
+  map: string,
   colorMap: boolean,
+  ktx2: KTX2Loader | null,
+  manifest: ReadonlySet<string>,
 ): Promise<THREE.Texture> {
-  return new Promise((resolve, reject) => {
-    loader.load(
-      url,
-      (tex) => {
-        applyTextureQuality(tex, qualityManager.get(), { colorMap });
-        resolve(tex);
-      },
-      undefined,
-      (err) => reject(err),
-    );
-  });
+  const dir = base.slice(base.lastIndexOf("/") + 1);
+  if (ktx2 && manifest.has(`${dir}/${map}`)) {
+    try {
+      return finishTexture(await ktx2.loadAsync(`${base}/${map}.ktx2`), colorMap);
+    } catch (e) {
+      console.warn(`[pbr] ktx2 failed for ${dir}/${map}, using jpg`, e);
+    }
+  }
+  return finishTexture(await loader.loadAsync(`${base}/${map}.jpg`), colorMap);
 }
 
 async function loadPack(
   loader: THREE.TextureLoader,
   id: PbrPackId,
+  ktx2: KTX2Loader | null,
+  manifest: ReadonlySet<string>,
 ): Promise<void> {
   if (cache.has(id)) return;
   const spec = PACK_PATHS[id];
@@ -137,14 +217,18 @@ async function loadPack(
     // before the road could paint. Optional maps resolve to null on miss.
     const [map, normalMap, roughnessMap, metalnessMap, aoMap] =
       await Promise.all([
-        loadOne(loader, `${spec.base}/diff.jpg`, true),
-        loadOne(loader, `${spec.base}/nor.jpg`, false),
-        loadOne(loader, `${spec.base}/rough.jpg`, false),
+        loadOne(loader, spec.base, "diff", true, ktx2, manifest),
+        loadOne(loader, spec.base, "nor", false, ktx2, manifest),
+        loadOne(loader, spec.base, "rough", false, ktx2, manifest),
         spec.hasMetal
-          ? loadOne(loader, `${spec.base}/metal.jpg`, false).catch(() => null)
+          ? loadOne(loader, spec.base, "metal", false, ktx2, manifest).catch(
+              () => null,
+            )
           : Promise.resolve(null),
         spec.hasAo
-          ? loadOne(loader, `${spec.base}/ao.jpg`, false).catch(() => null)
+          ? loadOne(loader, spec.base, "ao", false, ktx2, manifest).catch(
+              () => null,
+            )
           : Promise.resolve(null),
       ]);
     const q = qualityManager.get();
@@ -173,7 +257,16 @@ export function preloadPbrLibrary(): Promise<void> {
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin("anonymous");
 
-    await Promise.all(CRITICAL.map((id) => loadPack(loader, id)));
+    // getKtx2Loader only returns an instance once initGltfDecoders has probed
+    // the renderer for supported compressed formats. That happens in the Canvas
+    // onCreated, which is a layout effect on an ancestor of everything that
+    // calls preloadPbrLibrary from a passive effect — React flushes the whole
+    // layout phase before any passive effect, so the probe has always run by
+    // now. Still treated as optional: a null loader just means JPEG.
+    const ktx2 = getKtx2Loader();
+    const manifest = await loadKtx2Manifest();
+
+    await Promise.all(CRITICAL.map((id) => loadPack(loader, id, ktx2, manifest)));
     criticalReady = true;
 
     // Yield to main thread so first frame paints before rest of library
@@ -184,12 +277,14 @@ export function preloadPbrLibrary(): Promise<void> {
     // deferred packs at once produced a burst of long frames right after the
     // lights go green — the "sudden drops at first". Trickling them keeps each
     // frame's decode budget small at the cost of a slightly later finish.
+    // KTX2 shrinks but does not remove this: the Basis transcode runs on a
+    // worker and the mip chain is prebuilt, yet the upload is still main-thread.
     const queue = [...DEFERRED];
     const worker = async () => {
       for (;;) {
         const id = queue.shift();
         if (!id) return;
-        await loadPack(loader, id);
+        await loadPack(loader, id, ktx2, manifest);
         await new Promise((r) => setTimeout(r, 60));
       }
     };

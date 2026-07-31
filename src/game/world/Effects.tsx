@@ -6,6 +6,13 @@ import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
 import { softCircleTexture, softSmokeTexture } from "./softSprite";
 
+/**
+ * Visual radius of a tracer, deliberately decoupled from the projectile's
+ * collision radius (0.3-0.45). A shot should read as a thin streak; the hitbox
+ * stays whatever combat.ts needs it to be.
+ */
+const TRACER_R = 0.085;
+
 export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) {
   return (
     <group>
@@ -28,34 +35,36 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
         return (
           <group key={p.id} position={[p.x, p.y, p.z]} rotation={[0, yaw, 0]}>
             {/*
-              Stretched along travel rather than a round ball. A bright
-              untonemapped sphere hanging in the air reads as a floating orb
-              dropped on the track, not as a shot in flight — it was reported
-              as "yellow balls in the middle of the road". Elongating it gives
-              the eye a direction and a speed cue.
+              A tracer, not an orb.
+
+              This drew a sphere at p.radius (0.3-0.45), i.e. a ~1m glowing ball
+              hanging in the air — which is why it kept being reported as
+              "yellow/orange balls in the middle of the road". Stretching it was
+              not enough; the silhouette was still round and huge.
+
+              The COLLISION radius still comes from p.radius and is unchanged.
+              Only the visual is decoupled: a projectile's hitbox and its
+              silhouette have no reason to be the same size.
             */}
-            <mesh scale={[1, 1, p.kind === "cannon" ? 2.6 : 2.0]}>
-              <sphereGeometry
-                args={[
-                  p.radius * (p.kind === "cannon" ? 1.15 : 1),
-                  segs,
-                  segs,
-                ]}
+            <mesh rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry
+                args={[TRACER_R, TRACER_R * 0.45, len * 2.4, segs]}
               />
               <meshStandardMaterial
                 color={col}
                 emissive={em}
-                emissiveIntensity={1.1}
-                roughness={0.25}
-                metalness={0.4}
+                emissiveIntensity={0.9}
+                roughness={0.3}
+                metalness={0.3}
               />
             </mesh>
-            <mesh position={[0, 0, len * 0.45]} scale={[0.35, 0.35, len]}>
-              <sphereGeometry args={[p.radius * 0.85, 6, 6]} />
+            {/* Short wake behind it — reads as speed without adding mass. */}
+            <mesh position={[0, 0, len * 1.5]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[TRACER_R * 0.5, 0.005, len * 2.2, 6]} />
               <meshBasicMaterial
                 color={em}
                 transparent
-                opacity={0.32}
+                opacity={0.2}
                 depthWrite={false}
               />
             </mesh>

@@ -41,6 +41,19 @@ export function initGltfDecoders(gl: THREE.WebGLRenderer): void {
   }
 }
 
+/**
+ * The shared KTX2Loader, or null until a renderer has been probed.
+ *
+ * Exposed for the standalone PBR packs in webgl2/textureLibrary.ts, which are
+ * plain .ktx2 files rather than glTF payloads. Handing out this instance rather
+ * than letting callers construct their own matters: each KTX2Loader spins up
+ * its own pool of transcoder workers and its own copy of the Basis wasm, so a
+ * second instance would double that cost for no benefit.
+ */
+export function getKtx2Loader(): KTX2Loader | null {
+  return ktx2Ready ? ktx2 : null;
+}
+
 /** GLTFLoader with every decoder this project may need attached. */
 export function createGltfLoader(): GLTFLoader {
   const loader = new GLTFLoader();
