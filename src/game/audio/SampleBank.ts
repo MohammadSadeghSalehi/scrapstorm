@@ -40,23 +40,48 @@ export type MusicId =
   | "race_heat"
   | "race_intensity"
   | "final_lap"
-  | "victory";
+  | "victory"
+  | "defeat";
 
-/** Announcer lines (ElevenLabs), mirrors public/assets/audio/vo/manifest.json */
+/**
+ * Announcer lines (ElevenLabs), mirrors public/assets/audio/vo/manifest.json.
+ *
+ * `rival-*` are a different voice and are rendered through the radio
+ * colouration in AudioEngine — they are in-fiction transmissions from another
+ * car, not the circuit PA, and mixing them identically to the announcer made
+ * the two indistinguishable.
+ */
 export type VoiceId =
   | "grid-locked"
   | "green"
   | "lap-1"
   | "lap-2"
+  | "lap-3"
   | "final-lap"
   | "hit-1"
   | "hit-2"
   | "boost-1"
   | "boost-2"
   | "overtake"
+  | "overtaken"
+  | "close-pack"
+  | "near-miss"
+  | "wreck-rival"
   | "win"
   | "loss"
-  | "wreck";
+  | "wreck"
+  | "rival-taunt-1"
+  | "rival-taunt-2"
+  | "rival-taunt-3"
+  | "rival-hit-1"
+  | "rival-hit-2"
+  | "rival-wreck"
+  | "rival-pass";
+
+/** Rival chatter is coloured as a radio transmission rather than a PA call. */
+export function isRivalVoice(id: VoiceId) {
+  return id.startsWith("rival-");
+}
 
 const buffers = new Map<string, AudioBuffer>();
 let loading: Promise<void> | null = null;
@@ -113,6 +138,7 @@ export function preloadSamples(ctx: AudioContext): Promise<void> {
     "race_intensity",
     "final_lap",
     "victory",
+    "defeat",
   ];
   loading = Promise.all([
     ...sfx.map(async (id) => {

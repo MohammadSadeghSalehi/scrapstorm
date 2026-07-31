@@ -8,19 +8,32 @@
  * This is per-frame main-thread work in a build that is already main-thread
  * bound, so everything here is written to allocate nothing: the sim scan is a
  * plain loop rather than find/reduce/slice, the continuous-mix payload and the
- * opponent buffer are module-level and reused, and the cue drain takes a
- * module-level callback rather than a fresh closure.
+ * opponent buffer are module-level and reused, the per-vehicle edge trackers are
+ * fixed-size typed arrays, and the cue drain takes a module-level callback
+ * rather than a fresh closure.
+ *
+ * A note on why so much is *derived* here rather than emitted by the sim: this
+ * file and src/game/audio/* are the only things the audio pass owns. Vehicle
+ * detonations, sustained wall contact, near misses and panel deformation are all
+ * reconstructed from state the sim already publishes (`wreckTimer`,
+ * `impactFlash`, positions, `dent*`) instead of from dedicated cues. Where that
+ * loses information it is called out at the site.
  */
 import { useRef, type MutableRefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import type { GameSimulation } from "../sim";
 import { VEHICLE_CLASSES } from "../classes";
-import { RACE } from "../balance";
 import { isDrifting } from "../physics";
 import { getSurfaceAt } from "../track";
 import { audioEngine, type ContinuousInput } from "./AudioEngine";
 import { drainAudioCues, type AudioCue } from "./cues";
-import { OPPONENT_STRIDE, OPPONENT_VOICES } from "./spatial";
+import {
+  OPPONENT_STRIDE,
+  OPPONENT_VOICES,
+  droneClassIndex,
+} from "./spatial";
+import { musicStateFor, type MusicContext } from "./music";
+import type { VoiceId } from "./SampleBank";
 import type { GameEvent, PlayerInput, VehicleClassId } from "../types";
 import { FRAME } from "../world/framePriority";
 
@@ -40,9 +53,41 @@ const CONT: ContinuousInput = {
   dt: 1 / 60,
 };
 
+/** Reused every frame — see the file header. */
+const MUSIC_CTX: MusicContext = {
+  phase: "menu",
+  lap: 0,
+  lapCount: 3,
+  finished: false,
+  won: false,
+};
+
 const OPP = new Float32Array(OPPONENT_VOICES * OPPONENT_STRIDE);
 /** Squared distance of the vehicle currently held in each opponent slot. */
 const OPP_DIST = new Float32Array(OPPONENT_VOICES);
+
+/**
+ * Per-vehicle edge trackers, indexed by position in `sim.state.vehicles`.
+ * The field is player + 3 bots; 16 is far past any plausible grid and keeps this
+ * a one-time allocation instead of a lazily-grown array.
+ */
+const MAX_TRACKED = 16;
+const PREV_WRECK = new Float32Array(MAX_TRACKED);
+const PREV_DIST2 = new Float32Array(MAX_TRACKED);
+const NEARMISS_AT = new Float32Array(MAX_TRACKED);
+
+/** Lap call rotation. See the lap block below for why this is not `lap % 2`. */
+const LAP_LINES: VoiceId[] = ["lap-1", "lap-2", "lap-3"];
+const RIVAL_HITS: VoiceId[] = ["rival-hit-1", "rival-hit-2"];
+const RIVAL_TAUNTS: VoiceId[] = [
+  "rival-taunt-1",
+  "rival-taunt-2",
+  "rival-taunt-3",
+];
+
+/** Metres. Inside this a rival passing at speed moves enough air to hear. */
+const NEAR_MISS_RADIUS = 7;
+const NEAR_MISS_R2 = NEAR_MISS_RADIUS * NEAR_MISS_RADIUS;
 
 const onCue = (cue: AudioCue) => audioEngine.playCue(cue);
 
@@ -73,7 +118,13 @@ export function AudioDriver({
   const prevLap = useRef(0);
   const prevPos = useRef(0);
   const voFlip = useRef(0);
+  const lapVo = useRef(0);
   const surfaceAt = useRef(0);
+  const prevClass = useRef<VehicleClassId | null>(null);
+  /** Windows and lights only break once or twice before there is nothing left. */
+  const glassLeft = useRef(2);
+  /** How long the player has been continuously pressed against something. */
+  const contactHold = useRef(0);
 
   const camera = useThree((s) => s.camera);
 
@@ -88,12 +139,8 @@ export function AudioDriver({
     const st = sim.state;
     if (!musicBoot.current) {
       musicBoot.current = true;
-      if (st.phase === "menu") {
-        audioEngine.playMusic("menu_anthem");
-      }
-      if (st.phase === "garage") {
-        audioEngine.playMusic("garage_vibe");
-      }
+      if (st.phase === "menu") audioEngine.setMusicState("menu");
+      if (st.phase === "garage") audioEngine.setMusicState("garage");
     }
 
     // Listener first: cues drained below are positioned against it.
@@ -123,6 +170,13 @@ export function AudioDriver({
     if (!player) {
       drainAudioCues(onCue);
       return;
+    }
+
+    if (player.classId !== prevClass.current) {
+      prevClass.current = player.classId;
+      // The three classes are different engines, not one engine at three
+      // volumes — see ENGINE_PROFILES.
+      audioEngine.setVehicleClass(player.classId);
     }
 
     const def = VEHICLE_CLASSES[player.classId];
@@ -165,16 +219,93 @@ export function AudioDriver({
     CONT.dt = delta;
     audioEngine.updateContinuous(CONT);
 
-    // Nearest few rivals get a panned engine drone. Selection is an insertion
-    // into a fixed 3-slot table rather than a sort, so no array is built.
+    // --- sustained contact --------------------------------------------------
+    // There is no "touching a wall" flag in the sim, but physics decays
+    // `impactFlash` by exactly dt per second and tops it up on every contact
+    // frame. So a value that failed to fall by the elapsed time is a contact
+    // still happening, and that difference — not the raw value — is what
+    // separates a grind from the tail of a single hit. Getting this wrong is why
+    // the old code fired a 200 ms scrape sample at a 2 % chance per frame.
+    const expected = Math.max(0, prevImpact.current - delta);
+    const sustained = racing && player.impactFlash > expected + 0.004;
+    contactHold.current = sustained
+      ? Math.min(0.6, contactHold.current + delta)
+      : Math.max(0, contactHold.current - delta * 2.5);
+    if (racing && contactHold.current > 0.02) {
+      // Ramping in over the first ~120 ms stops a single hard hit (which also
+      // satisfies the test above for one frame) from clicking the bed on.
+      const engage = Math.min(1, contactHold.current / 0.12);
+      audioEngine.updateContact(
+        Math.min(1, player.impactFlash * 2.4) * engage,
+        sp,
+        // Off the racing surface the car is grinding rock and dirt, which does
+        // not ring; the metallic modes are faded out with it.
+        Math.max(0.15, 1 - player.offroadAmount * 0.75),
+        delta,
+      );
+    } else {
+      audioEngine.updateContact(0, sp, 1, delta);
+    }
+
+    // --- nearest rivals, near misses, rival detonations ---------------------
+    // One pass over the field feeds the drone selection, the near-miss test and
+    // the pack-pressure number the music intensity reads. Splitting them would
+    // mean three scans of the same array every frame.
+    let count = 0;
+    let nearest2 = Infinity;
     if (racing) {
-      let count = 0;
       for (let i = 0; i < vehicles.length; i++) {
         const v = vehicles[i]!;
-        if (v.isPlayer || !v.alive) continue;
+        if (v.isPlayer) continue;
         const dx = v.x - player.x;
         const dz = v.z - player.z;
         const d2 = dx * dx + dz * dz;
+        const slot4 = i < MAX_TRACKED ? i : -1;
+
+        // Rival detonation. `wreckTimer` is set to 2.8 the frame a car dies, so
+        // a rise from zero is the kill. This is one frame later than combat.ts
+        // knows and carries no blast energy — see the handover note; a real
+        // `wreck-blast` cue would be strictly better.
+        if (slot4 >= 0) {
+          const pw = PREV_WRECK[slot4]!;
+          if (v.wreckTimer > 0.5 && pw <= 0) {
+            audioEngine.explode(v.x, v.y + 0.6, v.z, 1.3, "vehicle", false);
+            audioEngine.crowdSurge(1.1);
+            if (d2 < 6400) audioEngine.playVoice("wreck-rival");
+          }
+          PREV_WRECK[slot4] = v.wreckTimer;
+        }
+
+        if (!v.alive) {
+          if (slot4 >= 0) PREV_DIST2[slot4] = d2;
+          continue;
+        }
+        if (d2 < nearest2) nearest2 = d2;
+
+        // Near miss: crossing *inward* through the radius. Testing the crossing
+        // rather than the distance is what makes this fire once per pass instead
+        // of every frame two cars spend side by side in a corner.
+        if (slot4 >= 0) {
+          const prev2 = PREV_DIST2[slot4]!;
+          const closing = prev2 - d2;
+          if (
+            d2 < NEAR_MISS_R2 &&
+            prev2 >= NEAR_MISS_R2 &&
+            closing > 0.35 &&
+            st.time - NEARMISS_AT[slot4]! > 1.4
+          ) {
+            NEARMISS_AT[slot4] = st.time;
+            // Scaled by relative speed: two cars drifting together and two cars
+            // passing at 60 m/s are not the same event.
+            const violence = Math.min(1.6, 0.4 + Math.sqrt(closing) * 0.9);
+            audioEngine.nearMiss(violence);
+            // Only the genuinely frightening ones get a call. The mixer's 14 s
+            // cooldown does the rest of the rate limiting.
+            if (violence > 1.15) audioEngine.playVoice("near-miss");
+          }
+          PREV_DIST2[slot4] = d2;
+        }
+
         if (d2 > 42000) continue; // ~205 m, past the panner's cull
         let slot = count < OPPONENT_VOICES ? count : -1;
         if (slot < 0) {
@@ -201,30 +332,54 @@ export function AudioDriver({
         OPP[b + 3] = Math.min(1, 0.1 + ((vsp * 5) % 1) * 0.8 + vsp * 0.15);
         OPP[b + 4] = Math.min(1, vsp * 0.8 + (v.boostTimer > 0 ? 0.4 : 0));
         OPP[b + 5] = i;
+        OPP[b + 6] = droneClassIndex(v.classId);
       }
       audioEngine.updateOpponents(OPP, count, delta);
     } else {
       audioEngine.silenceOpponents();
     }
 
-    drainAudioCues(onCue);
+    // --- ambience and musical intensity ------------------------------------
+    // Pack pressure: how close the nearest live rival is, saturating at 40 m.
+    const pressure = racing
+      ? Math.max(0, 1 - Math.min(1, Math.sqrt(nearest2) / 40))
+      : 0;
+    const heat = racing
+      ? Math.min(
+          1,
+          pressure * 0.55 +
+            sp * 0.3 +
+            (player.lap >= st.lapCount - 1 ? 0.25 : 0) +
+            (player.boostTimer > 0 ? 0.15 : 0),
+        )
+      : st.phase === "finished"
+        ? 0.85
+        : 0;
+    audioEngine.updateAmbience(racing || st.phase === "finished", heat, delta);
+    audioEngine.setMusicIntensity(
+      st.phase === "racing" ? 0.35 + heat * 0.65 : 1,
+    );
 
-    // One-shot layers for brake lockup / drift entry
-    if (braking && Math.abs(player.speed) > 25) {
-      // continuous scrub covers it; occasional sample
-      if (Math.random() < 0.02) audioEngine.playSfx("scrape");
-    }
+    drainAudioCues(onCue);
 
     if (st.phase !== prevPhase.current) {
       if (st.phase === "countdown") {
         audioEngine.playUi("confirm");
-        audioEngine.playMusic("race_heat");
-        audioEngine.playVoice("grid-locked");
+        // Fresh heat: restock the breakables and clear every per-vehicle edge.
+        // These trackers are module-level (one allocation, not per frame), so a
+        // restart would otherwise inherit the previous heat's wreck states and
+        // miss the first detonation of every car that died last time.
+        glassLeft.current = 2;
+        lapVo.current = 0;
+        for (let i = 0; i < MAX_TRACKED; i++) {
+          PREV_WRECK[i] = 0;
+          PREV_DIST2[i] = 1e9;
+          NEARMISS_AT[i] = 0;
+        }
       }
-      if (st.phase === "racing") audioEngine.playMusic("race_intensity");
       if (st.phase === "finished") {
         audioEngine.playUi("finish");
-        audioEngine.playMusic("victory");
+        audioEngine.crowdSurge(1.6);
         // finishedOrder is authoritative once anyone crossed; `position` is the
         // fallback for a heat that ended without a finisher (retire/restart).
         const won = st.finishedOrder.length
@@ -233,14 +388,21 @@ export function AudioDriver({
         audioEngine.playVoice(won ? "win" : "loss");
       }
       if (st.phase === "paused") audioEngine.playUi("pause");
-      if (st.phase === "menu") {
-        audioEngine.playMusic("menu_anthem");
-      }
-      if (st.phase === "garage") {
-        audioEngine.playMusic("garage_vibe");
-      }
+      if (st.phase === "countdown") audioEngine.playVoice("grid-locked");
       prevPhase.current = st.phase;
     }
+
+    // Music is a state machine now, evaluated every frame and idempotent. It was
+    // previously a scatter of playMusic() calls that only behaved because
+    // playMusic early-returns on a matching id.
+    MUSIC_CTX.phase = st.phase;
+    MUSIC_CTX.lap = player.lap;
+    MUSIC_CTX.lapCount = st.lapCount;
+    MUSIC_CTX.finished = player.finished;
+    MUSIC_CTX.won = st.finishedOrder.length
+      ? st.finishedOrder[0] === player.id
+      : player.position === 1;
+    audioEngine.setMusicState(musicStateFor(MUSIC_CTX));
 
     if (st.phase === "countdown") {
       const cd = Math.ceil(st.countdown);
@@ -252,39 +414,58 @@ export function AudioDriver({
         prevCd.current = 0;
         audioEngine.playUi("go");
         audioEngine.playVoice("green");
+        audioEngine.crowdSurge(1.3);
       }
     } else {
       prevCd.current = -1;
     }
 
-    // Final lap music swell
-    if (st.phase === "racing" && player.lap >= RACE.laps - 1) {
-      audioEngine.playMusic("final_lap");
-    }
-
-    // Lap calls. `finished` guards the last gate crossing, which increments
-    // lap one final time and would otherwise announce a lap the player is
-    // never going to drive.
+    // Lap calls.
+    //
+    // The old rule was `lap % 2 === 1 ? "lap-1" : "lap-2"` with `final-lap`
+    // taking over from `lap >= lapCount - 1`. In the default three-lap heat the
+    // player's lap counter reads 1 then 2, and 2 already satisfies the final-lap
+    // test — so "lap-2" was recorded, shipped and never once played. A rotation
+    // over the available lines has no such arithmetic to get wrong at any lap
+    // count, and adding a fourth line needs no code change.
+    //
+    // `finished` guards the last gate crossing, which increments lap one final
+    // time and would otherwise announce a lap the player is never going to drive.
     if (st.phase === "racing" && player.lap > prevLap.current && !player.finished) {
       const entersFinal = player.lap >= st.lapCount - 1;
-      audioEngine.playVoice(
-        entersFinal ? "final-lap" : player.lap % 2 === 1 ? "lap-1" : "lap-2",
-      );
+      if (entersFinal) {
+        audioEngine.playVoice("final-lap");
+        audioEngine.crowdSurge(1);
+      } else {
+        audioEngine.playVoice(LAP_LINES[lapVo.current % LAP_LINES.length]!);
+        lapVo.current += 1;
+      }
     }
     prevLap.current = player.lap;
 
-    // Overtake: position is 1-based, so a decrease is a place gained. Skip the
-    // opening seconds where the grid is still sorting itself out.
-    if (
-      st.phase === "racing" &&
-      st.raceTime > 4 &&
-      prevPos.current > 0 &&
-      player.position < prevPos.current &&
-      !player.finished
-    ) {
-      audioEngine.playVoice("overtake");
+    // Overtake / overtaken: position is 1-based, so a decrease is a place
+    // gained. Skip the opening seconds where the grid is still sorting itself
+    // out. Losing a place now has a call of its own — silence on the way down
+    // and chatter on the way up reads as a game that is only watching for wins.
+    if (st.phase === "racing" && st.raceTime > 4 && prevPos.current > 0 && !player.finished) {
+      if (player.position < prevPos.current) {
+        audioEngine.playVoice("overtake");
+        audioEngine.crowdSurge(0.7);
+      } else if (player.position > prevPos.current) {
+        audioEngine.playVoice("overtaken");
+        // The rival that just took the place has an opinion about it.
+        voFlip.current += 1;
+        if (voFlip.current % 3 === 0) {
+          audioEngine.playVoice("rival-pass");
+        }
+      }
     }
     prevPos.current = player.position;
+
+    // Pack pressure call, once the fight has actually been going a while.
+    if (st.phase === "racing" && st.raceTime > 8 && pressure > 0.82) {
+      audioEngine.playVoice("close-pack");
+    }
 
     if (player.boostTimer > 0.4 && prevBoost.current <= 0.4) {
       audioEngine.playSfx("boost");
@@ -306,6 +487,17 @@ export function AudioDriver({
       if (player.impactFlash > 0.45) {
         voFlip.current += 1;
         audioEngine.playVoice(voFlip.current % 2 ? "hit-1" : "hit-2");
+        // Rival chatter is deliberately sparse — one in four heavy hits, on top
+        // of a 19 s group cooldown in the mixer.
+        if (voFlip.current % 4 === 0) {
+          audioEngine.playVoice(RIVAL_HITS[voFlip.current % RIVAL_HITS.length]!);
+        }
+      }
+      // Something big enough to deform the shell also takes out glass, but only
+      // while there is glass left to take out.
+      if (player.impactFlash > 0.62 && glassLeft.current > 0) {
+        glassLeft.current -= 1;
+        audioEngine.glass(0.9);
       }
     }
     prevImpact.current = player.impactFlash;
@@ -313,8 +505,25 @@ export function AudioDriver({
     if (player.wreckTimer > 0.5 && prevWreck.current <= 0) {
       audioEngine.playSfx("wreck");
       audioEngine.playVoice("wreck");
+      audioEngine.playVoice("rival-wreck");
+      audioEngine.crowdSurge(1.4);
+      glassLeft.current = 0;
     }
     prevWreck.current = player.wreckTimer;
+
+    // Idle rival taunt: a long way into a close fight, once in a while. The
+    // mixer's 19 s `rival` cooldown is what actually rate-limits this.
+    if (
+      st.phase === "racing" &&
+      st.raceTime > 12 &&
+      pressure > 0.6 &&
+      Math.random() < delta * 0.06
+    ) {
+      voFlip.current += 1;
+      audioEngine.playVoice(
+        RIVAL_TAUNTS[voFlip.current % RIVAL_TAUNTS.length]!,
+      );
+    }
 
     // events is unshifted (newest first) and trimmed to 12 — walk back to the
     // last entry we saw rather than diffing lengths.

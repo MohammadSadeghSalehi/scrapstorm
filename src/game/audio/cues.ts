@@ -11,6 +11,14 @@
  * allocation stream in front of the render loop for no benefit.
  */
 
+/**
+ * `wreck-blast`, `barrel-rupture`, `glass-break` and `ult-blast` are handled by
+ * the mixer but are NOT yet emitted by the sim — combat.ts, worldProps.ts and
+ * physics.ts are owned elsewhere. Vehicle detonations are currently reconstructed
+ * in AudioDriver from `wreckTimer` edges, which works but is a frame late and
+ * cannot know the blast energy; the other three have no substitute and are
+ * silent until something emits them. See the handover note in the task report.
+ */
 export type AudioCueKind =
   | "fire-bolt"
   | "fire-cannon"
@@ -22,7 +30,11 @@ export type AudioCueKind =
   | "mine-blast"
   | "mine-drop"
   | "defense"
-  | "ult";
+  | "ult"
+  | "ult-blast"
+  | "wreck-blast"
+  | "barrel-rupture"
+  | "glass-break";
 
 export interface AudioCue {
   kind: AudioCueKind;

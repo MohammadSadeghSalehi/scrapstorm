@@ -90,6 +90,18 @@ const SPECS: Record<ReverbZoneId, ReverbSpec> = {
   },
 };
 
+/**
+ * Acoustic summary of a zone for layers that model the *source* continuing to
+ * sound rather than the room reflecting it — chiefly the explosion tail, which a
+ * convolver cannot produce because a 300 ms blast has nothing left to convolve
+ * two seconds later. Reading it off the same specs the IRs are rendered from
+ * keeps the two descriptions of the same space from drifting apart.
+ */
+export function zoneAcoustics(id: ReverbZoneId) {
+  const s = SPECS[id];
+  return { seconds: s.seconds, reflect: 1 - s.damping };
+}
+
 export function renderImpulseResponse(
   ctx: BaseAudioContext,
   id: ReverbZoneId,

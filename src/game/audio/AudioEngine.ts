@@ -17,14 +17,33 @@ import {
   preloadSamples,
   playSample,
   hasSample,
+  isRivalVoice,
   loadVoice,
   type MusicId,
   type VoiceId,
 } from "./SampleBank";
-import { EngineVoice, type EngineInput } from "./engineModel";
+import {
+  EngineVoice,
+  type EngineClassId,
+  type EngineInput,
+} from "./engineModel";
 import { TyreBed, type TyreInput } from "./tyreModel";
 import { SpatialField } from "./spatial";
-import { ReverbRack, zoneForSurface, type ReverbZoneId } from "./reverb";
+import {
+  ReverbRack,
+  zoneAcoustics,
+  zoneForSurface,
+  type ReverbZoneId,
+} from "./reverb";
+import { ExplosionRack, type BlastKind } from "./explosion";
+import { DebrisRack, ScrapeBed, type ScrapeInput } from "./impactModel";
+import { WeaponRack, type WeaponKind } from "./weaponModel";
+import { CrowdBed, PaSend } from "./crowd";
+import {
+  MUSIC_STATE_TRACK,
+  transitionFor,
+  type MusicState,
+} from "./music";
 import { noiseOffset, sharedNoise } from "./noise";
 import type { AudioCue } from "./cues";
 import type { SurfaceInfo } from "../types";
@@ -55,12 +74,21 @@ function jitter(n = 0.08) {
 
 /** Per-track trim so the beds sit at comparable loudness. */
 function musicTrackVolume(id: MusicId) {
-  return id === "race_heat" ? 0.55 : id === "victory" ? 0.7 : 0.5;
+  return id === "race_heat"
+    ? 0.55
+    : id === "victory"
+      ? 0.7
+      : id === "defeat"
+        ? 0.62
+        : 0.5;
 }
 
 /**
  * Announcer barge-in ranking. A line only interrupts a line of *lower* rank;
  * anything equal or below is dropped rather than queued (see `playVoice`).
+ *
+ * Rival chatter sits at rank 1 deliberately: a taunt is flavour, and the one
+ * thing worse than not hearing it is hearing it over the final-lap call.
  */
 const VOICE_PRIORITY: Record<VoiceId, number> = {
   "grid-locked": 3,
@@ -70,12 +98,24 @@ const VOICE_PRIORITY: Record<VoiceId, number> = {
   loss: 3,
   wreck: 2,
   overtake: 2,
+  overtaken: 2,
+  "wreck-rival": 2,
   "lap-1": 2,
   "lap-2": 2,
+  "lap-3": 2,
+  "close-pack": 1,
+  "near-miss": 1,
   "hit-1": 1,
   "hit-2": 1,
   "boost-1": 1,
   "boost-2": 1,
+  "rival-taunt-1": 1,
+  "rival-taunt-2": 1,
+  "rival-taunt-3": 1,
+  "rival-hit-1": 1,
+  "rival-hit-2": 1,
+  "rival-wreck": 2,
+  "rival-pass": 1,
 };
 
 /**
@@ -89,15 +129,34 @@ const VOICE_GROUP: Partial<Record<VoiceId, string>> = {
   "boost-2": "boost",
   "lap-1": "lap",
   "lap-2": "lap",
+  "lap-3": "lap",
+  "rival-taunt-1": "rival",
+  "rival-taunt-2": "rival",
+  "rival-taunt-3": "rival",
+  "rival-hit-1": "rival",
+  "rival-hit-2": "rival",
+  "rival-pass": "rival",
+  "rival-wreck": "rival",
 };
 
-/** Seconds before a group may speak again. */
+/**
+ * Seconds before a group may speak again.
+ *
+ * `rival` is long on purpose: a taunt that fires every time contact is made
+ * stops being characterisation within about fifteen seconds and turns into a
+ * soundboard.
+ */
 const VOICE_COOLDOWN: Record<string, number> = {
   hit: 8,
   boost: 11,
   lap: 3,
   overtake: 10,
+  overtaken: 12,
   wreck: 4,
+  "wreck-rival": 9,
+  "close-pack": 22,
+  "near-miss": 14,
+  rival: 19,
 };
 const VOICE_COOLDOWN_DEFAULT = 1.5;
 
@@ -149,26 +208,61 @@ const TYRE_OFF: TyreInput = {
 };
 
 /**
- * Sim-emitted cue → sample key, procedural fallback and mix weight.
- * `gate` is the minimum spacing in ms between two cues of the same kind: a pack
- * of five AI cars all holding the trigger would otherwise stack the same shot
- * on top of itself and read as a single loud buzz.
+ * Minimum spacing in ms between two *rival* cues of the same kind. A pack of
+ * five AI cars all holding the trigger would otherwise stack the same shot on
+ * top of itself and read as one loud buzz. Player cues are never gated.
  */
-const CUE_SFX: Record<
-  string,
-  { key: string; vol: number; rate: number; gate: number; len: number }
-> = {
-  "fire-bolt": { key: "weapon_laser", vol: 0.62, rate: 1, gate: 55, len: 0.45 },
-  "fire-cannon": { key: "weapon_cannon", vol: 0.8, rate: 1, gate: 80, len: 0.7 },
-  "fire-disc": { key: "weapon_laser", vol: 0.5, rate: 0.72, gate: 70, len: 0.5 },
-  "hit-bolt": { key: "impact_light", vol: 0.6, rate: 1.08, gate: 40, len: 0.4 },
-  "hit-cannon": { key: "impact_metal", vol: 0.85, rate: 0.92, gate: 45, len: 0.7 },
-  "hit-disc": { key: "impact_light", vol: 0.66, rate: 1.18, gate: 40, len: 0.4 },
-  "shell-land": { key: "prop_smash", vol: 0.4, rate: 0.85, gate: 90, len: 0.4 },
-  "mine-blast": { key: "wreck", vol: 0.7, rate: 1.1, gate: 60, len: 0.9 },
-  "mine-drop": { key: "gear", vol: 0.35, rate: 0.7, gate: 120, len: 0.3 },
-  defense: { key: "shield", vol: 0.6, rate: 1, gate: 110, len: 0.6 },
-  ult: { key: "nitro_ignition", vol: 0.7, rate: 0.85, gate: 200, len: 0.9 },
+const CUE_GATE: Record<string, number> = {
+  "fire-bolt": 55,
+  "fire-cannon": 80,
+  "fire-disc": 70,
+  "hit-bolt": 40,
+  "hit-cannon": 45,
+  "hit-disc": 40,
+  "shell-land": 90,
+  "mine-blast": 60,
+  "mine-drop": 120,
+  defense: 110,
+  ult: 200,
+  "ult-blast": 200,
+  "wreck-blast": 90,
+  "barrel-rupture": 90,
+  "glass-break": 70,
+};
+const CUE_GATE_DEFAULT = 60;
+
+/** Cue kind → weapon synth voice. */
+const CUE_WEAPON: Record<string, WeaponKind> = {
+  "fire-bolt": "bolt",
+  "fire-cannon": "cannon",
+  "fire-disc": "disc",
+  "hit-bolt": "bolt",
+  "hit-cannon": "cannon",
+  "hit-disc": "disc",
+};
+
+/** Cue kind → blast profile. */
+const CUE_BLAST: Record<string, BlastKind> = {
+  "shell-land": "shell",
+  "mine-blast": "mine",
+  "wreck-blast": "vehicle",
+  "barrel-rupture": "barrel",
+  "ult-blast": "ordnance",
+};
+
+/**
+ * Recorded layer under the *player's own* weapon only.
+ *
+ * The synth carries the event; the sample adds a bit of recorded grit that pure
+ * synthesis does not have. It is restricted to the player because it plays on
+ * the dry path (no spatial voice, no pool pressure) and because a rival's shot
+ * does not need body — it needs to be locatable, which the synth already is.
+ */
+const SELF_LAYER: Record<string, { key: string; vol: number; rate: number }> = {
+  "fire-bolt": { key: "weapon_laser", vol: 0.28, rate: 1.1 },
+  "fire-cannon": { key: "weapon_cannon", vol: 0.34, rate: 0.95 },
+  "fire-disc": { key: "weapon_laser", vol: 0.22, rate: 0.7 },
+  defense: { key: "shield", vol: 0.34, rate: 1 },
 };
 
 class AudioEngine {
@@ -193,9 +287,29 @@ class AudioEngine {
   /** Reused every frame — see updateContinuous. */
   private engineIn: EngineInput = { ...ENGINE_OFF };
   private tyreIn: TyreInput = { ...TYRE_OFF };
+  private scrapeIn: ScrapeInput = {
+    pressure: 0,
+    slide: 0,
+    metal: 1,
+    dt: 1 / 60,
+  };
   private spatial: SpatialField | null = null;
   private reverb: ReverbRack | null = null;
   private reverbZone: ReverbZoneId | null = null;
+  private explosions: ExplosionRack | null = null;
+  private weapons: WeaponRack | null = null;
+  private scrape: ScrapeBed | null = null;
+  private debris: DebrisRack | null = null;
+  private crowd: CrowdBed | null = null;
+  private pa: PaSend | null = null;
+  /** Radio colouration for rival chatter; announcer lines bypass it. */
+  private voRadio: GainNode | null = null;
+  /** Musical "presence" filter — see setMusicIntensity. */
+  private musicTone: BiquadFilterNode | null = null;
+  private pendingClass: EngineClassId | null = null;
+  private musicState: MusicState = "silent";
+  /** Last value written by setMusicIntensity; see the dedup there. */
+  private musicIntensity = -1;
 
   private musicNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
   private musicPulse: OscillatorNode | null = null;
@@ -336,16 +450,61 @@ class AudioEngine {
       this.spatialBus.connect(this.reverb.input);
       this.spatial = new SpatialField(this.ctx, this.spatialBus);
 
-      this.engine = new EngineVoice(this.ctx, [this.sfxBus, bedSend]);
+      this.engine = new EngineVoice(
+        this.ctx,
+        [this.sfxBus, bedSend],
+        this.pendingClass ?? "interceptor",
+      );
+      this.pendingClass = null;
       this.tyres = new TyreBed(this.ctx, [this.sfxBus, bedSend]);
+
+      // Explosions bypass `spatialBus` and own their panners: the shared
+      // one-shot pool is 12 voices with a 0.05 s minimum hold, and a detonation
+      // occupies one for up to three seconds. Letting a kill starve every weapon
+      // impact in the pack for that long is not a trade worth making.
+      this.explosions = new ExplosionRack(
+        this.ctx,
+        this.sfxBus,
+        this.reverb.input,
+      );
+      // Weapons land on the spatial bus rather than straight on sfx: that bus is
+      // the one with the post-pan reverb tap, so a shot fired in the canyon
+      // rings off the walls. They still own their own panners (PannedOut) — the
+      // bus is only carrying them to the room.
+      this.weapons = new WeaponRack(this.ctx, this.spatialBus);
+      // Debris is the player's own bodywork, so it is never panned and takes the
+      // dry path (which carries the closer `nearSend` reverb trim).
+      this.debris = new DebrisRack(this.ctx, this.sfxDry);
+      // The scrape is a bed, so it takes the bed send trim, not the one-shot
+      // one — a two-second canyon tail on a continuous grind is a wash.
+      this.scrape = new ScrapeBed(this.ctx, [this.sfxBus, bedSend]);
+      this.crowd = new CrowdBed(this.ctx, [this.sfxBus, bedSend]);
+
+      // Rival chatter goes through a radio stage on its way to the VO bus, so
+      // it is distinguishable from the circuit announcer without needing the
+      // player to recognise two voices.
+      this.voRadio = this.buildRadio(this.voBus);
+      this.pa = new PaSend(this.ctx, this.voBus);
+
       // Start dry-ish and let the first surface query pick the real zone.
       this.reverb.setZone("open", 0.1, this.now(), 0.05);
       this.reverbZone = "open";
+      const a0 = zoneAcoustics("open");
+      this.explosions.setEnvironment(a0.seconds, a0.reflect);
       this.reverb.prewarm(["canyon", "stadium", "scrapyard"]);
       this.buildMusicBed();
+      // Tone control between the track fader and the music bus. Pulling the top
+      // off the music when nothing is happening and opening it as the fight
+      // starts is how a single stereo bounce gets dynamics it was not mixed
+      // with; the alternative (stems) does not exist for these tracks.
+      this.musicTone = this.ctx.createBiquadFilter();
+      this.musicTone.type = "lowpass";
+      this.musicTone.frequency.value = 20000;
+      this.musicTone.Q.value = 0.5;
+      this.musicTone.connect(this.musicBus!);
       this.musicGain = this.ctx.createGain();
       this.musicGain.gain.value = 1;
-      this.musicGain.connect(this.musicBus!);
+      this.musicGain.connect(this.musicTone);
       void preloadSamples(this.ctx).then(() => {
         this.samplesReady = true;
         // The menu bed is requested on the very first frame, long before the
@@ -423,11 +582,88 @@ class AudioEngine {
     try { track.src.stop(t + fade + 0.05); } catch { /* already stopped */ }
   }
 
+  /**
+   * Drive the music from race state rather than from scattered `playMusic`
+   * calls. Idempotent, so the frame loop can call it every frame.
+   *
+   * `duckFirst` starts the outgoing track down *before* the new one arrives so
+   * the two never sit on top of each other at full level, and the stinger covers
+   * the seam. Both matter because these are finished stereo bounces at different
+   * tempos: an unadorned crossfade between two unaligned drum kits is the single
+   * most obvious way a soundtrack announces that it is a playlist.
+   */
+  setMusicState(state: MusicState) {
+    if (state === this.musicState) return;
+    this.musicState = state;
+    const tr = transitionFor(state);
+    const id = MUSIC_STATE_TRACK[state];
+    if (!id) {
+      this.stopMusic(tr.fade);
+      return;
+    }
+    if (tr.stinger > 0) this.musicStinger(tr.stinger);
+    if (tr.duckFirst > 0 && this.musicTrack) {
+      rampFrom(this.musicTrack.gain.gain, this.now(), 0.0001, tr.duckFirst);
+      // The incoming track is started after the outgoing has already left, so
+      // the two never overlap. A timer is acceptable here because a music
+      // transition is a once-per-scene event, not per-frame work.
+      const target = state;
+      setTimeout(() => {
+        if (this.musicState !== target) return;
+        this.playMusic(id, tr.fade);
+      }, tr.duckFirst * 1000);
+      return;
+    }
+    this.playMusic(id, tr.fade);
+  }
+
+  getMusicState() {
+    return this.musicState;
+  }
+
+  /**
+   * Transition hit. Deliberately synthesised rather than sampled: it has to sit
+   * over an arbitrary seam at an arbitrary moment, and the one thing it must not
+   * do is sound like the same hit every time the player restarts a heat.
+   */
+  private musicStinger(level: number) {
+    if (!this.ctx || !this.sfxBus) return;
+    const dry = this.sfxDry ?? this.sfxBus;
+    this.blip(dry, 62 * jitter(0.06), 0.5, "sine", 0.22 * level, -22);
+    this.noiseBurst(dry, 0.42, 0.11 * level, 240, 7000);
+    this.noiseBurst(dry, 0.14, 0.09 * level, 1800, 12000);
+  }
+
+  /**
+   * 0..1 how much fight is happening. Opens the music's top end and lifts its
+   * level, so a single stereo bounce gets dynamics it was never mixed with.
+   * Cheap enough for the frame loop: two param writes, no allocation.
+   */
+  setMusicIntensity(v: number) {
+    if (!this.musicTone || !this.musicGain || !this.unlocked) return;
+    const x = Math.max(0, Math.min(1, v));
+    // The 0.9 s time constant means anything finer than a couple of percent is
+    // inaudible, and the caller passes a value derived from pack distance that
+    // jitters every frame. Rewriting the param 120 times a second for a change
+    // the filter cannot follow is cost with no signal.
+    if (Math.abs(x - this.musicIntensity) < 0.02) return;
+    this.musicIntensity = x;
+    const t = this.now();
+    // 2.2 kHz at rest is a definite "behind the action" filter without being an
+    // obvious effect; fully open is transparent.
+    this.musicTone.frequency.setTargetAtTime(2200 + x * x * 17000, t, 0.9);
+    this.musicGain.gain.setTargetAtTime(0.78 + x * 0.22, t, 0.9);
+  }
+
   stopMusic(fade = 0.4) {
     const track = this.musicTrack;
     this.musicTrack = null;
     this.musicId = null;
     this.pendingMusic = null;
+    // Keep the state machine honest: a direct stopMusic() must not leave
+    // `musicState` claiming a track is playing, or re-entering that state would
+    // be a no-op and the music would never come back.
+    this.musicState = "silent";
     if (!track || !this.ctx) return;
     this.fadeOutTrack(track, this.now(), Math.max(0.05, fade));
   }
@@ -512,7 +748,11 @@ class AudioEngine {
     this.stopVoice();
     const gain = ctx.createGain();
     gain.gain.value = 1;
-    gain.connect(this.voBus);
+    // Rival lines go through the radio stage; the announcer stays dry and also
+    // feeds the PA send, which only becomes audible inside the arena.
+    const rival = isRivalVoice(id);
+    gain.connect(rival ? (this.voRadio ?? this.voBus) : this.voBus);
+    if (!rival && this.pa) gain.connect(this.pa.input);
     const src = playSample(ctx, gain, `vo:${id}`, { vol: 1 });
     if (!src) {
       gain.disconnect();
@@ -561,6 +801,52 @@ class AudioEngine {
 
   resumeIfNeeded() {
     if (this.ctx?.state === "suspended") void this.ctx.resume();
+  }
+
+  /**
+   * Short-range radio for rival chatter. Narrower and grittier than the PA:
+   * a cheap transceiver rolls off hard at both ends and clips, and that
+   * band-limiting is what makes a line read as "another car" rather than as the
+   * announcer having moved. Returns the node callers should render into.
+   */
+  private buildRadio(dest: AudioNode): GainNode {
+    const ctx = this.ctx!;
+    const input = ctx.createGain();
+    input.gain.value = 1;
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.value = 480;
+    hp.Q.value = 1.1;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 2900;
+    lp.Q.value = 1.1;
+    const pres = ctx.createBiquadFilter();
+    pres.type = "peaking";
+    pres.frequency.value = 1900;
+    pres.Q.value = 1.4;
+    pres.gain.value = 7;
+    const drive = ctx.createWaveShaper();
+    const n = 512;
+    const curve = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      // Harder than the PA's: a transceiver is compander-limited, not mixed.
+      curve[i] = Math.tanh(x * 3.6) * 0.85;
+    }
+    drive.curve = curve;
+    drive.oversample = "2x";
+    // Compensates for the level the bandpass removes, so a taunt sits at the
+    // same perceived loudness as an announcer line despite a third the bandwidth.
+    const makeup = ctx.createGain();
+    makeup.gain.value = 1.5;
+    input.connect(hp);
+    hp.connect(pres);
+    pres.connect(lp);
+    lp.connect(drive);
+    drive.connect(makeup);
+    makeup.connect(dest);
+    return input;
   }
 
   private buildMusicBed() {
@@ -620,13 +906,19 @@ class AudioEngine {
       opts.phase === "finished" ||
       racing;
 
+    // The oscillator bed is a *fallback*, not a layer. It exists so the game is
+    // not silent before the mp3 bank decodes (or if it 404s), but sitting an
+    // industrial drone under a major-key arena-rock track fights it — the drone
+    // has no key and the track does. It is now muted whenever a real bounce is
+    // sounding.
     const raceHeat = opts.phase === "racing" ? 1 : 0.65;
+    const bedOn = musicOn && !this.musicTrack;
     for (let i = 0; i < this.musicNodes.length; i++) {
       const m = this.musicNodes[i];
       const base = i < 3 ? 0.04 : 0.025;
       ramp(
         m.gain,
-        musicOn ? base * raceHeat * (opts.boost ? 1.15 : 1) : 0,
+        bedOn ? base * raceHeat * (opts.boost ? 1.15 : 1) : 0,
         t,
         0.25,
       );
@@ -708,12 +1000,117 @@ class AudioEngine {
   /**
    * Reverb zone from the surface query. Cheap enough to call at a low rate; the
    * rack ignores repeats, so only an actual zone change costs anything.
+   *
+   * The zone also drives the explosion tail and the crowd: they are properties
+   * of the same space, and deriving them here rather than from a second query
+   * keeps them from disagreeing about which room the player is in.
    */
   updateReverb(info: SurfaceInfo) {
     if (!this.reverb || !this.unlocked) return;
     const z = zoneForSurface(info);
+    if (z.id !== this.reverbZone) {
+      const a = zoneAcoustics(z.id);
+      this.explosions?.setEnvironment(a.seconds, a.reflect);
+    }
     this.reverbZone = z.id;
     this.reverb.setZone(z.id, z.wet, this.now());
+    // Crowd presence falls off once the car is well outside the racing surface:
+    // the stands are beside the track, not out in the dunes.
+    const inArena = info.sample.zone === "arena" ? 1 : 0;
+    this.arenaPresence =
+      inArena * Math.max(0, 1 - Math.max(0, info.dist - info.half) / 40);
+    this.pa?.setAmount(this.now(), this.arenaPresence);
+  }
+
+  /** 0..1 how much stadium is around the listener; set by updateReverb. */
+  private arenaPresence = 0;
+
+  /**
+   * Ambience tick. Split from `updateContinuous` because the crowd needs to keep
+   * breathing while the engine bed is switched off (grid, results screen), and
+   * folding it in would have tied the two lifetimes together.
+   */
+  updateAmbience(active: boolean, heat: number, dt: number) {
+    if (!this.crowd || !this.unlocked) return;
+    // `arenaPresence` only refreshes while the surface query is running (i.e.
+    // during a heat), so without the explicit gate the last value would persist
+    // and the stands would still be murmuring on the main menu.
+    this.crowd.update(
+      this.now(),
+      active ? this.arenaPresence : 0,
+      heat,
+      dt,
+    );
+  }
+
+  crowdSurge(amount = 1) {
+    this.crowd?.surge(amount);
+  }
+
+  /**
+   * Per-frame contact bed. `pressure` is how hard the car is loaded into
+   * whatever it is touching, `slide` how fast the contact patch is moving, and
+   * `metal` how metallic the other surface is.
+   */
+  updateContact(pressure: number, slide: number, metal: number, dt: number) {
+    if (!this.scrape || !this.unlocked) return;
+    const s = this.scrapeIn;
+    s.pressure = pressure;
+    s.slide = slide;
+    s.metal = metal;
+    s.dt = dt;
+    this.scrape.update(this.now(), s);
+  }
+
+  /** Set the player's engine character. No-op if it is already that class. */
+  setVehicleClass(id: EngineClassId) {
+    if (!this.engine) {
+      // Class is chosen in the garage, which the player can reach before the
+      // first pointerdown unlocks audio — remember it for construction.
+      this.pendingClass = id;
+      return;
+    }
+    this.engine.setClass(this.now(), id);
+  }
+
+  /**
+   * Positional detonation. `dist` is measured against the audio listener, which
+   * is what the arrival delay and the air-absorption filter are computed from.
+   */
+  explode(
+    x: number,
+    y: number,
+    z: number,
+    energy: number,
+    kind: BlastKind = "vehicle",
+    self = false,
+  ) {
+    if (!this.explosions || !this.unlocked || !this.spatial) return;
+    const dist = self ? 0 : this.spatial.distanceToListener(x, y, z);
+    // Nothing beyond the panner cull is worth a voice; the pool is 4 deep and a
+    // kill 300 m away would evict one the player can actually hear.
+    if (dist > 260) return;
+    this.explosions.fire(this.now(), x, y, z, energy, dist, kind, self);
+    // Duck under the blast rather than letting the limiter do it — the limiter
+    // would pull the *whole* mix, including the engine the player is steering by.
+    const near = 1 - Math.min(1, dist / 90);
+    if (near > 0.25) {
+      this.duckMusic(0.25 + near * 0.35, 0.3 + near * 0.4, 0.02, 0.55);
+    }
+  }
+
+  /** Sheet-metal deformation; fired off crumple-zone deltas, not off impacts. */
+  crumple(intensity: number) {
+    this.debris?.crumple(this.now(), intensity);
+  }
+
+  glass(intensity: number) {
+    this.debris?.glass(this.now(), intensity);
+  }
+
+  /** Rival passing close enough to move air. */
+  nearMiss(closing: number) {
+    this.debris?.whoosh(this.now(), closing);
   }
 
   private blip(
@@ -792,42 +1189,104 @@ class AudioEngine {
   /**
    * Positional one-shot from the sim.
    *
-   * Player-sourced cues stay on the dry path: the listener is the chase camera,
-   * so panning the player's own weapon would place it several metres in front of
-   * them and it would duck in and out as the camera swings.
+   * Everything here is synthesised and placed by the weapon / explosion racks
+   * rather than played from the bank. The bank has two weapon samples for three
+   * weapon types and the primary fires every 220 ms — no sample survives that
+   * repetition rate, and pitching one down 30 % to stand in for a third weapon
+   * (which is what this used to do for discs) is audibly the same sound slowed.
+   *
+   * Player-sourced cues render dry: the listener is the chase camera, so panning
+   * the player's own weapon would place it several metres in front of them and
+   * swing it as the camera settles.
    */
   playCue(cue: AudioCue) {
     if (!this.unlocked || !this.ctx) return;
-    const spec = CUE_SFX[cue.kind];
-    if (!spec) return;
-    const vol = spec.vol * Math.max(0.25, Math.min(1.8, cue.intensity));
-    if (cue.self) {
+    if (!cue.self) {
       // The player's own actions are never gated, and never take the gate
       // either — a rival firing in the same frame still deserves to be heard.
-      if (!this.oneshot(spec.key, vol, spec.rate)) {
-        this.layeredHit(cue.intensity);
+      const now = performance.now();
+      if (now < (this.cueGate.get(cue.kind) ?? 0)) return;
+      this.cueGate.set(
+        cue.kind,
+        now + (CUE_GATE[cue.kind] ?? CUE_GATE_DEFAULT),
+      );
+    }
+    const t = this.now();
+    const intensity = Math.max(0.25, Math.min(2, cue.intensity));
+
+    const weapon = CUE_WEAPON[cue.kind];
+    if (weapon && this.weapons) {
+      if (cue.kind.startsWith("hit-")) {
+        this.weapons.impact(
+          t,
+          weapon,
+          cue.x,
+          cue.y,
+          cue.z,
+          intensity,
+          cue.self,
+        );
+        // Taking a hit on your own hull deserves the music out of the way; a
+        // rival trading paint across the pack does not.
+        if (cue.self && intensity > 0.9) {
+          this.duckMusic(0.28, 0.16, 0.02, 0.35);
+        }
+      } else {
+        this.weapons.fire(t, weapon, cue.x, cue.y, cue.z, intensity, cue.self);
       }
+      this.selfLayer(cue);
       return;
     }
-    const now = performance.now();
-    if (now < (this.cueGate.get(cue.kind) ?? 0)) return;
-    this.cueGate.set(cue.kind, now + spec.gate);
-    if (!this.spatial) return;
-    const t = this.now();
-    const input = this.spatial.acquire(
-      t,
-      cue.x,
-      cue.y,
-      cue.z,
-      1,
-      spec.len,
-    );
-    if (!input) return;
-    if (!this.oneshot(spec.key, vol, spec.rate, input)) {
-      // No sample for this key — the procedural fallback still gets panned,
-      // which is the whole point: AI fire previously made no sound at all.
-      this.layeredHit(cue.intensity * 0.8, input);
+
+    const blast = CUE_BLAST[cue.kind];
+    if (blast) {
+      this.explode(cue.x, cue.y, cue.z, intensity, blast, cue.self);
+      // A ruptured drum throws its lining as well as its contents.
+      if (cue.kind === "barrel-rupture") this.debris?.glass(t + 0.05, 0.7);
+      return;
     }
+
+    if (cue.kind === "defense" && this.weapons) {
+      this.weapons.defense(t, cue.x, cue.y, cue.z, cue.self);
+      this.selfLayer(cue);
+      return;
+    }
+
+    if (cue.kind === "ult" && this.weapons) {
+      // Riser first, detonation at the top of it. The riser deliberately does
+      // not resolve on its own — the blast is its resolution.
+      this.weapons.riser(t, cue.x, cue.y, cue.z, cue.self);
+      this.explosions?.fire(
+        t + 0.82,
+        cue.x,
+        cue.y,
+        cue.z,
+        intensity * 1.4,
+        cue.self ? 0 : (this.spatial?.distanceToListener(cue.x, cue.y, cue.z) ?? 0),
+        "ordnance",
+        cue.self,
+      );
+      if (cue.self) this.duckMusic(0.5, 1.1, 0.35, 0.7);
+      return;
+    }
+
+    if (cue.kind === "mine-drop") {
+      // Mechanical, small, and deliberately unlike a weapon: the player needs to
+      // hear that something was *placed*, not fired.
+      this.weapons?.impact(t, "bolt", cue.x, cue.y, cue.z, 0.35, cue.self);
+      return;
+    }
+
+    if (cue.kind === "glass-break") {
+      this.debris?.glass(t, intensity);
+    }
+  }
+
+  /** Optional recorded body under the player's own action. See SELF_LAYER. */
+  private selfLayer(cue: AudioCue) {
+    if (!cue.self) return;
+    const l = SELF_LAYER[cue.kind];
+    if (l) this.oneshot(l.key, l.vol, l.rate);
   }
 
   playUi(
@@ -861,7 +1320,10 @@ class AudioEngine {
       this.blip(this.uiBus, 330, 0.22, "sawtooth", 0.13, 450);
     }
     if (kind === "finish") {
-      this.playMusic("victory");
+      // Music is NOT started here any more. setMusicState owns the results
+      // transition (duck the race bed out, stinger over the seam, then bring
+      // the result track in); calling playMusic from the UI layer got there
+      // first and silently skipped all of it.
       this.oneshot("crowd_cheer", 0.55, 1, flat);
       if (this.oneshot("finish", 0.85, 1, flat)) return;
       this.blip(this.uiBus, 392, 0.28, "triangle", 0.12, 200);
@@ -936,9 +1398,15 @@ class AudioEngine {
     }
     if (kind === "mine") this.blip(dry, 170, 0.1, "square", 0.08);
     if (kind === "wreck") {
-      if (this.oneshot("wreck", 0.9)) return;
-      this.layeredHit(1.5);
-      this.noiseBurst(dry, 0.45, 0.22, 50, 2000);
+      // The player's own car going up: dry (the listener is the chase camera),
+      // full-size blast, plus the hull folding. The `wreck` sample is layered
+      // *under* it at a trim rather than used instead of it — on its own it is a
+      // 900 ms recording with no low end and no distance behaviour, which is
+      // what made every kill in the game sound the same.
+      this.explode(0, 0, 0, 1.5, "vehicle", true);
+      this.debris?.crumple(this.now() + 0.06, 1.6);
+      this.oneshot("wreck", 0.32);
+      this.duckMusic(0.55, 1.2, 0.02, 0.8);
     }
     if (kind === "gear") {
       if (this.oneshot("gear", 0.45)) return;
@@ -969,6 +1437,10 @@ class AudioEngine {
     if (intensity >= 1.1) {
       this.duckMusic(Math.min(0.45, 0.2 + intensity * 0.16), 0.18, 0.03, 0.4);
     }
+    // Anything hard enough to dent gets the panel folding layered over the
+    // recorded hit. The sample is the strike; the crumple is the structure
+    // failing behind it, and it is the part that varies per event.
+    if (intensity >= 0.95) this.debris?.crumple(this.now(), intensity * 0.7);
     if (intensity < 0.7 && this.oneshot("impact_light", 0.55 + intensity * 0.3)) return;
     if (this.oneshot("impact_metal", Math.min(1, 0.5 + intensity * 0.4))) return;
     this.layeredHit(intensity);

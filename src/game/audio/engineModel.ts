@@ -24,14 +24,198 @@
  *    pitches.
  * 4. A real overrun state: harmonics collapse, induction noise takes over, and
  *    the exhaust crackles.
+ * 5. Per-class profiles (see ENGINE_PROFILES). The three classes are not one
+ *    engine at three volumes — they differ in cylinder count, so the *firing
+ *    order itself* differs, and in exhaust geometry, so the fixed formants sit
+ *    in different places. That is what lets a rival be identified by ear before
+ *    it is on screen, and it is why the profile changes the harmonic ratios
+ *    rather than just an EQ.
+ * 6. Turbo modelled as stored energy, not as a level. A turbocharger spools
+ *    against inertia — it lags the throttle going up and bleeds down fast when
+ *    the throttle shuts, which is also what makes the blow-off valve possible at
+ *    all. A gain that simply follows `boost` cannot produce either.
+ * 7. Transmission whine tracking engine speed (not road speed): straight-cut
+ *    gear noise is tooth-mesh frequency, which is an input-shaft property.
  */
 
 import { noiseOffset, sharedNoise } from "./noise";
 
-const IDLE_RPM = 850;
-const MAX_RPM = 7400;
-/** 4-stroke V8: two revolutions per cycle, eight fires → rpm/60 × 4. */
-const FIRE_PER_RPM = 1 / 15;
+export type EngineClassId = "interceptor" | "bruiser" | "trickster";
+
+export interface EngineProfile {
+  idleRpm: number;
+  maxRpm: number;
+  /** Cylinders; firing frequency is rpm/60 × cylinders/2. */
+  cylinders: number;
+  /** Harmonic orders of the firing frequency for the five oscillators. */
+  ratios: [number, number, number, number, number];
+  /** Base weight per order at moderate load. */
+  weights: [number, number, number, number, number];
+  types: [
+    OscillatorType,
+    OscillatorType,
+    OscillatorType,
+    OscillatorType,
+    OscillatorType,
+  ];
+  /** Exhaust pipe half-wave resonance. */
+  pipeHz: number;
+  pipeQ: number;
+  pipeGain: number;
+  /** Airbox / engine bay. */
+  bodyHz: number;
+  bodyQ: number;
+  bodyGain: number;
+  /** Hard edge that opens under load. */
+  raspHz: number;
+  raspQ: number;
+  raspMax: number;
+  /** Throttle-plate cutoff tracking order, and its closed/open range in Hz. */
+  plateOrder: number;
+  plateClosed: number;
+  plateOpen: number;
+  /** Induction band order. */
+  intakeOrder: number;
+  intakeLevel: number;
+  /** Turbo whistle order, resonance and level; 0 disables the turbo entirely. */
+  turboOrder: number;
+  turboQ: number;
+  turboLevel: number;
+  /** How fast the turbo builds pressure (seconds to ~63 %). */
+  spoolTime: number;
+  /** Blow-off valve level. */
+  bovLevel: number;
+  /** Gear-mesh whine: Hz at idle, Hz added at redline, level, resonance. */
+  whineHz: number;
+  whineSpan: number;
+  whineLevel: number;
+  whineQ: number;
+  crackle: number;
+  /** Overall trim so the classes sit at comparable loudness. */
+  trim: number;
+}
+
+/**
+ * Three deliberately unmistakable engines.
+ *
+ * interceptor — high-revving straight six. Smooth, no half-order component at
+ *   all (an even-fire six has none), formants high and tight, a small
+ *   fast-spooling turbo that whistles rather than roars. Reads "fast".
+ * bruiser     — big-bore cross-plane V8. The half-order lope is the loudest
+ *   thing in the stack, formants are an octave lower than the interceptor's, it
+ *   runs out of revs early, and the straight-cut transmission whine is loud
+ *   because a hauler gearbox is not built quiet. Reads "heavy".
+ * trickster   — turbo four. Fewest cylinders, so the firing frequency is the
+ *   lowest of the three at the same rpm and it sounds busy and uneven; a large
+ *   turbo relative to the engine, so a long spool and a loud blow-off. Reads
+ *   "scrappy".
+ */
+export const ENGINE_PROFILES: Record<EngineClassId, EngineProfile> = {
+  interceptor: {
+    idleRpm: 1050,
+    maxRpm: 8600,
+    cylinders: 6,
+    ratios: [1, 1, 2, 3, 4],
+    weights: [0.42, 0.18, 0.16, 0.08, 0.04],
+    types: ["sawtooth", "sawtooth", "square", "sawtooth", "square"],
+    pipeHz: 152,
+    pipeQ: 4.2,
+    pipeGain: 7,
+    bodyHz: 640,
+    bodyQ: 2.4,
+    bodyGain: 5,
+    raspHz: 2350,
+    raspQ: 1.8,
+    raspMax: 11,
+    plateOrder: 6,
+    plateClosed: 300,
+    plateOpen: 2000,
+    intakeOrder: 2.8,
+    intakeLevel: 0.15,
+    turboOrder: 15,
+    turboQ: 12,
+    turboLevel: 0.06,
+    spoolTime: 0.3,
+    bovLevel: 0.05,
+    whineHz: 340,
+    whineSpan: 2600,
+    whineLevel: 0.017,
+    whineQ: 13,
+    crackle: 1,
+    trim: 0.95,
+  },
+  bruiser: {
+    idleRpm: 620,
+    maxRpm: 5600,
+    cylinders: 8,
+    // The 0.5 order is the cross-plane V8 lope; the 1.5 is the secondary
+    // imbalance that stops the stack sounding like a clean sawtooth.
+    ratios: [0.5, 1, 1.5, 2, 3],
+    weights: [0.55, 0.34, 0.12, 0.07, 0.015],
+    types: ["sine", "sawtooth", "triangle", "square", "sawtooth"],
+    pipeHz: 78,
+    pipeQ: 3.1,
+    pipeGain: 11,
+    bodyHz: 305,
+    bodyQ: 1.9,
+    bodyGain: 6,
+    raspHz: 1180,
+    raspQ: 1.3,
+    raspMax: 7,
+    plateOrder: 4.5,
+    plateClosed: 200,
+    plateOpen: 1250,
+    intakeOrder: 2,
+    intakeLevel: 0.17,
+    turboOrder: 9,
+    turboQ: 7,
+    turboLevel: 0.05,
+    spoolTime: 0.72,
+    bovLevel: 0.075,
+    whineHz: 240,
+    whineSpan: 1500,
+    whineLevel: 0.035,
+    whineQ: 9,
+    crackle: 1.4,
+    trim: 1.08,
+  },
+  trickster: {
+    idleRpm: 900,
+    maxRpm: 7800,
+    cylinders: 4,
+    // 2.5 is not a harmonic of anything — that is the point. A rough four on a
+    // scrapyard exhaust is inharmonic, and it is what makes this class sound
+    // like it was assembled rather than engineered.
+    ratios: [0.5, 1, 2, 2.5, 4],
+    weights: [0.2, 0.44, 0.18, 0.09, 0.03],
+    types: ["triangle", "sawtooth", "square", "sawtooth", "square"],
+    pipeHz: 112,
+    pipeQ: 3.8,
+    pipeGain: 9,
+    bodyHz: 470,
+    bodyQ: 2.1,
+    bodyGain: 5,
+    raspHz: 1820,
+    raspQ: 1.6,
+    raspMax: 10,
+    plateOrder: 5.5,
+    plateClosed: 250,
+    plateOpen: 1650,
+    intakeOrder: 2.4,
+    intakeLevel: 0.2,
+    turboOrder: 12,
+    turboQ: 9,
+    turboLevel: 0.085,
+    spoolTime: 0.58,
+    bovLevel: 0.13,
+    whineHz: 290,
+    whineSpan: 2000,
+    whineLevel: 0.022,
+    whineQ: 11,
+    crackle: 1.7,
+    trim: 1,
+  },
+};
 
 export interface EngineInput {
   /** Engine is running and audible (racing / countdown / paused). */
@@ -63,28 +247,48 @@ const REDLINE = 0.94;
 
 export class EngineVoice {
   private ctx: BaseAudioContext;
+  private profile: EngineProfile;
   private rpmCs: ConstantSourceNode;
   private oscs: OscillatorNode[] = [];
-  private gSub: GainNode;
-  private gMain: GainNode;
-  private gBeat: GainNode;
-  private gH2: GainNode;
-  private gH3: GainNode;
+  /** Order multipliers into each oscillator's frequency; rewritten per class. */
+  private ratioGains: GainNode[] = [];
+  private layerGains: GainNode[] = [];
+  private plateRatio: GainNode;
+  private intakeRatio: GainNode;
+  private turboRatio: GainNode;
   private plate: BiquadFilterNode;
+  private pipe: BiquadFilterNode;
+  private body: BiquadFilterNode;
   private rasp: BiquadFilterNode;
   private oscTrim: GainNode;
   private gIntake: GainNode;
   private gOver: GainNode;
   private gTurbo: GainNode;
+  private turboBp: BiquadFilterNode;
+  private whineOsc: OscillatorNode;
+  private whinePk: BiquadFilterNode;
+  private gWhine: GainNode;
   private out: GainNode;
 
   private lastCrackle = 0;
   /** Smoothed in JS so the crackle rate and the mix agree on the same value. */
   private overrun = 0;
   private rpm01 = 0;
+  /** 0..1 stored turbo energy. See the file header — this is not a gain. */
+  private spool = 0;
+  private prevThrottle = 0;
+  private lastBov = 0;
+  private classId: EngineClassId = "interceptor";
 
-  constructor(ctx: BaseAudioContext, dests: AudioNode[]) {
+  constructor(
+    ctx: BaseAudioContext,
+    dests: AudioNode[],
+    classId: EngineClassId = "interceptor",
+  ) {
     this.ctx = ctx;
+    this.classId = classId;
+    const p = ENGINE_PROFILES[classId];
+    this.profile = p;
     const noise = sharedNoise(ctx);
 
     this.out = ctx.createGain();
@@ -93,69 +297,52 @@ export class EngineVoice {
 
     // --- control signal -----------------------------------------------------
     this.rpmCs = ctx.createConstantSource();
-    this.rpmCs.offset.value = IDLE_RPM * FIRE_PER_RPM;
+    this.rpmCs.offset.value = (p.idleRpm * p.cylinders) / 120;
     const ratio = (k: number) => {
       const g = ctx.createGain();
       g.gain.value = k;
       this.rpmCs.connect(g);
       return g;
     };
-    const rHalf = ratio(0.5);
-    const rOne = ratio(1);
-    const rTwo = ratio(2);
-    const rThree = ratio(3);
-    const rPlate = ratio(5.5);
-    const rIntake = ratio(2.4);
-    const rTurbo = ratio(13);
+    this.plateRatio = ratio(p.plateOrder);
+    this.intakeRatio = ratio(p.intakeOrder);
+    this.turboRatio = ratio(p.turboOrder);
 
     // --- harmonic stack -----------------------------------------------------
-    const osc = (type: OscillatorType, src: GainNode, detune = 0) => {
-      const o = ctx.createOscillator();
-      o.type = type;
-      // Intrinsic value must be zero: the ratio gain is the only thing allowed
-      // to set pitch, otherwise 440 Hz leaks in on top of every harmonic.
-      o.frequency.value = 0;
-      o.detune.value = detune;
-      src.connect(o.frequency);
-      this.oscs.push(o);
-      return o;
-    };
     const gain = (v: number) => {
       const g = ctx.createGain();
       g.gain.value = v;
       return g;
     };
-
-    // Half-order sine is the V8 lope — the offbeat component that makes a big
-    // engine sound uneven rather than like a buzzer.
-    this.gSub = gain(0.3);
-    this.gMain = gain(0.4);
-    // Second unison voice, ~13 cents sharp. Cylinders never fire at identical
-    // pressure, and that beating is most of the "many pistons" impression.
-    this.gBeat = gain(0.16);
-    this.gH2 = gain(0.06);
-    this.gH3 = gain(0.01);
-
-    osc("sine", rHalf).connect(this.gSub);
-    osc("sawtooth", rOne).connect(this.gMain);
-    osc("sawtooth", rOne, 13).connect(this.gBeat);
-    osc("square", rTwo).connect(this.gH2);
-    osc("sawtooth", rThree, -7).connect(this.gH3);
-
     const sum = gain(1);
-    this.gSub.connect(sum);
-    this.gMain.connect(sum);
-    this.gBeat.connect(sum);
-    this.gH2.connect(sum);
-    this.gH3.connect(sum);
+    for (let i = 0; i < 5; i++) {
+      const rg = ratio(p.ratios[i]!);
+      const o = ctx.createOscillator();
+      o.type = p.types[i]!;
+      // Intrinsic value must be zero: the ratio gain is the only thing allowed
+      // to set pitch, otherwise 440 Hz leaks in on top of every harmonic.
+      o.frequency.value = 0;
+      // Two voices at the same order, a few cents apart. Cylinders never fire at
+      // identical pressure, and that beating is most of the "many pistons"
+      // impression. Which slots are unison is a profile decision (the six has
+      // two order-1 voices; the V8 has none).
+      o.detune.value = i === 1 && p.ratios[1] === p.ratios[0] ? 13 : 0;
+      const lg = gain(p.weights[i]!);
+      rg.connect(o.frequency);
+      o.connect(lg);
+      lg.connect(sum);
+      this.oscs.push(o);
+      this.ratioGains.push(rg);
+      this.layerGains.push(lg);
+    }
 
     // Throttle plate: cutoff rides both engine speed (via the control signal)
     // and load (set per frame). Closing it off-throttle is most of the overrun.
     this.plate = ctx.createBiquadFilter();
     this.plate.type = "lowpass";
-    this.plate.frequency.value = 400;
+    this.plate.frequency.value = p.plateClosed;
     this.plate.Q.value = 0.7;
-    rPlate.connect(this.plate.frequency);
+    this.plateRatio.connect(this.plate.frequency);
     sum.connect(this.plate);
 
     // Fixed formants. These do not track pitch — that is the entire point.
@@ -167,15 +354,15 @@ export class EngineVoice {
       b.gain.value = g;
       return b;
     };
-    const pipe = formant(118, 3.4, 8); // exhaust pipe half-wave resonance
-    const body = formant(470, 2.1, 5); // airbox / engine bay
-    this.rasp = formant(1750, 1.5, 2); // hard edge, opens under load
+    this.pipe = formant(p.pipeHz, p.pipeQ, p.pipeGain);
+    this.body = formant(p.bodyHz, p.bodyQ, p.bodyGain);
+    this.rasp = formant(p.raspHz, p.raspQ, 2);
 
-    this.oscTrim = this.ctx.createGain();
+    this.oscTrim = ctx.createGain();
     this.oscTrim.gain.value = 1;
-    this.plate.connect(pipe);
-    pipe.connect(body);
-    body.connect(this.rasp);
+    this.plate.connect(this.pipe);
+    this.pipe.connect(this.body);
+    this.body.connect(this.rasp);
     this.rasp.connect(this.oscTrim);
     this.oscTrim.connect(this.out);
 
@@ -190,7 +377,7 @@ export class EngineVoice {
     intakeBp.type = "bandpass";
     intakeBp.frequency.value = 220;
     intakeBp.Q.value = 0.8;
-    rIntake.connect(intakeBp.frequency);
+    this.intakeRatio.connect(intakeBp.frequency);
     this.gIntake = gain(0);
     noiseSrc.connect(intakeBp);
     intakeBp.connect(this.gIntake);
@@ -208,18 +395,34 @@ export class EngineVoice {
     this.gOver.connect(this.out);
 
     // Turbo: narrow whistle well above the harmonic stack.
-    const turboBp = ctx.createBiquadFilter();
-    turboBp.type = "bandpass";
-    turboBp.frequency.value = 2400;
-    turboBp.Q.value = 9;
-    rTurbo.connect(turboBp.frequency);
+    this.turboBp = ctx.createBiquadFilter();
+    this.turboBp.type = "bandpass";
+    this.turboBp.frequency.value = 2400;
+    this.turboBp.Q.value = p.turboQ;
+    this.turboRatio.connect(this.turboBp.frequency);
     this.gTurbo = gain(0);
-    noiseSrc.connect(turboBp);
-    turboBp.connect(this.gTurbo);
+    noiseSrc.connect(this.turboBp);
+    this.turboBp.connect(this.gTurbo);
     this.gTurbo.connect(this.out);
+
+    // Transmission whine. A pure tone would read as a test signal; a sawtooth
+    // through a high-Q peaking filter keeps the upper mesh harmonics that make
+    // it identifiable as a gearbox.
+    this.whineOsc = ctx.createOscillator();
+    this.whineOsc.type = "sawtooth";
+    this.whineOsc.frequency.value = p.whineHz;
+    this.whinePk = ctx.createBiquadFilter();
+    this.whinePk.type = "bandpass";
+    this.whinePk.frequency.value = p.whineHz * 2;
+    this.whinePk.Q.value = p.whineQ;
+    this.gWhine = gain(0);
+    this.whineOsc.connect(this.whinePk);
+    this.whinePk.connect(this.gWhine);
+    this.gWhine.connect(this.out);
 
     this.rpmCs.start();
     noiseSrc.start();
+    this.whineOsc.start();
     for (const o of this.oscs) o.start();
   }
 
@@ -228,13 +431,54 @@ export class EngineVoice {
     return this.rpm01;
   }
 
+  getClass() {
+    return this.classId;
+  }
+
+  /**
+   * Swap the engine's character. Only called between heats (garage / class
+   * select), where the engine is not sounding — the ratio gains retune their
+   * oscillators the instant they are written, so doing this mid-throttle would
+   * be an audible glitch. The ramps below are belt-and-braces for the case where
+   * a heat restarts without passing through the menu.
+   */
+  setClass(t: number, id: EngineClassId) {
+    if (id === this.classId) return;
+    this.classId = id;
+    const p = ENGINE_PROFILES[id];
+    this.profile = p;
+    for (let i = 0; i < 5; i++) {
+      this.ratioGains[i]!.gain.setTargetAtTime(p.ratios[i]!, t, 0.03);
+      this.layerGains[i]!.gain.setTargetAtTime(p.weights[i]!, t, 0.03);
+      this.oscs[i]!.type = p.types[i]!;
+      this.oscs[i]!.detune.value =
+        i === 1 && p.ratios[1] === p.ratios[0] ? 13 : 0;
+    }
+    this.plateRatio.gain.setTargetAtTime(p.plateOrder, t, 0.03);
+    this.intakeRatio.gain.setTargetAtTime(p.intakeOrder, t, 0.03);
+    this.turboRatio.gain.setTargetAtTime(p.turboOrder, t, 0.03);
+    this.pipe.frequency.setTargetAtTime(p.pipeHz, t, 0.03);
+    this.pipe.Q.setTargetAtTime(p.pipeQ, t, 0.03);
+    this.body.frequency.setTargetAtTime(p.bodyHz, t, 0.03);
+    this.body.Q.setTargetAtTime(p.bodyQ, t, 0.03);
+    this.rasp.frequency.setTargetAtTime(p.raspHz, t, 0.03);
+    this.rasp.Q.setTargetAtTime(p.raspQ, t, 0.03);
+    this.turboBp.Q.setTargetAtTime(p.turboQ, t, 0.03);
+    this.whinePk.Q.setTargetAtTime(p.whineQ, t, 0.03);
+    this.spool = 0;
+  }
+
   update(t: number, s: EngineInput) {
+    const p = this.profile;
     if (!s.active) {
       this.out.gain.setTargetAtTime(0, t, 0.09);
       this.gIntake.gain.setTargetAtTime(0, t, 0.09);
       this.gOver.gain.setTargetAtTime(0, t, 0.09);
       this.gTurbo.gain.setTargetAtTime(0, t, 0.09);
+      this.gWhine.gain.setTargetAtTime(0, t, 0.09);
       this.overrun = 0;
+      this.spool = 0;
+      this.prevThrottle = 0;
       return;
     }
 
@@ -256,14 +500,10 @@ export class EngineVoice {
       ),
     );
     this.rpm01 = rpm01;
-    const rpm = IDLE_RPM + (MAX_RPM - IDLE_RPM) * rpm01;
-    this.rpmCs.offset.setTargetAtTime(rpm * FIRE_PER_RPM, t, 0.055);
+    const rpm = p.idleRpm + (p.maxRpm - p.idleRpm) * rpm01;
+    this.rpmCs.offset.setTargetAtTime((rpm * p.cylinders) / 120, t, 0.055);
 
-    const load = Math.max(
-      s.throttle,
-      s.boost ? 1 : 0,
-      s.drifting ? 0.6 : 0,
-    );
+    const load = Math.max(s.throttle, s.boost ? 1 : 0, s.drifting ? 0.6 : 0);
     // Overrun only exists with revs on the clock and a closed throttle. Slewed
     // in JS (not just on the param) because the crackle rate reads the same
     // value and a stepped target would make the crackle burst in clumps.
@@ -273,36 +513,100 @@ export class EngineVoice {
     this.overrun += (overTarget - this.overrun) * k;
     const over = this.overrun;
 
+    // --- turbo as stored energy --------------------------------------------
+    // A turbo is driven by exhaust mass flow, so it needs *both* throttle and
+    // revs, and it has rotational inertia: it builds slowly and bleeds fast.
+    // Modelling it as a gain that follows `boost` (the previous behaviour) gives
+    // instant full whistle the frame the button is pressed, which is the single
+    // most obviously wrong thing a turbo can do.
+    const spoolTarget = load * Math.min(1, rpm01 * 1.6) * (s.boost ? 1 : 0.72);
+    const rise = Math.min(1, s.dt / Math.max(0.05, p.spoolTime));
+    const fall = Math.min(1, s.dt / 0.14);
+    this.spool +=
+      (spoolTarget - this.spool) * (spoolTarget > this.spool ? rise : fall);
+    const spool = this.spool;
+
+    // Blow-off: the throttle plate shuts against a still-spinning compressor
+    // and the trapped charge has to go somewhere. Requires real stored pressure,
+    // so it cannot fire off a throttle blip at idle.
+    if (
+      p.bovLevel > 0 &&
+      this.prevThrottle > 0.55 &&
+      s.throttle < 0.18 &&
+      spool > 0.32 &&
+      t - this.lastBov > 0.45
+    ) {
+      this.lastBov = t;
+      this.blowOff(t, spool);
+      // Venting dumps the stored pressure — the turbo has to spool again.
+      this.spool *= 0.35;
+    }
+    this.prevThrottle = s.throttle;
+
     // Layer crossfade. Low weight is the idle lope, mid is the on-cam pull.
     const low = (1 - rpm01) * (1 - rpm01);
     const mid = rpm01 * (0.35 + 0.65 * load);
-
-    this.gSub.gain.setTargetAtTime(0.16 + low * 0.42, t, 0.05);
-    this.gMain.gain.setTargetAtTime(0.3 + load * 0.24, t, 0.045);
-    this.gBeat.gain.setTargetAtTime(0.1 + mid * 0.26, t, 0.05);
-    this.gH2.gain.setTargetAtTime(0.04 + mid * 0.4, t, 0.045);
-    this.gH3.gain.setTargetAtTime(0.005 + mid * rpm01 * 0.34, t, 0.045);
-    // Off-throttle the combustion harmonics fall away, they do not just get
-    // quieter — the noise layers below take over the same energy.
-    this.oscTrim.gain.setTargetAtTime(1 - over * 0.55, t, 0.06);
-
-    this.plate.frequency.setTargetAtTime(
-      260 + load * 1500 - over * 180,
+    const w = p.weights;
+    // Order 0 carries the idle character, the top two carry the on-load edge.
+    this.layerGains[0]!.gain.setTargetAtTime(
+      w[0]! * (0.4 + low * 1.05),
       t,
       0.05,
     );
-    this.rasp.gain.setTargetAtTime(1 + load * rpm01 * 9, t, 0.08);
+    this.layerGains[1]!.gain.setTargetAtTime(w[1]! * (0.75 + load * 0.6), t, 0.045);
+    this.layerGains[2]!.gain.setTargetAtTime(w[2]! * (0.6 + mid * 1.6), t, 0.05);
+    this.layerGains[3]!.gain.setTargetAtTime(w[3]! * (0.5 + mid * 2.2), t, 0.045);
+    this.layerGains[4]!.gain.setTargetAtTime(
+      w[4]! * (0.3 + mid * rpm01 * 3.4),
+      t,
+      0.045,
+    );
+    // Off-throttle the combustion harmonics fall away, they do not just get
+    // quieter — the noise layers below take over the same energy.
+    this.oscTrim.gain.setTargetAtTime((1 - over * 0.55) * p.trim, t, 0.06);
+
+    this.plate.frequency.setTargetAtTime(
+      p.plateClosed + load * (p.plateOpen - p.plateClosed) - over * 180,
+      t,
+      0.05,
+    );
+    // Exhaust resonance is load dependent: a pipe with more gas moving through
+    // it resonates harder. A fixed pipe gain is why the previous engine sounded
+    // the same at part throttle and wide open.
+    this.pipe.gain.setTargetAtTime(p.pipeGain * (0.55 + load * 0.75), t, 0.07);
+    this.pipe.Q.setTargetAtTime(p.pipeQ * (0.8 + load * 0.45), t, 0.09);
+    this.body.gain.setTargetAtTime(p.bodyGain * (0.7 + load * 0.5), t, 0.08);
+    this.rasp.gain.setTargetAtTime(1 + load * rpm01 * p.raspMax, t, 0.08);
 
     this.gIntake.gain.setTargetAtTime(
-      (0.02 + load * 0.13) * (0.3 + s.speed01 * 0.9),
+      (0.02 + load * p.intakeLevel) * (0.3 + s.speed01 * 0.9),
       t,
       0.05,
     );
     this.gOver.gain.setTargetAtTime(over * 0.075 * (0.4 + rpm01), t, 0.07);
-    this.gTurbo.gain.setTargetAtTime(
-      (s.boost ? 0.045 : 0.008) * load * rpm01,
+    // Whistle level follows stored pressure, and the band follows engine speed
+    // via turboRatio — a spooled turbo at low revs is a low whistle, which is
+    // exactly the sound of a big turbo coming on song.
+    this.gTurbo.gain.setTargetAtTime(p.turboLevel * spool * spool, t, 0.05);
+
+    // Gear mesh: frequency from engine speed (tooth-mesh is an input-shaft
+    // property), level from torque through the gearset — highest in the low
+    // gears, which is where a real gearbox whines.
+    const gearLoad = load * (1.25 - Math.min(1, (s.gear - 1) / 5) * 0.6);
+    this.whineOsc.frequency.setTargetAtTime(
+      p.whineHz + rpm01 * p.whineSpan,
       t,
-      0.12,
+      0.05,
+    );
+    this.whinePk.frequency.setTargetAtTime(
+      (p.whineHz + rpm01 * p.whineSpan) * 2,
+      t,
+      0.05,
+    );
+    this.gWhine.gain.setTargetAtTime(
+      p.whineLevel * gearLoad * Math.min(1, s.speed01 * 3),
+      t,
+      0.06,
     );
 
     const level =
@@ -317,7 +621,7 @@ export class EngineVoice {
     // independent, plus a hard floor between bursts so a 240 Hz frame cannot
     // turn it into a buzz.
     if (over > 0.4 && rpm01 > 0.4 && t - this.lastCrackle > 0.055) {
-      if (Math.random() < over * s.dt * 11) {
+      if (Math.random() < over * s.dt * 11 * p.crackle) {
         this.lastCrackle = t;
         this.crackle(t, over);
       }
@@ -355,5 +659,46 @@ export class EngineVoice {
     };
     src.start(t, noiseOffset(buf, dur));
     src.stop(t + dur + 0.01);
+  }
+
+  /**
+   * Blow-off valve. Two stages, because the real thing is: a sharp release of
+   * pressure through a small orifice (a bright chirp that falls as the pressure
+   * drops), then the compressor freewheeling down (the flutter). Rate-limited to
+   * one every 450 ms by the caller.
+   */
+  private blowOff(t: number, pressure: number) {
+    const ctx = this.ctx;
+    const p = this.profile;
+    const buf = sharedNoise(ctx);
+    const dur = 0.16 + pressure * 0.22;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    const f0 = 2600 + Math.random() * 900;
+    bp.frequency.setValueAtTime(f0, t);
+    // Falling, not fixed: the orifice velocity drops as the plenum empties.
+    bp.frequency.exponentialRampToValueAtTime(620, t + dur);
+    bp.Q.setValueAtTime(3.4, t);
+    const g = ctx.createGain();
+    const peak = p.bovLevel * pressure;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(peak, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(peak * 0.35, t + dur * 0.45);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.out);
+    src.onended = () => {
+      try {
+        g.disconnect();
+      } catch {
+        /* already torn down */
+      }
+    };
+    src.start(t, noiseOffset(buf, 0));
+    src.stop(t + dur + 0.02);
   }
 }
