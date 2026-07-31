@@ -27,6 +27,7 @@ import {
 import type { InputController } from "../input";
 import { qualityManager, type QualitySettings } from "./quality";
 import { initGltfDecoders } from "./gltfLoaders";
+import { CSM } from "three/examples/jsm/csm/CSM.js";
 import { GpuDetailDriver } from "./shaders/GpuDetailDriver";
 import { probeWebGpu } from "./shaders/webgpu";
 import {
@@ -861,6 +862,83 @@ const SHADOW_EXTENT = 55;
  * The centre is snapped to whole shadow-map texels: without that, sub-texel
  * movement makes shadow edges crawl and shimmer as you drive.
  */
+/**
+ * Cascaded shadow maps for the sun.
+ *
+ * The single following cascade below covers SHADOW_EXTENT metres around the
+ * car and nothing outside it casts at all — drive up to a ridge and the whole
+ * mid-distance is unshadowed, which is the most obvious remaining gap against
+ * an engine like UE. CSM splits the view frustum into several cascades so near
+ * geometry gets dense texels while distant geometry still casts.
+ *
+ * CSM owns its own directional lights, so SunLight must NOT also be mounted —
+ * two suns would double the diffuse contribution.
+ *
+ * It also has to patch every shadow-receiving material's shader. Materials here
+ * are created lazily (glTF loads, procedural terrain, pooled props), so the
+ * scene is re-swept periodically rather than once; `setupMaterial` is
+ * idempotent per material and we track which we've handled.
+ */
+function CascadedSun({ q }: { q: QualitySettings }) {
+  const { scene, camera } = useThree();
+  const csmRef = useRef<CSM | null>(null);
+  const patched = useRef(new WeakSet<THREE.Material>());
+  const frame = useRef(0);
+
+  useEffect(() => {
+    if (!q.shadowEnabled) return;
+    const csm = new CSM({
+      maxFar: Math.min(320, (camera as THREE.PerspectiveCamera).far ?? 320),
+      cascades: q.tier === "high" ? 4 : 3,
+      mode: "practical",
+      parent: scene,
+      shadowMapSize: q.shadowMapSize,
+      // Matches the previous fixed sun direction so the art reads the same.
+      lightDirection: new THREE.Vector3(-55, -70, 25).normalize(),
+      lightIntensity: 3.0,
+      camera,
+      shadowBias: -0.00018,
+      lightMargin: 220,
+    });
+    csm.fade = true;
+    for (const l of csm.lights) l.color.set("#ffe8c8");
+    csmRef.current = csm;
+    return () => {
+      csm.remove();
+      csm.dispose();
+      csmRef.current = null;
+    };
+  }, [scene, camera, q.shadowEnabled, q.shadowMapSize, q.tier]);
+
+  useFrame(() => {
+    const csm = csmRef.current;
+    if (!csm) return;
+    // Re-sweep occasionally: async glTF loads and pooled props introduce new
+    // materials long after mount, and an unpatched material silently ignores
+    // the cascades (it keeps sampling the old single shadow map slot).
+    if (frame.current++ % 45 === 0) {
+      scene.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh || !m.material) return;
+        const mats = Array.isArray(m.material) ? m.material : [m.material];
+        for (const mat of mats) {
+          const sm = mat as THREE.MeshStandardMaterial;
+          if (!sm?.isMeshStandardMaterial || patched.current.has(sm)) continue;
+          patched.current.add(sm);
+          try {
+            csm.setupMaterial(sm);
+          } catch {
+            /* a material CSM cannot patch is better skipped than fatal */
+          }
+        }
+      });
+    }
+    csm.update();
+  }, FRAME.LATE);
+
+  return null;
+}
+
 function SunLight({ sim, q }: { sim: GameSimulation; q: QualitySettings }) {
   const ref = useRef<THREE.DirectionalLight>(null);
   // Direction only — magnitude just needs to clear the shadow-camera near plane.
@@ -936,7 +1014,9 @@ function RaceWorld({
       <fog attach="fog" args={["#c8b090", fogNear, fogFar]} />
       <ambientLight intensity={0.62} color="#f4e4c8" />
       <hemisphereLight args={["#ffc898", "#2a1810", 1.1]} />
-      <SunLight sim={sim} q={q} />
+      {/* CSM owns its own directional lights, so exactly one of these may be
+          mounted — two suns would double the diffuse contribution. */}
+      {q.shadowEnabled ? <CascadedSun q={q} /> : <SunLight sim={sim} q={q} />}
       <ShaderWarmup />
       <AdaptiveResolution />
       <directionalLight position={[-40, 22, 40]} intensity={0.65} color="#88b8e8" />
