@@ -44,6 +44,15 @@ export type RangeOpts = {
   hazeTo: number;
   /** Haze strength at hazeTo, 0..1. */
   hazeMax: number;
+  /**
+   * How creased the ridges are. 1 = the raw multifractal, sharp enough to look
+   * like crumpled paper; below 1 pulls mass back into the flanks so summits
+   * are still summits but the faces between them are broad. ~0.55 reads as
+   * weathered desert rock, which is what this range is.
+   */
+  sharpness?: number;
+  /** Metres of world per texture tile, vertically. 0 disables the detail map. */
+  tileM?: number;
 };
 
 /**
@@ -69,14 +78,54 @@ function ridgeField(x: number, z: number, seed: number): number {
   let prev = 1;
   for (let i = 0; i < 6; i++) {
     let n = 1 - Math.abs(perlin2(wx * freq + seed * 17.3, wz * freq - seed * 9.1));
-    n = n * n * prev;
-    prev = Math.min(1, n * 1.5);
+    // n*n creases the fold; mixing back toward the unsquared value softens it.
+    // At full strength every octave adds another hard crest and the range ends
+    // up looking like crumpled paper rather than rock.
+    n = (n * n * 0.72 + n * 0.28) * prev;
+    // 1.5 concentrated nearly all the detail onto the crest lines. 1.15 lets
+    // the flanks keep some, which is what gives a face instead of a blade.
+    prev = Math.min(1, n * 1.15);
     sum += n * amp;
     norm += amp;
-    amp *= 0.48;
+    // Faster falloff (was 0.48): the top octaves are the ones that read as
+    // needle-sharp at this distance, and they are mostly aliasing anyway once
+    // a quad spans 20m.
+    amp *= 0.42;
     freq *= 2.07;
   }
   return sum / Math.max(1e-6, norm);
+}
+
+/**
+ * One pass of a 5-tap blur over the height grid, wrapping in angle.
+ *
+ * The noise tuning above controls how creased the FIELD is; this controls how
+ * creased the MESH is, and they are not the same thing — a summit that is one
+ * quad wide is a spike however gentle the underlying function. Smoothing the
+ * sampled grid is the only thing that reliably takes the points off, and it
+ * cannot introduce new detail the way re-tuning octaves can.
+ */
+function relaxHeights(h: Float32Array, cols: number, rows: number, k: number) {
+  const src = h.slice();
+  for (let r = 0; r < rows; r++) {
+    for (let a = 0; a < cols; a++) {
+      // cols - 1 is the duplicated seam column, so wrap over that period to
+      // keep the join smooth instead of pinching it.
+      const period = cols - 1;
+      const am = ((a - 1) % period + period) % period;
+      const ap = (a + 1) % period;
+      const rm = Math.max(0, r - 1);
+      const rp = Math.min(rows - 1, r + 1);
+      const avg =
+        (src[r * cols + am]! +
+          src[r * cols + ap]! +
+          src[rm * cols + a]! +
+          src[rp * cols + a]!) *
+        0.25;
+      const i = r * cols + a;
+      h[i] = src[i]! + (avg - src[i]!) * k;
+    }
+  }
 }
 
 function smoothstep(a: number, b: number, x: number): number {
@@ -100,12 +149,36 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
 
   const pos = new Float32Array(count * 3);
   const col = new Float32Array(count * 3);
+  const uv = new Float32Array(count * 2);
+  const hN = new Float32Array(count);
 
   const low = new THREE.Color(o.rockLow);
   const high = new THREE.Color(o.rockHigh);
   const haze = new THREE.Color(o.haze);
   const tmp = new THREE.Color();
+  const sharp = o.sharpness ?? 0.55;
 
+  // Pass 1: sample the field into a grid so it can be relaxed before it
+  // becomes geometry.
+  for (let r = 0; r < rows; r++) {
+    const tr = r / segsR;
+    const R = o.innerR + (o.outerR - o.innerR) * tr;
+    for (let a = 0; a < cols; a++) {
+      const ang = (a / segsA) * Math.PI * 2;
+      const f = ridgeField(
+        (Math.cos(ang) * R) / o.featureSize,
+        (Math.sin(ang) * R) / o.featureSize,
+        o.seed,
+      );
+      // Exponent > 1 pushes mass into the valleys and leaves isolated summits;
+      // 1.7 was steep enough that the flanks fell away almost vertically.
+      hN[r * cols + a] = Math.pow(f, 1 + sharp);
+    }
+  }
+  // 0.55 rounded the summits so far they read as sand dunes rather than rock.
+  relaxHeights(hN, cols, rows, 0.32);
+
+  // Pass 2: place vertices from the relaxed field.
   for (let r = 0; r < rows; r++) {
     const tr = r / segsR;
     const R = o.innerR + (o.outerR - o.innerR) * tr;
@@ -131,24 +204,38 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
       const x = Math.cos(ang) * R;
       const z = Math.sin(ang) * R;
 
-      const f = ridgeField(x / o.featureSize, z / o.featureSize, o.seed);
-      // Sharpen: pushes the mass down into valleys and leaves distinct summits
-      // instead of a uniformly lumpy blanket.
-      const hN = Math.pow(f, 1.7);
-      const h = hN * o.peak * amp;
-
       const i = r * cols + a;
+      const n = hN[i]!;
+      const h = n * o.peak * amp;
+
       pos[i * 3] = x;
       pos[i * 3 + 1] = o.baseY + h - sink;
       pos[i * 3 + 2] = z;
 
+      /*
+       * Cylindrical UVs, not planar.
+       *
+       * A top-down projection would smear the detail map down every slope, and
+       * slopes are the only part of a ring you see from inside it. Wrapping
+       * around the ring and climbing with height instead runs the texture up
+       * the faces, which is also the direction real strata run. `tilesAround`
+       * is forced to a whole number so the seam column lands exactly on a tile
+       * boundary.
+       */
+      if (o.tileM) {
+        const circ = 2 * Math.PI * ((o.innerR + o.outerR) * 0.5);
+        const tilesAround = Math.max(1, Math.round(circ / o.tileM));
+        uv[i * 2] = (a / segsA) * tilesAround;
+        uv[i * 2 + 1] = pos[i * 3 + 1]! / o.tileM;
+      }
+
       // Sun-bleached toward the summits, shadowed rock in the gullies.
-      tmp.copy(low).lerp(high, smoothstep(0.08, 0.85, hN));
+      tmp.copy(low).lerp(high, smoothstep(0.08, 0.85, n));
       // Aerial perspective by distance, minus a little on the peaks — summits
       // stand above the densest air, which is what makes a range read as deep
       // rather than as a flat cut-out.
       const f2 = smoothstep(o.hazeFrom, o.hazeTo, R) * o.hazeMax;
-      tmp.lerp(haze, Math.min(1, f2 * (1 - hN * 0.3)));
+      tmp.lerp(haze, Math.min(1, f2 * (1 - n * 0.3)));
 
       col[i * 3] = tmp.r;
       col[i * 3 + 1] = tmp.g;
@@ -178,6 +265,7 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  if (o.tileM) geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
   geo.setIndex(idx);
   geo.computeVertexNormals();
 

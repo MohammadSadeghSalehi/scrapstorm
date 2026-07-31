@@ -1,12 +1,14 @@
 /**
  * Desert atmosphere: gradient sky dome, soft dust sheets, sun bloom, clouds, mesas.
  */
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
 import { buildRidgeRange } from "./ridgeRange";
+import { clonePbrPack, preloadPbrLibrary } from "./webgl2/textureLibrary";
+import { getMaxAnisotropy } from "./webgl2/configure";
 import { TRACK_SAMPLES } from "../track";
 import {
   softCircleTexture,
@@ -216,6 +218,8 @@ export function Atmosphere() {
         hazeFrom: 300,
         hazeTo: 660,
         hazeMax: 0.62,
+        sharpness: 0.72,
+        tileM: 46,
       }),
     };
   }, [q.tier]);
@@ -248,9 +252,73 @@ export function Atmosphere() {
         hazeFrom: 600,
         hazeTo: 840,
         hazeMax: 0.82,
+        // Softer than the foothills: at 600-840m a crease narrower than a few
+        // metres is below a pixel and only contributes shimmer.
+        sharpness: 0.6,
+        tileM: 78,
       }),
     [q.tier],
   );
+
+  /**
+   * Detail map for the ranges.
+   *
+   * Vertex colours alone gave a smooth clay look — they can only vary as fast
+   * as the vertices, and the quads out here are tens of metres across. A tiled
+   * rock albedo adds the sub-quad break-up that makes a slope read as stone.
+   *
+   * `color` above 1 is deliberate: three multiplies map x color x vertexColor,
+   * and the rock albedo is dark, so without the lift the vertex colours (which
+   * carry the whole haze and stratification design) would be crushed toward
+   * black. THREE.Color is not clamped, so this is just a gain.
+   *
+   * Albedo only — no normal map. At 600-840m a normal map contributes almost
+   * nothing but costs a fetch and a TBN per fragment across the entire horizon
+   * band, and frame time is the current constraint.
+   */
+  const rangeMat = useMemo(
+    () => new THREE.MeshLambertMaterial({ vertexColors: true, fog: false }),
+    [],
+  );
+
+  /*
+   * Attach the detail map when the library is ACTUALLY ready.
+   *
+   * The first version of this read isPbrLibraryReady() inside a useMemo. That
+   * memo runs once, on mount, and Atmosphere mounts before the PBR library has
+   * finished loading — so it took the untextured branch and never looked
+   * again. It failed silently and looked plausible: the ranges still rendered,
+   * just flat. Caught it because the QA texture count went DOWN (121 -> 115)
+   * when adding a texture should have pushed it up.
+   *
+   * Awaiting the preload promise removes the race entirely. Mutating the one
+   * material rather than swapping instances keeps the meshes from remounting;
+   * needsUpdate forces the program rebuild that adding a map requires.
+   */
+  useEffect(() => {
+    let alive = true;
+    void preloadPbrLibrary().then(() => {
+      if (!alive) return;
+      const rock = clonePbrPack("rock", 1, 1);
+      if (!rock) return;
+      rock.map.anisotropy = Math.min(getMaxAnisotropy(), q.anisotropy || 8);
+      rock.map.needsUpdate = true;
+      rangeMat.map = rock.map;
+      /*
+       * Gain above 1 is deliberate. three multiplies map x color x vertexColor,
+       * and the rock albedo is dark, so without the lift the vertex colours —
+       * which carry the entire haze and stratification design — would be
+       * crushed toward black. THREE.Color is not clamped, so this is just gain.
+       */
+      rangeMat.color.setRGB(2.05, 2.0, 1.95);
+      rangeMat.needsUpdate = true;
+    });
+    return () => {
+      alive = false;
+    };
+  }, [rangeMat, q.anisotropy]);
+
+  useEffect(() => () => rangeMat.dispose(), [rangeMat]);
 
   const backdrop = useRef<THREE.Group>(null);
   const moteGroup = useRef<THREE.Group>(null);
@@ -305,13 +373,14 @@ export function Atmosphere() {
 
         {/* No renderOrder override — three.js sorts opaque front-to-back, and
             forcing the farthest object first would make everything else
-            overdraw it. */}
-        <mesh geometry={farRange} frustumCulled={false}>
-          {/* Lambert, not Standard: this covers the full width of the horizon
-              band, and distant hazed rock has no specular response worth
-              paying a PBR fragment for. */}
-          <meshLambertMaterial vertexColors fog={false} />
-        </mesh>
+            overdraw it. Lambert, not Standard: this covers the full width of
+            the horizon band, and distant hazed rock has no specular response
+            worth paying a PBR fragment for. */}
+        <mesh
+          geometry={farRange}
+          material={rangeMat}
+          frustumCulled={false}
+        />
         {/* Same DIRECTION as before (so it still lines up with SunLight and
             the shadows), pushed out to just inside the dome. At 179m it was
             nearer than the mountains it is supposed to be setting behind. */}
@@ -366,9 +435,11 @@ export function Atmosphere() {
       </group>
 
       <group position={[midRange.cx, 0, midRange.cz]}>
-        <mesh geometry={midRange.geo} frustumCulled={false}>
-          <meshLambertMaterial vertexColors fog={false} />
-        </mesh>
+        <mesh
+          geometry={midRange.geo}
+          material={rangeMat}
+          frustumCulled={false}
+        />
       </group>
 
 
