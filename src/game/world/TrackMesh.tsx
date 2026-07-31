@@ -19,6 +19,7 @@ import {
   type RoadSegment,
   type RoadBuildResult,
 } from "./culling";
+import { RoadsideFurniture, ScatterField, VergeDrift } from "./scatter";
 
 /**
  * Metres of road covered by one tile of the asphalt / gravel packs.
@@ -359,6 +360,16 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       <CulledBeacons />
       <CullableScenery />
       <GltfDebris />
+
+      {/*
+        World density (punch list §1.2). Six draw calls between them: three
+        instanced desert fields, guard rail, sponsor hoardings, and the sand
+        drift that ties the tarmac edge into the sand. Mounted last so the
+        blended drift sorts after the opaque road it sits on.
+      */}
+      <ScatterField />
+      <RoadsideFurniture />
+      <VergeDrift />
     </group>
   );
 }

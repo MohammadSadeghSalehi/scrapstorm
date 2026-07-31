@@ -172,9 +172,6 @@ type Batch = {
   cz: Float32Array;
 };
 
-/** Collapsed instance transform, reused so culling allocates nothing. */
-const HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
-
 export function SceneryDecor() {
   const group = useRef<THREE.Group>(null);
   const [ready, setReady] = useState(0);
@@ -322,8 +319,17 @@ export function SceneryDecor() {
   }, [list]);
 
   useFrame(() => {
-    // Per-instance distance culling by collapsing the transform. Throttled —
-    // the visible set barely changes frame to frame at race speeds.
+    /*
+     * Per-instance distance culling. Throttled — the visible set barely changes
+     * frame to frame at race speeds.
+     *
+     * Visible instances are PACKED TO THE FRONT and `count` is trimmed. This
+     * previously wrote a zero-scale matrix into the hidden slots instead, which
+     * looks equivalent and is not: a degenerate instance is still dispatched
+     * and still runs the vertex shader for every vertex of a Poly Haven prop,
+     * so a covered car 400m away cost the same transform work as one alongside
+     * the player. Same fix as CullableScenery's.
+     */
     if (tick.current++ % 8 !== 0) return;
     const maxD = tier === "low" ? 70 : tier === "medium" ? 110 : 150;
     const maxD2 = maxD * maxD;
@@ -339,10 +345,15 @@ export function SceneryDecor() {
         const on = dx * dx + dz * dz < maxD2 ? 1 : 0;
         if (on === vis[i]) continue;
         vis[i] = on;
-        b.mesh.setMatrixAt(i, on ? b.base[i] : HIDDEN);
         dirty = true;
       }
-      if (dirty) b.mesh.instanceMatrix.needsUpdate = true;
+      if (!dirty) continue;
+      let w = 0;
+      for (let i = 0; i < b.base.length; i++) {
+        if (vis[i]) b.mesh.setMatrixAt(w++, b.base[i]);
+      }
+      b.mesh.count = w;
+      b.mesh.instanceMatrix.needsUpdate = true;
     }
   }, FRAME.LATE);
 
