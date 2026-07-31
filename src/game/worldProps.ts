@@ -5,7 +5,12 @@
  */
 import type { Particle, VehicleState } from "./types";
 import { VEHICLE_HITBOX } from "./physics";
-import { EDGE_MARKERS, TRACK_SAMPLES, SCENERY } from "./track";
+import {
+  EDGE_MARKERS,
+  TRACK_SAMPLES,
+  SCENERY,
+  getGroundHeight,
+} from "./track";
 import { VEHICLE_CLASSES } from "./classes";
 import { downEdgeAt, resetEdgeDamage } from "./world/edgeDamage";
 import {
@@ -91,7 +96,9 @@ export function spawnWorldProps(): PhysProp[] {
       vy: 0,
       vz: 0,
       spin: 0,
-      radius: 0.55,
+      // A verge marker is a ~10cm stick. 0.55 gave it a 1.1m-wide collider, so
+      // you clipped posts you visibly missed.
+      radius: 0.28,
       mass: 0.35,
       dynamic: false,
       hp: 999,
@@ -226,12 +233,17 @@ export function spawnWorldProps(): PhysProp[] {
       { dx: 6, dz: -16, kind: "crate" },
     ];
     for (const y of yard) {
+      const px = s0.x + y.dx;
+      const pz = s0.z + y.dz;
       props.push({
         id: nid(y.kind),
         kind: y.kind,
-        x: s0.x + y.dx,
-        y: 0.48,
-        z: s0.z + y.dz,
+        x: px,
+        // Was a literal 0.48 — the height of a barrel resting on a road at
+        // y = 0. This cluster sits 4-28m off the start line where the berm has
+        // already started to climb, so every one of them was buried or hanging.
+        y: getGroundHeight(px, pz) + 0.48,
+        z: pz,
         yaw: Math.random() * Math.PI,
         vx: 0,
         vy: 0,
@@ -257,7 +269,7 @@ export function spawnWorldProps(): PhysProp[] {
       id: nid("sc"),
       kind: "barrier",
       x: sc.x,
-      y: 1,
+      y: sc.y + 1,
       z: sc.z,
       yaw: sc.rot,
       vx: 0,
@@ -417,8 +429,13 @@ const CRATE_SHATTER_SPEED = 19;
 /**
  * Closing speed above which a barrier breaks apart instead of holding. Below
  * this it still deflects rather than stopping you — see the static branch.
+ *
+ * `breakable` is set on exactly one thing: the wooden marker posts lining the
+ * verge. 9 m/s meant a 4-inch stick held firm up to 32 km/h and deflected the
+ * car — it read as a bollard. A marker post snaps if you lean on it. 2.5 m/s is
+ * walking pace, so in practice it always snaps, which is the point.
  */
-const BARRIER_BREAK_SPEED = 9;
+const BARRIER_BREAK_SPEED = 2.5;
 /**
  * Reference prop mass (a light barrel) that reaction is scaled against.
  *
@@ -496,19 +513,25 @@ export function collideVehiclesWithProps(
       // scenery at speed is the thing that felt worst — just a speed cost and
       // hull damage as you plough through.
       if (!p.dynamic && p.breakable && velN > BARRIER_BREAK_SPEED) {
-        const drive = Math.min(2.0, velN / BARRIER_BREAK_SPEED);
+        // Scaled against a racing-pace reference, NOT the snap threshold. With
+        // the threshold at 2.5 every contact would saturate `drive` at 2.0 and
+        // a gentle clip would throw the same shower as a full-speed hit.
+        const drive = Math.min(2.0, velN / 14);
         downEdgeAt(p.x, p.z);
         // Slabs go where the car was going. A radial burst would read as an
         // explosion; a barrier is something you plough through.
         const carSpd = Math.hypot(va.vx, va.vz) || 1;
         destroyProp(p, particles, va.vx / carSpd, va.vz / carSpd, drive * 0.9);
-        const keep = 0.9 - 0.06 * drive; // heavier hits scrub more speed
+        // Was 0.9 - 0.06*drive: up to 22% of your speed for one wooden post,
+        // and the verge carries dozens of them. A stick this size costs you
+        // almost nothing to snap — the penalty should be felt, not survived.
+        const keep = 0.985 - 0.012 * drive;
         applyWorldVel(v, va.vx * keep, va.vz * keep);
         va.vx *= keep;
         va.vz *= keep;
-        v.hitStun = Math.max(v.hitStun, 0.06);
-        v.impactFlash = Math.max(v.impactFlash, 0.4);
-        v.health = Math.max(0, v.health - 3.5 * drive);
+        v.hitStun = Math.max(v.hitStun, 0.015);
+        v.impactFlash = Math.max(v.impactFlash, 0.12);
+        v.health = Math.max(0, v.health - 0.5 * drive);
         v.damageVisual = Math.min(
           1,
           Math.max(v.damageVisual, 1 - v.health / v.maxHealth),

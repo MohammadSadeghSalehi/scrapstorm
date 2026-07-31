@@ -4,7 +4,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { SCENERY } from "../../track";
+import { SCENERY, getGroundHeight } from "../../track";
 import { createProcMaterial } from "../procmat";
 import {
   loadPhModel,
@@ -119,14 +119,22 @@ export function CullableDunes({
   const dunes = useMemo(() => {
     const tier = qualityManager.get().tier;
     const count = tier === "low" ? 22 : tier === "medium" ? 36 : 48;
-    const out: (DuneDef & { h: number; sx: number; sz: number })[] = [];
+    const out: (DuneDef & { h: number; sx: number; sz: number; gy: number })[] =
+      [];
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + i * 0.37;
       const ring = 55 + (i % 7) * 22 + (i % 3) * 8;
       const r = 9 + (i % 5) * 4.5;
+      const dx = Math.cos(a) * ring + 18 + Math.sin(i * 1.7) * 12;
+      const dz = Math.sin(a) * ring + 38 + Math.cos(i * 1.3) * 10;
       out.push({
-        x: Math.cos(a) * ring + 18 + Math.sin(i * 1.7) * 12,
-        z: Math.sin(a) * ring + 38 + Math.cos(i * 1.3) * 10,
+        x: dx,
+        z: dz,
+        // These mounds predate the heightmap terrain, when the ground was a
+        // flat plane at 0 and -0.05 buried the seam. Now the ground moves under
+        // them, so a fixed y leaves a hemisphere hanging over a dip or swallowed
+        // by a dune.
+        gy: getGroundHeight(dx, dz) - 0.05,
         r,
         rot: a + i * 0.2,
         h: 2.2 + (i % 4) * 1.4,
@@ -159,7 +167,7 @@ export function CullableDunes({
           ref={(el) => {
             refs.current[i] = el;
           }}
-          position={[d.x, -0.05, d.z]}
+          position={[d.x, d.gy, d.z]}
           rotation={[0, d.rot, 0]}
           scale={[d.sx, Math.max(0.12, d.h / Math.max(0.1, d.r)), d.sz]}
           castShadow={i % 3 === 0}
@@ -185,7 +193,11 @@ export function CullableDunes({
       {dunes.slice(0, 10).map((d, i) => (
         <mesh
           key={`berm-${i}`}
-          position={[d.x * 0.55 + 10, 0.1, d.z * 0.55 + 15]}
+          position={[
+            d.x * 0.55 + 10,
+            getGroundHeight(d.x * 0.55 + 10, d.z * 0.55 + 15) + 0.1,
+            d.z * 0.55 + 15,
+          ]}
           rotation={[0, d.rot * 0.7, 0]}
           scale={[0.7, 0.28, 1.1]}
           receiveShadow
@@ -515,7 +527,7 @@ async function buildSceneryBatches(
         for (const i of idx) {
           const s = items[i];
           itemM.compose(
-            pos.set(s.x, 0, s.z),
+            pos.set(s.x, s.y, s.z),
             quat.setFromAxisAngle(UP, s.rot),
             scl.setScalar(s.scale),
           );
@@ -589,7 +601,7 @@ export function CullableScenery() {
     sceneryCullBus.setSpheres(
       items.map((s) => {
         const k = KIND_SPHERE[s.kind];
-        return { x: s.x, y: k.y * s.scale, z: s.z, r: k.r * s.scale };
+        return { x: s.x, y: s.y + k.y * s.scale, z: s.z, r: k.r * s.scale };
       }),
     );
   }, [items]);
@@ -669,7 +681,7 @@ export function CullableScenery() {
         if (low && i % 2 === 1) return null;
         // Fallback only: a kind with real geometry draws no primitive.
         if (covered.has(s.kind)) return null;
-        const y = 0;
+        const y = s.y;
         const body =
           s.kind === "tower" ? (
             <>

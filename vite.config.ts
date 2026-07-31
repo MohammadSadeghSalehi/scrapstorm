@@ -129,6 +129,24 @@ export default defineConfig(({ command }) => ({
     host: "0.0.0.0",
     port: 8080,
     strictPort: true,
+    /*
+     * The dev server runs under WSL against /mnt/c. inotify does not cross the
+     * drvfs boundary, so a file written by a Windows-side editor fires no event
+     * and Vite's transform cache never invalidates: the browser keeps serving
+     * the code as it was when the server started, however many times you
+     * reload. Every edit silently required a full restart, which is why fixes
+     * that were correct on disk kept "not working" in the browser.
+     *
+     * Polling is the only thing that sees these writes. 400ms is under the
+     * threshold where it feels stale and cheap enough on a src tree this size;
+     * node_modules is excluded because walking it is what makes polling
+     * expensive.
+     */
+    watch: {
+      usePolling: true,
+      interval: 400,
+      ignored: ["**/node_modules/**", "**/.git/**", "**/public/assets/**"],
+    },
   },
   resolve: { tsconfigPaths: true },
   plugins: [

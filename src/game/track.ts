@@ -211,6 +211,8 @@ function buildEdgeMarkersFrom(
 type SceneryItem = {
   x: number;
   z: number;
+  /** Ground height at (x, z) — filled in by settleScenery, never guessed. */
+  y: number;
   kind: "tower" | "pile" | "pipe" | "crane";
   scale: number;
   rot: number;
@@ -232,6 +234,7 @@ function buildSceneryFrom(samples: TrackSample[]): SceneryItem[] {
     items.push({
       x: s.x + rx * side * off,
       z: s.z + rz * side * off,
+      y: 0,
       kind: kinds[i % kinds.length]!,
       scale: 0.9 + (i % 4) * 0.18,
       rot: (i * 0.37) % (Math.PI * 2),
@@ -241,15 +244,15 @@ function buildSceneryFrom(samples: TrackSample[]): SceneryItem[] {
   const s0 = samples[0];
   if (s0) {
     items.push(
-      { x: s0.x + 40, z: s0.z + 60, kind: "tower", scale: 1.4, rot: 0.3 },
-      { x: s0.x + 20, z: s0.z + 50, kind: "crane", scale: 1.2, rot: 1.1 },
-      { x: s0.x + 55, z: s0.z + 40, kind: "pile", scale: 1.6, rot: 0.5 },
-      { x: s0.x - 10, z: s0.z + 70, kind: "pipe", scale: 1.1, rot: 0.8 },
-      { x: s0.x + 70, z: s0.z - 20, kind: "crane", scale: 1.3, rot: 2.1 },
-      { x: s0.x - 40, z: s0.z + 30, kind: "tower", scale: 1.15, rot: 0.9 },
+      { x: s0.x + 40, z: s0.z + 60, y: 0, kind: "tower", scale: 1.4, rot: 0.3 },
+      { x: s0.x + 20, z: s0.z + 50, y: 0, kind: "crane", scale: 1.2, rot: 1.1 },
+      { x: s0.x + 55, z: s0.z + 40, y: 0, kind: "pile", scale: 1.6, rot: 0.5 },
+      { x: s0.x - 10, z: s0.z + 70, y: 0, kind: "pipe", scale: 1.1, rot: 0.8 },
+      { x: s0.x + 70, z: s0.z - 20, y: 0, kind: "crane", scale: 1.3, rot: 2.1 },
+      { x: s0.x - 40, z: s0.z + 30, y: 0, kind: "tower", scale: 1.15, rot: 0.9 },
     );
   }
-  return clearOfTrack(items, samples);
+  return settleScenery(items, samples);
 }
 
 /*
@@ -266,7 +269,7 @@ function buildSceneryFrom(samples: TrackSample[]): SceneryItem[] {
  * Brute force over samples - a few hundred points against ~22 items, once per
  * track build.
  */
-function clearOfTrack(
+function settleScenery(
   items: SceneryItem[],
   samples: TrackSample[],
 ): SceneryItem[] {
@@ -285,20 +288,26 @@ function clearOfTrack(
     }
     // Footprint grows with scale; these kits run 6-10m across at scale 1.
     const need = bs.width * 0.5 + 26 + it.scale * 8;
-    const d = Math.sqrt(best);
-    if (d >= need) return it;
-    // Push out along the away-from-centreline direction. Degenerate case (item
-    // sitting exactly on a sample) falls back to the sample's right normal.
-    let nx = it.x - bs.x;
-    let nz = it.z - bs.z;
-    if (d < 1e-3) {
-      nx = Math.cos(bs.yaw);
-      nz = -Math.sin(bs.yaw);
-    } else {
-      nx /= d;
-      nz /= d;
+    let d = Math.sqrt(best);
+    let { x, z } = it;
+    if (d < need) {
+      // Push out along the away-from-centreline direction. Degenerate case
+      // (item sitting exactly on a sample) falls back to the sample's normal.
+      let nx = it.x - bs.x;
+      let nz = it.z - bs.z;
+      if (d < 1e-3) {
+        nx = Math.cos(bs.yaw);
+        nz = -Math.sin(bs.yaw);
+      } else {
+        nx /= d;
+        nz /= d;
+      }
+      x = bs.x + nx * need;
+      z = bs.z + nz * need;
+      d = need;
     }
-    return { ...it, x: bs.x + nx * need, z: bs.z + nz * need };
+    const y = duneProfile(bs.y, sampleDuneField(x, z), d, bs.width * 0.5);
+    return { ...it, x, z, y };
   });
 }
 
@@ -338,6 +347,23 @@ export let TRACK_LENGTH = pack.length;
 export let CHECKPOINTS: CheckpointGate[] = pack.checkpoints;
 export let EDGE_MARKERS = pack.edges;
 export let SCENERY: SceneryItem[] = pack.scenery;
+syncSceneryHeights();
+
+/**
+ * Re-derive scenery `y` from the real ground query, once the track is live.
+ *
+ * settleScenery has to approximate: it runs inside rebuild(), before
+ * TRACK_SAMPLES and activeId are assigned, so getSurfaceAt is not usable yet
+ * and it falls back to nearest-SAMPLE distance. getSurfaceAt measures exact
+ * point-to-segment, and on the berm roll-off those disagree by up to ~0.4m —
+ * enough to leave a crane visibly hovering. Cheap to redo (23 items), and it
+ * guarantees scenery sits on exactly the surface physics reports rather than on
+ * a second, slightly different copy of the height curve.
+ */
+function syncSceneryHeights() {
+  if (!TRACK_SAMPLES.length) return;
+  for (const s of SCENERY) s.y = getGroundHeight(s.x, s.z);
+}
 
 export function getTrackEpoch() {
   return trackEpoch;
@@ -352,6 +378,7 @@ export function setActiveTrack(id: TrackId) {
   CHECKPOINTS = pack.checkpoints;
   EDGE_MARKERS = pack.edges;
   SCENERY = pack.scenery;
+  syncSceneryHeights();
   trackEpoch += 1;
 }
 
@@ -530,11 +557,28 @@ export function getSurfaceAt(
  */
 export function getGroundHeight(x: number, z: number): number {
   const surf = getSurfaceAt(x, z);
-  const roadY = surf.sample.y;
-  const dist = surf.dist;
-  const half = surf.half;
-  const dune = sampleDuneField(x, z);
+  return duneProfile(surf.sample.y, sampleDuneField(x, z), surf.dist, surf.half);
+}
 
+/**
+ * The desert height profile, as a pure function of (road height, dune noise,
+ * distance from centreline, half-width).
+ *
+ * Split out of getGroundHeight so that anything PLACING geometry can land on
+ * exactly the surface physics will report, without needing the active track
+ * state. Scenery, decor and props all used to sit at the road plane (`s.y`) or
+ * at a literal `0`, neither of which is where the ground is once you are more
+ * than a couple of metres off the tarmac — which is the whole reason crates and
+ * pipes were hanging in mid-air. Any placement code that duplicated this curve
+ * instead of calling it would drift out of sync the moment one copy changed, so
+ * there is deliberately only one.
+ */
+export function duneProfile(
+  roadY: number,
+  dune: number,
+  dist: number,
+  half: number,
+): number {
   // Asphalt + tight shoulder: dead flat so cars never clip dunes
   const roadPad = half + 2.5;
   if (dist <= roadPad) {

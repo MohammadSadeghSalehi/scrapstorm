@@ -5,7 +5,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { TRACK_SAMPLES, SCENERY } from "../track";
+import {
+  TRACK_SAMPLES,
+  SCENERY,
+  getGroundHeight,
+  getSurfaceAt,
+} from "../track";
 import { loadPhModel, type PhModelKey } from "./polyHavenAssets";
 import { FRAME } from "./framePriority";
 import { qualityManager } from "./quality";
@@ -20,7 +25,8 @@ type DecorItem = {
   targetLen: number;
 };
 
-function buildDecorList(tier: string): DecorItem[] {
+/** Exported so placement can be asserted against the ground query, not eyeballed. */
+export function buildDecorList(tier: string): DecorItem[] {
   const items: DecorItem[] = [];
   const n = TRACK_SAMPLES.length;
   if (n < 8) return items;
@@ -117,9 +123,45 @@ function buildDecorList(tier: string): DecorItem[] {
     });
   }
 
-  if (tier === "low") return items.slice(0, 28);
-  if (tier === "medium") return items.slice(0, 48);
-  return items.slice(0, 72);
+  if (tier === "low") return settleDecor(items.slice(0, 28));
+  if (tier === "medium") return settleDecor(items.slice(0, 48));
+  return settleDecor(items.slice(0, 72));
+}
+
+/**
+ * Drop decor onto the ground and off the tarmac.
+ *
+ * Every branch above set `y` to the ROAD plane (`s.y`) or to a literal 0, but
+ * these sit 6m+ from the edge where the berm has already begun to climb, so
+ * they were floating or sunk depending on which way the dune went. Nothing here
+ * participates in physics, which makes a piece that intersects the road worse
+ * than ugly: you drive straight through it. Pushing it clear is the fix — a
+ * collider on set dressing would just be an invisible wall in a different spot.
+ */
+function settleDecor(items: DecorItem[]): DecorItem[] {
+  return items.map((it) => {
+    let { x, z } = it;
+    // Half the kit's longest dimension, plus the shoulder the car uses.
+    const pad = 3.5 + it.targetLen * 0.5;
+    const surf = getSurfaceAt(x, z);
+    const need = surf.half + pad;
+    if (surf.dist < need) {
+      const s = surf.sample;
+      let nx = x - s.x;
+      let nz = z - s.z;
+      const d = Math.hypot(nx, nz);
+      if (d < 1e-3) {
+        nx = Math.cos(s.yaw);
+        nz = -Math.sin(s.yaw);
+      } else {
+        nx /= d;
+        nz /= d;
+      }
+      x = s.x + nx * need;
+      z = s.z + nz * need;
+    }
+    return { ...it, x, z, y: getGroundHeight(x, z) };
+  });
 }
 
 /** One InstancedMesh plus the per-instance data needed to distance-cull it. */
