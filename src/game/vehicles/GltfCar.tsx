@@ -20,7 +20,26 @@ const MODEL_URL: Record<VehicleClassId, string> = {
   bruiser: "/assets/meshes/custom/SM_MeshGen_DesertCombatVehicle.glb",
 };
 
-const AI_URL = MODEL_URL;
+/**
+ * Decimated variants for AI cars (scripts/build-vehicle-lods.mjs).
+ *
+ * The authored meshes are 96-105k triangles each. That is fine for the hero
+ * car filling the frame, but a 4-car grid rendering all of them at full
+ * density spent ~400k tris/frame on vehicles — most of it on cars a few dozen
+ * pixels tall. lod1 is ~25k (-75%) and holds the same bounding box, so the
+ * geometric facing rules resolve identically.
+ *
+ * Falls back to the full mesh if the LOD has not been generated, so a fresh
+ * checkout without the build step still runs.
+ */
+const AI_URL: Record<VehicleClassId, string> = {
+  interceptor:
+    "/assets/meshes/custom/lod/SM_MeshGen_WastelandCustomCar.lod1.glb",
+  trickster:
+    "/assets/meshes/custom/lod/SM_MeshGen_CustomWidebodyHatchback.lod1.glb",
+  bruiser:
+    "/assets/meshes/custom/lod/SM_MeshGen_DesertCombatVehicle.lod1.glb",
+};
 
 /** Pilot mesh for garage showcase */
 export const PILOT_URL =
@@ -968,16 +987,17 @@ export function GltfVehicleMesh({
     };
 
     const tryLoad = async () => {
-      const primary = hero
-        ? MODEL_URL[vehicle.classId]
-        : AI_URL[vehicle.classId];
+      const full = MODEL_URL[vehicle.classId];
+      const primary = hero ? full : AI_URL[vehicle.classId];
       try {
         const tpl = await loadTemplate(primary);
         mount(tpl, primary);
       } catch {
         try {
-          const tpl = await loadTemplate(FALLBACK_URL);
-          mount(tpl, FALLBACK_URL);
+          // LOD missing (build step not run) — fall back to the full mesh
+          // before dropping all the way to the generic Kenney car.
+          const tpl = await loadTemplate(primary === full ? FALLBACK_URL : full);
+          mount(tpl, primary === full ? FALLBACK_URL : full);
         } catch {
           if (alive) setFailed(true);
         }
