@@ -2,6 +2,7 @@ import { COMBAT } from "./balance";
 import { VEHICLE_CLASSES } from "./classes";
 import { applyDamage } from "./physics";
 import { getGroundHeight } from "./track";
+import { emitAudioCue } from "./audio/cues";
 import type { Mine, Particle, PlayerInput, Projectile, VehicleState } from "./types";
 
 let nextId = 1;
@@ -98,6 +99,23 @@ export function tryPrimary(
 
   const dmg = def.primaryDamage * chargeMul;
 
+  // Audio is emitted here rather than off the input edge because the shot is
+  // only real once the cooldown has passed — and because this is the single
+  // point every vehicle fires through, which is what finally gives AI weapons
+  // a sound. Charge level drives loudness so a full-charge shot lands harder.
+  emitAudioCue(
+    v.classId === "interceptor"
+      ? "fire-bolt"
+      : v.classId === "bruiser"
+        ? "fire-cannon"
+        : "fire-disc",
+    v.x,
+    v.y + 0.6,
+    v.z,
+    0.75 + chargeMul * 0.35,
+    v.isPlayer,
+  );
+
   if (v.classId === "interceptor") {
     for (const side of [-0.32, 0.32]) {
       projectiles.push({
@@ -164,6 +182,7 @@ export function tryDefense(
   }
   v.defenseCooldown = def.defenseCooldown;
   v.shieldCharge = Math.max(0, v.shieldCharge - 0.2);
+  emitAudioCue("defense", v.x, v.y + 0.6, v.z, 1, v.isPlayer);
 
   if (v.classId === "interceptor") {
     v.defenseActive = 1.25;
@@ -182,6 +201,7 @@ export function tryDefense(
 export function tryUltimate(v: VehicleState, input: PlayerInput, mines: Mine[]): void {
   if (!input.useUltimate || v.ultimateCharge < 1 || v.wreckTimer > 0 || !v.alive) return;
   v.ultimateCharge = 0;
+  emitAudioCue("ult", v.x, v.y + 0.6, v.z, 1.2, v.isPlayer);
 
   if (v.classId === "interceptor") {
     v.ultimateActive = 4.2;
@@ -214,6 +234,9 @@ export function tryUltimate(v: VehicleState, input: PlayerInput, mines: Mine[]):
         damage: 30,
       });
     }
+    // One cue for the whole volley: five clanks in five frames is a rattle, and
+    // the engine's per-kind gate would swallow four of them anyway.
+    emitAudioCue("mine-drop", v.x, v.y, v.z, 1, v.isPlayer);
   }
 }
 
@@ -233,6 +256,11 @@ export function stepProjectiles(
       p.vy -= 6 * dt;
       const ground = getGroundHeight(p.x, p.z) + 0.2;
       if (p.y < ground) {
+        // Only the first real bounce is worth hearing. A shell that has settled
+        // keeps re-entering this branch every step with a near-zero vy.
+        if (p.vy < -2.5) {
+          emitAudioCue("shell-land", p.x, p.y, p.z, 0.8, false);
+        }
         p.y = ground;
         p.vy *= -0.22;
         p.vx *= 0.88;
@@ -261,6 +289,20 @@ export function stepProjectiles(
         v.impactFlash = Math.max(v.impactFlash, 0.12);
         v.speed += ((p.vx * dx + p.vz * dz) / len) * 0.018;
         spawnHitSparks(particles, p.x, p.y, p.z, p.kind === "cannon" ? "#fdba74" : "#5eead4");
+        // The impact belongs to the victim, not the shooter: `self` is what
+        // decides whether the player hears it dry (their own hull) or panned.
+        emitAudioCue(
+          p.kind === "cannon"
+            ? "hit-cannon"
+            : p.kind === "disc"
+              ? "hit-disc"
+              : "hit-bolt",
+          p.x,
+          p.y,
+          p.z,
+          0.6 + p.damage / 40,
+          v.isPlayer,
+        );
         // Shooter ultimate trickle on hit
         const owner = vehicles.find((o) => o.id === p.ownerId);
         if (owner) {
@@ -310,6 +352,7 @@ export function stepMines(
         v.hitStun = Math.max(v.hitStun, 0.38);
         v.impactFlash = Math.max(v.impactFlash, 0.25);
         spawnHitSparks(particles, m.x, m.y + 0.5, m.z, "#f87171");
+        emitAudioCue("mine-blast", m.x, m.y + 0.5, m.z, 1.3, v.isPlayer);
         for (let k = 0; k < 6; k++) {
           const a = Math.random() * Math.PI * 2;
           particles.push({

@@ -1,15 +1,57 @@
 /**
  * R3F-side continuous audio + event feeder from sim state.
+ *
+ * Runs at FRAME.LATE, i.e. after the chase camera has been posed, because the
+ * Web Audio listener is the camera — updating it earlier would place every
+ * panned source one frame behind the picture.
+ *
+ * This is per-frame main-thread work in a build that is already main-thread
+ * bound, so everything here is written to allocate nothing: the sim scan is a
+ * plain loop rather than find/reduce/slice, the continuous-mix payload and the
+ * opponent buffer are module-level and reused, and the cue drain takes a
+ * module-level callback rather than a fresh closure.
  */
 import { useRef, type MutableRefObject } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import type { GameSimulation } from "../sim";
 import { VEHICLE_CLASSES } from "../classes";
 import { RACE } from "../balance";
 import { isDrifting } from "../physics";
-import { audioEngine } from "./AudioEngine";
+import { getSurfaceAt } from "../track";
+import { audioEngine, type ContinuousInput } from "./AudioEngine";
+import { drainAudioCues, type AudioCue } from "./cues";
+import { OPPONENT_STRIDE, OPPONENT_VOICES } from "./spatial";
 import type { GameEvent, PlayerInput, VehicleClassId } from "../types";
 import { FRAME } from "../world/framePriority";
+
+/** Reused every frame — see the file header. */
+const CONT: ContinuousInput = {
+  phase: "menu",
+  speed: 0,
+  maxSpeed: 1,
+  throttle: 0,
+  drifting: false,
+  slip: 0,
+  boost: false,
+  offroad: 0,
+  roughness: 0.08,
+  gear: 1,
+  brake: false,
+  dt: 1 / 60,
+};
+
+const OPP = new Float32Array(OPPONENT_VOICES * OPPONENT_STRIDE);
+/** Squared distance of the vehicle currently held in each opponent slot. */
+const OPP_DIST = new Float32Array(OPPONENT_VOICES);
+
+const onCue = (cue: AudioCue) => audioEngine.playCue(cue);
+
+/**
+ * The surface query walks the track centreline, so it is not free and the
+ * answer barely changes between frames at 90 m/s. 12 Hz is well inside the
+ * slew the tyre bed and the reverb crossfade already apply.
+ */
+const SURFACE_INTERVAL = 1 / 12;
 
 export function AudioDriver({
   sim,
@@ -31,10 +73,18 @@ export function AudioDriver({
   const prevLap = useRef(0);
   const prevPos = useRef(0);
   const voFlip = useRef(0);
+  const surfaceAt = useRef(0);
+
+  const camera = useThree((s) => s.camera);
 
   const musicBoot = useRef(false);
-  useFrame(() => {
-    if (!audioEngine.isUnlocked()) return;
+  useFrame((_, delta) => {
+    if (!audioEngine.isUnlocked()) {
+      // Still drain, or the ring fills with shots fired before the first click
+      // and dumps them all at once the moment audio unlocks.
+      drainAudioCues(onCue);
+      return;
+    }
     const st = sim.state;
     if (!musicBoot.current) {
       musicBoot.current = true;
@@ -45,41 +95,125 @@ export function AudioDriver({
         audioEngine.playMusic("garage_vibe");
       }
     }
-    const player = st.vehicles.find((v) => v.isPlayer);
-    if (!player) return;
+
+    // Listener first: cues drained below are positioned against it.
+    const e = camera.matrixWorld.elements;
+    audioEngine.updateListener(
+      e[12]!,
+      e[13]!,
+      e[14]!,
+      // Three's camera looks down local -Z; columns 1 and 2 of the world matrix
+      // are the up and back axes.
+      -e[8]!,
+      -e[9]!,
+      -e[10]!,
+      e[4]!,
+      e[5]!,
+      e[6]!,
+    );
+
+    const vehicles = st.vehicles;
+    let player = null;
+    for (let i = 0; i < vehicles.length; i++) {
+      if (vehicles[i]!.isPlayer) {
+        player = vehicles[i]!;
+        break;
+      }
+    }
+    if (!player) {
+      drainAudioCues(onCue);
+      return;
+    }
 
     const def = VEHICLE_CLASSES[player.classId];
-    const slip =
-      player.tires?.reduce((a, t) => a + t.slip, 0) /
-        Math.max(1, player.tires?.length ?? 1) || 0;
+    const tires = player.tires;
+    let slip = 0;
+    if (tires && tires.length) {
+      for (let i = 0; i < tires.length; i++) slip += tires[i]!.slip;
+      slip /= tires.length;
+    }
     const inp = lastInput.current;
-    const drifting = inp
-      ? isDrifting(player, inp)
-      : player.driftMeter > 0.25;
+    const drifting = inp ? isDrifting(player, inp) : player.driftMeter > 0.25;
 
     const sp = Math.abs(player.speed) / Math.max(1, def.maxSpeed);
     const gear = Math.min(5, Math.floor(sp * 5) + 1);
     const braking = !!(inp?.brake && !drifting && Math.abs(player.speed) > 10);
-    audioEngine.updateContinuous({
-      phase: st.phase,
-      speed: Math.abs(player.speed),
-      maxSpeed: def.maxSpeed,
-      throttle: inp?.throttle ?? 0,
-      drifting,
-      slip: Math.min(1, slip),
-      surface: player.surface,
-      boost: player.boostTimer > 0,
-      offroad: player.offroadAmount,
-      gear,
-      brake: braking,
-    });
+
+    const racing =
+      st.phase === "racing" || st.phase === "countdown" || st.phase === "paused";
+
+    // Surface + reverb zone come from one throttled query. Physics already owns
+    // this classification; re-deriving it here would be a second source of truth
+    // that could disagree with what the car is actually driving on.
+    if (racing && st.time - surfaceAt.current > SURFACE_INTERVAL) {
+      surfaceAt.current = st.time;
+      const info = getSurfaceAt(player.x, player.z, player.yaw);
+      CONT.roughness = info.roughness;
+      audioEngine.updateReverb(info);
+    }
+
+    CONT.phase = st.phase;
+    CONT.speed = Math.abs(player.speed);
+    CONT.maxSpeed = def.maxSpeed;
+    CONT.throttle = inp?.throttle ?? 0;
+    CONT.drifting = drifting;
+    CONT.slip = Math.min(1, slip);
+    CONT.boost = player.boostTimer > 0;
+    CONT.offroad = player.offroadAmount;
+    CONT.gear = gear;
+    CONT.brake = braking;
+    CONT.dt = delta;
+    audioEngine.updateContinuous(CONT);
+
+    // Nearest few rivals get a panned engine drone. Selection is an insertion
+    // into a fixed 3-slot table rather than a sort, so no array is built.
+    if (racing) {
+      let count = 0;
+      for (let i = 0; i < vehicles.length; i++) {
+        const v = vehicles[i]!;
+        if (v.isPlayer || !v.alive) continue;
+        const dx = v.x - player.x;
+        const dz = v.z - player.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 > 42000) continue; // ~205 m, past the panner's cull
+        let slot = count < OPPONENT_VOICES ? count : -1;
+        if (slot < 0) {
+          let worst = 0;
+          for (let k = 1; k < OPPONENT_VOICES; k++) {
+            if (OPP_DIST[k]! > OPP_DIST[worst]!) worst = k;
+          }
+          if (d2 >= OPP_DIST[worst]!) continue;
+          slot = worst;
+        } else {
+          count += 1;
+        }
+        OPP_DIST[slot] = d2;
+        const b = slot * OPPONENT_STRIDE;
+        OPP[b] = v.x;
+        OPP[b + 1] = v.y + 0.5;
+        OPP[b + 2] = v.z;
+        const vsp = Math.min(
+          1,
+          Math.abs(v.speed) / Math.max(1, VEHICLE_CLASSES[v.classId].maxSpeed),
+        );
+        // AI input is not exposed here, so load is inferred: a rival at speed or
+        // on boost is on the throttle.
+        OPP[b + 3] = Math.min(1, 0.1 + ((vsp * 5) % 1) * 0.8 + vsp * 0.15);
+        OPP[b + 4] = Math.min(1, vsp * 0.8 + (v.boostTimer > 0 ? 0.4 : 0));
+        OPP[b + 5] = i;
+      }
+      audioEngine.updateOpponents(OPP, count, delta);
+    } else {
+      audioEngine.silenceOpponents();
+    }
+
+    drainAudioCues(onCue);
 
     // One-shot layers for brake lockup / drift entry
     if (braking && Math.abs(player.speed) > 25) {
       // continuous scrub covers it; occasional sample
       if (Math.random() < 0.02) audioEngine.playSfx("scrape");
     }
-
 
     if (st.phase !== prevPhase.current) {
       if (st.phase === "countdown") {
@@ -184,17 +318,19 @@ export function AudioDriver({
 
     // events is unshifted (newest first) and trimmed to 12 — walk back to the
     // last entry we saw rather than diffing lengths.
-    if (st.events.length && st.events[0] !== lastEvent.current) {
+    const events = st.events;
+    if (events.length && events[0] !== lastEvent.current) {
       const seen = lastEvent.current;
-      const cut = seen ? st.events.indexOf(seen) : -1;
+      const cut = seen ? events.indexOf(seen) : -1;
       // No anchor (first frame, or audio unlocked mid-heat) — play only the
       // newest so we don't dump a backlog of one-shots at once.
-      const fresh = cut >= 0 ? st.events.slice(0, cut) : st.events.slice(0, 1);
+      const fresh = cut >= 0 ? cut : 1;
       // Oldest-first so a burst reads in the order it happened.
-      for (let i = fresh.length - 1; i >= 0; i--) {
-        audioEngine.feedEvent(fresh[i].message, fresh[i].kind);
+      for (let i = fresh - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (ev) audioEngine.feedEvent(ev.message, ev.kind);
       }
-      lastEvent.current = st.events[0];
+      lastEvent.current = events[0]!;
     }
   }, FRAME.LATE);
 
@@ -207,12 +343,10 @@ export function audioOnInputEdge(
   classId: VehicleClassId,
 ) {
   if (!audioEngine.isUnlocked()) return;
-  if (next.firePrimary && !prev?.firePrimary) {
-    if (classId === "bruiser") audioEngine.playSfx("cannon");
-    else if (classId === "trickster") audioEngine.playSfx("disc");
-    else audioEngine.playSfx("fire");
-  }
-  if (next.useDefense && !prev?.useDefense) audioEngine.playSfx("defense");
-  if (next.useUltimate && !prev?.useUltimate) audioEngine.playSfx("ult");
+  // firePrimary / useDefense / useUltimate are deliberately *not* handled here
+  // any more. They now come out of combat.ts, which is the only place that
+  // knows the action actually happened — off the input edge the player heard a
+  // shot every time they pressed the button, cooldown or not.
+  void classId;
   if (next.boost && !prev?.boost) audioEngine.playSfx("boost");
 }
