@@ -1,7 +1,7 @@
 /**
  * Cinematic post: bloom, vignette, speed chroma, grain.
  */
-import { useMemo } from "react";
+import { forwardRef, useMemo } from "react";
 import {
   EffectComposer,
   Bloom,
@@ -9,13 +9,26 @@ import {
   ChromaticAberration,
   Noise,
   SMAA,
-  HueSaturation,
-  BrightnessContrast,
   N8AO,
 } from "@react-three/postprocessing";
 import { BlendFunction } from "postprocessing";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
+import { GradeEffect } from "./GradeEffect";
+
+/**
+ * The grade replaces the HueSaturation + BrightnessContrast pair it supersedes:
+ * those
+ * could only push global saturation and contrast, which flattens everything
+ * equally. The CDL + split-tone gives separate control over shadows and
+ * highlights, which is where the look actually comes from.
+ *
+ * One instance, memoised — rebuilding an Effect recompiles the composer shader.
+ */
+const Grade = forwardRef<GradeEffect>(function Grade(_props, ref) {
+  const effect = useMemo(() => new GradeEffect(), []);
+  return <primitive ref={ref} object={effect} dispose={null} />;
+});
 
 export function PostFX({
   boost = false,
@@ -112,8 +125,7 @@ export function PostFX({
       ) : (
         <></>
       )}
-      <HueSaturation saturation={high ? 0.12 : 0.08} hue={0} />
-      <BrightnessContrast brightness={0} contrast={high ? 0.14 : 0.1} />
+      <Grade />
       <SMAA />
     </EffectComposer>
   );
