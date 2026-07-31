@@ -52,6 +52,13 @@ export interface PhysProp {
    * 9 m/s nudge delete a crane's collider and call downEdgeAt at its position.
    */
   breakable?: boolean;
+  /**
+   * Cached ground-relative rest height, recomputed only while the prop moves.
+   *
+   * Undefined until the first step. Kept on the prop rather than queried every
+   * frame so a field of settled props costs nothing.
+   */
+  restY?: number;
 }
 
 let seq = 0;
@@ -382,9 +389,17 @@ function destroyProp(
    * it is absolute, so raised track sections are approximated — but sampling
    * the dune field here would only make debris disagree with the props.
    */
+  /*
+   * Plane the chunks bounce on. Must agree with the plane stepWorldProps rests
+   * the prop on, or debris from a prop killed mid-flight bounces in mid-air.
+   * Both are now the ground query rather than an absolute height, which is what
+   * the old comment here called out as this code's "one flaw" — raised sections
+   * were approximated, and off the tarmac they were simply wrong.
+   */
+  const ground = getGroundHeight(p.x, p.z);
   const groundY = p.dynamic
-    ? Math.min(p.y, p.kind === "barrel" ? 0.48 : 0.42)
-    : Math.max(0, p.y - BARRIER_BASE_DROP);
+    ? Math.min(p.y, ground + (p.kind === "barrel" ? 0.48 : 0.42))
+    : Math.max(ground, p.y - BARRIER_BASE_DROP);
   spawnPropDebris(
     p.kind,
     p.x,
@@ -776,7 +791,27 @@ export function stepWorldProps(props: PhysProp[], dt: number) {
     p.z += p.vz * dt;
     p.y += p.vy * dt;
     p.yaw += p.spin * dt;
-    const restY = p.kind === "barrel" ? 0.48 : 0.42;
+    /*
+     * Rest height is GROUND-RELATIVE. It was a literal 0.48 / 0.42 — the height
+     * a barrel sits at on a road at y = 0 — so every prop was dragged down to
+     * that absolute height no matter where it stood. Beside the road the desert
+     * is already several metres up (getGroundHeight reaches roadY + 1.1 +
+     * dune*16.5 out in the open), so props spawned correctly on the surface got
+     * pulled straight down into it on the first step. That is the "barrels in
+     * the ground" report, and it is why fixing the SPAWN heights earlier did
+     * not fix the symptom: this line undid it 60 times a second.
+     *
+     * Cost is one ground query per moving prop per step. The query is ~1.2us
+     * and props asleep on the ground skip it entirely via the settled check
+     * below, so a full field is well under a tenth of a millisecond.
+     */
+    const settled =
+      p.vy === 0 && p.vx === 0 && p.vz === 0 && p.restY !== undefined;
+    if (!settled) {
+      p.restY =
+        getGroundHeight(p.x, p.z) + (p.kind === "barrel" ? 0.48 : 0.42);
+    }
+    const restY = p.restY!;
     // Gravity + ground clamp
     p.vy -= 22 * dt;
     if (p.y <= restY) {
