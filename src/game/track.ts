@@ -219,13 +219,16 @@ type SceneryItem = {
 function buildSceneryFrom(samples: TrackSample[]): SceneryItem[] {
   const items: SceneryItem[] = [];
   const kinds: SceneryItem["kind"][] = ["tower", "pile", "pipe", "crane"];
-  const step = Math.max(4, Math.floor(samples.length / 28));
+  // Sparser and set further back. These are 6-8m untextured boxes; at 14m from
+  // the road edge they loomed over the racing line and read as slabs dumped
+  // beside the track rather than as a distant refinery skyline.
+  const step = Math.max(6, Math.floor(samples.length / 16));
   for (let i = 3; i < samples.length; i += step) {
     const s = samples[i]!;
     const rx = Math.cos(s.yaw);
     const rz = -Math.sin(s.yaw);
     const side = i % 2 === 0 ? 1 : -1;
-    const off = s.width * 0.5 + 14 + (i % 5) * 3;
+    const off = s.width * 0.5 + 34 + (i % 5) * 6;
     items.push({
       x: s.x + rx * side * off,
       z: s.z + rz * side * off,

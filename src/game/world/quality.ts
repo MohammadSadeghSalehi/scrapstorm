@@ -83,25 +83,29 @@ const PRESETS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
     dprMax: 2,
     antialias: true,
     shadowEnabled: true,
-    // 4096 over the 55m cascade is ~37 texels/m — crisp contact shadows.
-    // Affordable now that a discrete GPU is actually being used; the adaptive
-    // tier drop still pulls it back if a machine cannot hold frame.
-    shadowMapSize: 4096,
+    // 2048 over the 55m cascade is ~19 texels/m. 4096 was tried and measured
+    // 151fps -> 81fps together with full-res AO and the particle bump; the
+    // sharpness gain did not justify halving the frame rate.
+    shadowMapSize: 2048,
     softShadows: true,
     bakeScale: 0.8,
-    anisotropy: 16,
+    anisotropy: 8,
     gpuDetail: 0.55,
     shaderOctaves: 3,
     lodNear: 20,
     lodMid: 48,
     lodFar: 90,
-    particleMax: 160,
-    skidMax: 120,
-    dustCount: 120,
+    particleMax: 120,
+    skidMax: 96,
+    dustCount: 96,
     duneSegments: 12,
     skySegments: 40,
     vehicleNormals: true,
-    allVehicleShadows: true,
+    // Reverted to false. Enabling this put all four cars through the shadow
+    // pass and was part of the batch measured at 151fps -> 81fps on an RTX
+    // 5080. Only the player casts; AI shadows are the least-noticed part of
+    // that batch and the most expensive per frame.
+    allVehicleShadows: false,
     hdriEnv: true,
   },
 };

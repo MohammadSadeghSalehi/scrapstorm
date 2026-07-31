@@ -1018,9 +1018,26 @@ function RaceWorld({
       <fog attach="fog" args={["#c8b090", fogNear, fogFar]} />
       <ambientLight intensity={0.62} color="#f4e4c8" />
       <hemisphereLight args={["#ffc898", "#2a1810", 1.1]} />
-      {/* CSM owns its own directional lights, so exactly one of these may be
-          mounted — two suns would double the diffuse contribution. */}
-      {q.shadowEnabled ? <CascadedSun q={q} /> : <SunLight sim={sim} q={q} />}
+      {/*
+        REVERTED to the single following cascade.
+
+        CSM was tried here and measurably made things worse: it adds one
+        directional light PER cascade, each at full intensity, and only
+        materials it has patched know to treat them as one sun sampled by
+        depth. Anything unpatched — and the sweep provably left receivers
+        unpatched, including the terrain plane — sees three suns at full
+        strength. Measured in-scene: 5 directional lights at
+        [0.65, 0.3, 3, 3, 3]. Result was an over-lit, flat frame whose shadows
+        did not read (a pixel shadowed by one cascade still takes full light
+        from the other two), and it cost 3 extra shadow passes: 151fps -> 81fps
+        on an RTX 5080.
+
+        Doing this properly needs every shadow-receiving material routed
+        through setupMaterial at creation time, not swept periodically after
+        the fact. Until that plumbing exists, one tight player-following
+        cascade is both cheaper and better looking.
+      */}
+      <SunLight sim={sim} q={q} />
       <ShaderWarmup />
       <AdaptiveResolution />
       <directionalLight position={[-40, 22, 40]} intensity={0.65} color="#88b8e8" />

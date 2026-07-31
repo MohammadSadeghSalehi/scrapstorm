@@ -74,10 +74,11 @@ export function PostFX({
           aoRadius={high ? 2.2 : 1.8}
           distanceFalloff={1.0}
           intensity={high ? 2.0 : 1.5}
-          quality={high ? "high" : "performance"}
-          // Full-res only on high, where there is budget for it; the
-          // depth-aware upsample keeps half-res acceptable below that.
-          halfRes={!high}
+          quality={high ? "medium" : "performance"}
+          // Half-res on every tier. Full-res on high was measured as part of a
+          // change that took 151fps -> 81fps; the depth-aware upsample makes
+          // the difference hard to see and the cost easy to feel.
+          halfRes
           depthAwareUpsampling
           color="#1c1207"
         />
