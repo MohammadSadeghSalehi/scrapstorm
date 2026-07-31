@@ -1,5 +1,5 @@
 import type { CheckpointGate, SurfaceInfo, SurfaceKind, TrackSample } from "./types";
-import { sampleDuneField } from "./world/terrainHeight";
+import { sampleDuneField, sampleRockMask } from "./world/terrainHeight";
 
 export type TrackId = "ash_spire" | "cinder_bowl";
 
@@ -120,10 +120,25 @@ function buildSamples(ctrls: Ctrl[], segsPer = 20): TrackSample[] {
       const y2 = c2.y ?? 0;
       const y3 = c3.y ?? 0;
       const y = catmullRom(y0, y1, y2, y3, t);
-      // Jump zone lift
       const zone = t < 0.5 ? (c1.zone ?? "race") : (c2.zone ?? "race");
+      /*
+       * Jump lift, applied per SEGMENT rather than per sample.
+       *
+       * This keyed off `zone`, which flips at t = 0.5. On the segment where the
+       * jump run ends, samples just before the midpoint got sin(0.5*PI)*1.8 =
+       * 1.8m of lift and samples just after got none — a 1.8m vertical step
+       * between two adjacent samples, i.e. a wall across the road at the exit
+       * of the ramp.
+       *
+       * Requiring BOTH endpoints to be jump control points makes it continuous
+       * by construction: sin(t*PI) is already zero at t = 0 and t = 1, so the
+       * ramp meets the flat segments on either side at exactly their height,
+       * and no segment can carry a half-applied lift.
+       */
+      const spanIsJump =
+        (c1.zone ?? "race") === "jump" && (c2.zone ?? "race") === "jump";
       let lift = y;
-      if (zone === "jump") lift += Math.sin(t * Math.PI) * 1.8;
+      if (spanIsJump) lift += Math.sin(t * Math.PI) * 1.8;
       const w = (c1.w ?? 26) * (1 - t) + (c2.w ?? 26) * t;
       raw.push({ x, y: lift, z, w, zone });
     }
@@ -306,7 +321,13 @@ function settleScenery(
       z = bs.z + nz * need;
       d = need;
     }
-    const y = duneProfile(bs.y, sampleDuneField(x, z), d, bs.width * 0.5);
+    const y = duneProfile(
+      bs.y,
+      sampleDuneField(x, z),
+      sampleRockMask(x, z),
+      d,
+      bs.width * 0.5,
+    );
     return { ...it, x, z, y };
   });
 }
@@ -557,7 +578,13 @@ export function getSurfaceAt(
  */
 export function getGroundHeight(x: number, z: number): number {
   const surf = getSurfaceAt(x, z);
-  return duneProfile(surf.sample.y, sampleDuneField(x, z), surf.dist, surf.half);
+  return duneProfile(
+    surf.sample.y,
+    sampleDuneField(x, z),
+    sampleRockMask(x, z),
+    surf.dist,
+    surf.half,
+  );
 }
 
 /**
@@ -566,7 +593,11 @@ export function getGroundHeight(x: number, z: number): number {
  *
  * Split out of getGroundHeight so that anything PLACING geometry can land on
  * exactly the surface physics will report, without needing the active track
- * state. Scenery, decor and props all used to sit at the road plane (`s.y`) or
+ * state — AND so that the terrain MESH is built from the same numbers. It was
+ * not: HeightmapTerrain carried its own copy of this curve, and the two had
+ * already drifted (dune 16 vs 16.5, and a rock-mask term worth up to 3.5m that
+ * only the visible side had). The ground you saw and the ground you drove on
+ * were different surfaces by several metres in the open desert. Scenery, decor and props all used to sit at the road plane (`s.y`) or
  * at a literal `0`, neither of which is where the ground is once you are more
  * than a couple of metres off the tarmac — which is the whole reason crates and
  * pipes were hanging in mid-air. Any placement code that duplicated this curve
@@ -576,6 +607,7 @@ export function getGroundHeight(x: number, z: number): number {
 export function duneProfile(
   roadY: number,
   dune: number,
+  rock: number,
   dist: number,
   half: number,
 ): number {
@@ -592,19 +624,19 @@ export function duneProfile(
     // Soft roll-off berm
     const t = (dist - roadPad) / Math.max(0.01, apron - roadPad);
     const s = t * t * (3 - 2 * t);
-    return roadY + dune * 1.15 * s;
+    return roadY + (dune * 1.2 + rock * 0.35) * s;
   }
 
   if (dist < deep) {
     const t = (dist - apron) / Math.max(0.01, deep - apron);
     const s = t * t * (3 - 2 * t);
-    const hNear = 1.1;
-    const hFar = 1.1 + dune * 13.5;
+    const hNear = 1.0;
+    const hFar = 1.1 + dune * 14 + rock * 3;
     return roadY + hNear + (hFar - hNear) * s;
   }
 
   // Far desert — full procedural dunes (taller for horizon drama)
-  return roadY + 1.1 + dune * 16.5;
+  return roadY + 1.1 + dune * 16 + rock * 3.5;
 }
 
 export function isOnTrack(

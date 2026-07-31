@@ -21,7 +21,7 @@
  *    at these densities losing a few percent of the field costs nothing.
  */
 import { TRACK_SAMPLES, duneProfile, getSurfaceAt } from "../../track";
-import { sampleDuneField } from "../terrainHeight";
+import { sampleDuneField, sampleRockMask } from "../terrainHeight";
 import type { TrackSample } from "../../types";
 
 /**
@@ -91,7 +91,13 @@ function rightOf(s: TrackSample): [number, number] {
  * is the dominant cost of building a field.
  */
 function settle(x: number, z: number, surf: ReturnType<typeof getSurfaceAt>) {
-  return duneProfile(surf.sample.y, sampleDuneField(x, z), surf.dist, surf.half);
+  return duneProfile(
+    surf.sample.y,
+    sampleDuneField(x, z),
+    sampleRockMask(x, z),
+    surf.dist,
+    surf.half,
+  );
 }
 
 /**

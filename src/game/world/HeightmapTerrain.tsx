@@ -4,7 +4,7 @@
  */
 import { useMemo } from "react";
 import * as THREE from "three";
-import { TRACK_SAMPLES } from "../track";
+import { TRACK_SAMPLES, duneProfile, getSurfaceAt } from "../track";
 import { sampleDuneField, sampleRockMask } from "./terrainHeight";
 import { qualityManager } from "./quality";
 import { attachGpuDetail } from "./shaders/gpuDetail";
@@ -60,7 +60,8 @@ const cellKey = (cx: number, cz: number) => cx * 73856093 + cz * 19349663;
  * dunes pushed up through the tarmac — the mountains-in-the-road bug. Exact
  * point-to-segment distance over every sample removes the gap entirely.
  */
-function buildTrackField(): TrackField {
+/** Exported so mesh-vs-physics agreement can be asserted, not assumed. */
+export function buildTrackField(): TrackField {
   const n = TRACK_SAMPLES.length;
   const segs: Seg[] = [];
   for (let i = 0; i < n; i++) {
@@ -151,28 +152,67 @@ function nearestTrack(field: TrackField, x: number, z: number) {
  */
 const ROAD_SINK = 0.15;
 
-function meshHeight(field: TrackField, x: number, z: number): number {
-  const { dist, roadY, half } = nearestTrack(field, x, z);
-  const sunk = roadY - ROAD_SINK;
-  if (dist <= half + 2) return sunk;
-  const dune = sampleDuneField(x, z);
-  const rock = sampleRockMask(x, z);
-  const apron = half + 22;
-  const deep = half + 70;
-  if (dist < apron) {
-    const u = (dist - half - 2) / Math.max(0.01, apron - half - 2);
-    const s = u * u * (3 - 2 * u);
-    // Rise from just-below-road back to the open dune field across the apron.
-    const target = roadY + dune * 1.2 + rock * 0.35;
-    return sunk + (target - sunk) * s;
-  }
-  if (dist < deep) {
-    const u = (dist - apron) / Math.max(0.01, deep - apron);
-    const s = u * u * (3 - 2 * u);
-    const base = 1.1 + dune * 14 + rock * 3;
-    return roadY + 1.0 + (base - 1.0) * s;
-  }
-  return roadY + 1.1 + dune * 16 + rock * 3.5;
+/** Exported for the same reason as buildTrackField — see its note. */
+export function meshHeight(field: TrackField, x: number, z: number): number {
+  /*
+   * The surface query has to be the SAME one physics uses, not just an
+   * equivalent one.
+   *
+   * This took nearestTrack(field, ...) — an exact point-to-segment sweep that
+   * INTERPOLATES roadY along the segment — while getGroundHeight takes
+   * getSurfaceAt(x, z), which reports the nearest SAMPLE's y. Same curve, same
+   * rock and dune terms, different base: measured ±1.8m apart out in the far
+   * desert, which is precisely the jump-zone lift (sin * 1.8) reaching a point
+   * 400m away through one query and not the other.
+   *
+   * `field` is still taken so callers keep a stable signature and so the grid
+   * stays available for the carving pass below.
+   */
+  void field;
+  const surf = getSurfaceAt(x, z);
+  const dist = surf.dist;
+  const half = surf.half;
+  const roadY = surf.sample.y;
+
+  /*
+   * ONE curve, shared with physics.
+   *
+   * This function used to carry its own copy of the height profile, and the two
+   * had already drifted: dune 16 here against 16.5 in duneProfile, 14 against
+   * 13.5 across the mid band, and a rock-mask term worth up to 3.5m that only
+   * existed on the visible side. So the ground you could see and the ground you
+   * drove on were different surfaces by several metres out in the open desert —
+   * which is also why anything placed by the ground query could still look
+   * wrong out there after every placement site had been fixed.
+   *
+   * The rock term moved INTO duneProfile rather than being dropped from here:
+   * outcrops are the most legible feature in the far desert, and the correct
+   * resolution of "the mesh has rocks and physics does not" is that you should
+   * be able to drive over what you can see.
+   */
+  const h = duneProfile(
+    roadY,
+    sampleDuneField(x, z),
+    sampleRockMask(x, z),
+    dist,
+    half,
+  );
+
+  /*
+   * The one place the mesh is ALLOWED to differ: it dips below the physics
+   * surface next to the tarmac so the track ribbon wins the depth test instead
+   * of z-fighting with the terrain underneath it. Faded out across the apron so
+   * it never offsets the open desert, where it would reintroduce exactly the
+   * divergence this function was rewritten to remove.
+   */
+  const fadeStart = half + 2.5;
+  const fadeEnd = half + 22;
+  const u = Math.min(
+    1,
+    Math.max(0, (dist - fadeStart) / Math.max(0.01, fadeEnd - fadeStart)),
+  );
+  const sinkFade = 1 - u * u * (3 - 2 * u);
+  return h - ROAD_SINK * sinkFade;
 }
 
 export function HeightmapTerrain() {
