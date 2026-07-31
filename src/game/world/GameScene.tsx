@@ -56,6 +56,7 @@ import { getRivalGhost, subscribeRivalGhost } from "../ghostDuel";
 import { FRAME } from "./framePriority";
 import { PhysicsPropsView } from "./PhysicsPropsView";
 import { SceneryDecor } from "./SceneryDecor";
+import { VfxScene } from "./vfx/VfxScene";
 import { preloadPhRaceProps, preloadSceneryModels } from "./polyHavenAssets";
 
 const USE_GLTF_CARS = true;
@@ -737,6 +738,10 @@ function LiveFx({ sim }: { sim: GameSimulation }) {
       <Nameplates vehicles={state.vehicles} />
       <GhostVehicle sim={sim} />
       <PhysicsPropsView sim={sim} />
+      {/* Inside LiveFx rather than at scene root: LiveFx is already gated to
+          race phases, so the particle and damage pools reset on the way back
+          to the garage instead of persisting across sessions. */}
+      <VfxScene sim={sim} />
     </>
   );
 }

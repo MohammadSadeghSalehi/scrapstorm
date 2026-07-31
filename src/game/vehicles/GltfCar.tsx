@@ -10,6 +10,7 @@ import type { VehicleState, VehicleClassId } from "../types";
 import { ModularVehicleMesh } from "./meshes";
 import { FRAME } from "../world/framePriority";
 import { qualityManager } from "../world/quality";
+import { attachVehicleDeformer } from "../world/damage/meshDeform";
 import { isPbrLibraryReady } from "../world/webgl2/textureLibrary";
 import { TIRE_RADIUS } from "../tires";
 
@@ -1130,6 +1131,13 @@ export function GltfVehicleMesh({
         setFailed(true);
         return;
       }
+      /*
+       * Attach to `clone`, the ROOT — not userData.bodyGroup. The root's matrix
+       * carries the normalisation scale and the faceForwardLongAxis flip, and
+       * hits arrive in car metres; attaching below that chain would silently
+       * apply every dent at the wrong scale and mirrored on flipped meshes.
+       */
+      attachVehicleDeformer(id, clone);
       setShell(clone);
       setFailed(false);
       if (vehicle.isPlayer && !decoy && typeof window !== "undefined") {

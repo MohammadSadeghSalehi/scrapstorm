@@ -93,11 +93,21 @@ interface DebrisProfile {
 const { CHUNK, PLANK, SLAB, PANEL } = DEBRIS_SHAPE;
 
 /**
+ * Everything that can throw debris.
+ *
+ * Widened past PropKind so explosions and wrecks can use the same pool: an
+ * inert `PropKind` union would have forced a parallel pool for blast ejecta,
+ * and two pools competing for the same 96 slots is how you end up with a
+ * chain reaction that shows no wreckage at all.
+ */
+export type DebrisBurstKind = PropKind | "ejecta" | "panel";
+
+/**
  * Per-kind break signatures. These are the whole point of the system: the same
  * burst parameters for every prop is what made destruction read as one generic
  * "puff" effect regardless of what you actually hit.
  */
-const PROFILES: Record<PropKind, DebrisProfile> = {
+const PROFILES: Record<DebrisBurstKind, DebrisProfile> = {
   // Pressure vessel: the lid and wall panels go up and out in a near-spherical
   // burst, metal rings off the tarmac, pieces carry a long way.
   barrel: {
@@ -157,6 +167,37 @@ const PROFILES: Record<PropKind, DebrisProfile> = {
     size: 0.42,
     shapes: [SLAB, SLAB, CHUNK, SLAB, CHUNK],
     palette: ["#e7e5e4", "#d6d3d1", "#a8a29e", "#dc2626", "#78716c"],
+  },
+  // Blast ejecta: soil and rock lifted out of a crater. Goes almost straight
+  // up, comes almost straight down, and does not bounce — dirt does not ring.
+  // Short life because the interesting part is the fountain, not the landing.
+  ejecta: {
+    count: 9,
+    speed: 6.4,
+    up: 1.35,
+    follow: 0.18,
+    spin: 11,
+    bounce: 0.06,
+    drag: 1.5,
+    life: 2.2,
+    size: 0.26,
+    shapes: [CHUNK, CHUNK, SLAB, CHUNK],
+    palette: ["#8a6f4e", "#6d5638", "#a08862", "#4a3a26", "#57534e"],
+  },
+  // Car bodywork torn off in a wreck. Big thin sheets that plane and skate
+  // rather than tumble, and they stay on the road afterwards.
+  panel: {
+    count: 7,
+    speed: 5.2,
+    up: 0.55,
+    follow: 0.8,
+    spin: 8,
+    bounce: 0.22,
+    drag: 1.7,
+    life: 4.2,
+    size: 0.46,
+    shapes: [PANEL, PANEL, CHUNK, PANEL],
+    palette: ["#9ca3af", "#4b5563", "#b91c1c", "#e5e7eb", "#374151"],
   },
 };
 
@@ -248,6 +289,25 @@ export function spawnPropDebris(
   groundY: number,
   radius: number,
 ): void {
+  spawnDebrisBurst(kind, x, y, z, dirX, dirZ, energy, groundY, radius);
+}
+
+/**
+ * The general form. Same contract as spawnPropDebris but accepts the burst
+ * kinds that are not props ("ejecta" from a crater, "panel" from a wreck), so
+ * explosions and destroyed props share one pool and one budget.
+ */
+export function spawnDebrisBurst(
+  kind: DebrisBurstKind,
+  x: number,
+  y: number,
+  z: number,
+  dirX: number,
+  dirZ: number,
+  energy: number,
+  groundY: number,
+  radius: number,
+): void {
   const prof = PROFILES[kind];
   const e = Math.max(0, Math.min(2.2, energy));
   const dirLen = Math.hypot(dirX, dirZ);
@@ -297,6 +357,91 @@ export function spawnPropDebris(
   }
 }
 
+/* ------------------------------------------------- persistent settled scatter */
+
+/**
+ * Wreckage that stays for the rest of the race.
+ *
+ * The live pool has to recycle — 96 slots and a hard per-frame integrator cost
+ * mean a piece cannot be simulated forever. But a road that is swept clean 3
+ * seconds after every impact is the reason a long race never looks like it has
+ * been fought over. So a piece that has genuinely SETTLED (asleep, i.e. resting
+ * flat on a face with no velocity left) is promoted out of the live pool into
+ * this one when its life runs out, and from then on it is pure decoration:
+ * no integration, no wake-ups, one instanced draw call, and a fixed ceiling.
+ *
+ * Only settled pieces are promoted. Anything still in flight when its life
+ * expires is genuinely mid-animation and freezing it in the air would be worse
+ * than losing it.
+ */
+export const SCATTER_MAX = 72;
+
+export interface ScatterPiece {
+  active: boolean;
+  shape: number;
+  x: number;
+  y: number;
+  z: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  scale: number;
+  colorHex: string;
+  tint: number;
+}
+
+const scatter: ScatterPiece[] = Array.from({ length: SCATTER_MAX }, () => ({
+  active: false,
+  shape: 0,
+  x: 0,
+  y: 0,
+  z: 0,
+  rx: 0,
+  ry: 0,
+  rz: 0,
+  scale: 1,
+  colorHex: "#a8a29e",
+  tint: 1,
+}));
+let scatterCount = 0;
+let scatterCursor = 0;
+let scatterVersion = 0;
+
+function promoteToScatter(d: DebrisPiece): void {
+  // Straight ring buffer, no age scan: everything in here is equally static, so
+  // "oldest wins" is both correct and free.
+  const s = scatter[scatterCursor]!;
+  scatterCursor = (scatterCursor + 1) % SCATTER_MAX;
+  if (!s.active) {
+    s.active = true;
+    scatterCount += 1;
+  }
+  s.shape = d.shape;
+  s.x = d.x;
+  s.y = d.y;
+  s.z = d.z;
+  s.rx = d.rx;
+  s.ry = d.ry;
+  s.rz = d.rz;
+  s.scale = d.scale;
+  s.colorHex = d.colorHex;
+  // Settled wreckage picks up dust; knocking the tint down is what stops the
+  // persistent field reading brighter than the live debris that made it.
+  s.tint = d.tint * 0.82;
+  scatterVersion += 1;
+}
+
+export function scatterPool(): readonly ScatterPiece[] {
+  return scatter;
+}
+export function scatterActiveCount(): number {
+  return scatterCount;
+}
+/** Bumped on every promotion, so a renderer can skip an unchanged field. */
+export function scatterVersionCount(): number {
+  return scatterVersion;
+}
+
 const HALF_PI = Math.PI * 0.5;
 const snapRight = (a: number) => Math.round(a / HALF_PI) * HALF_PI;
 
@@ -310,6 +455,7 @@ export function stepDebris(dt: number): void {
 
     d.life -= dt;
     if (d.life <= 0) {
+      if (d.asleep) promoteToScatter(d);
       d.active = false;
       activeCount -= 1;
       continue;
@@ -384,10 +530,60 @@ export function disturbDebris(
   vz: number,
   radius: number,
 ): void {
-  if (activeCount === 0) return;
   const speed = Math.hypot(vx, vz);
   if (speed < 3) return;
   const r2 = radius * radius;
+
+  // Settled scatter is decoration, but decoration you can drive through: a
+  // wheel through a pile of yesterday's wreckage that leaves it untouched is
+  // more obviously fake than not having the pile at all. Pieces caught here are
+  // handed back to the LIVE pool so they get one more flight, and drop back out
+  // of it when they come to rest again.
+  if (scatterCount > 0) {
+    for (let i = 0; i < SCATTER_MAX; i++) {
+      const s = scatter[i]!;
+      if (!s.active) continue;
+      const dx = s.x - x;
+      const dz = s.z - z;
+      const dist2 = dx * dx + dz * dz;
+      if (dist2 > r2 || dist2 < 1e-6) continue;
+      const dist = Math.sqrt(dist2);
+      const falloff = 1 - dist / radius;
+      const d = acquire();
+      d.active = true;
+      d.shape = s.shape;
+      d.x = s.x;
+      d.y = s.y;
+      d.z = s.z;
+      d.vx = (dx / dist) * speed * 0.3 * falloff + vx * 0.2 * falloff;
+      d.vz = (dz / dist) * speed * 0.3 * falloff + vz * 0.2 * falloff;
+      d.vy = speed * 0.16 * falloff;
+      d.rx = s.rx;
+      d.ry = s.ry;
+      d.rz = s.rz;
+      d.wx = (Math.random() - 0.5) * speed * falloff;
+      d.wy = (Math.random() - 0.5) * speed * falloff;
+      d.wz = (Math.random() - 0.5) * speed * falloff;
+      d.scale = s.scale;
+      d.colorHex = s.colorHex;
+      d.tint = s.tint;
+      // Recover the rest PLANE from the rest POSE. `s.y` already includes the
+      // piece's own half-height, so feeding it straight back in as groundY
+      // would lift the piece by that much every time a car ran over it — after
+      // a few passes the wreckage would be floating.
+      d.groundY = s.y - SHAPE_HALF_H[s.shape]! * s.scale;
+      d.bounce = 0.16;
+      d.drag = 2.2;
+      d.maxLife = 2.6;
+      d.life = d.maxLife;
+      d.asleep = false;
+      s.active = false;
+      scatterCount -= 1;
+      scatterVersion += 1;
+    }
+  }
+
+  if (activeCount === 0) return;
 
   for (let i = 0; i < DEBRIS_MAX; i++) {
     const d = pool[i]!;
@@ -421,8 +617,12 @@ export function debrisActiveCount(): number {
   return activeCount;
 }
 
-/** Call when a race restarts — the road is swept. */
+/** Call when a race restarts — the road is swept, including the settled field. */
 export function resetDebris(): void {
+  for (let i = 0; i < SCATTER_MAX; i++) scatter[i]!.active = false;
+  scatterCount = 0;
+  scatterCursor = 0;
+  scatterVersion += 1;
   if (activeCount === 0) return;
   for (let i = 0; i < DEBRIS_MAX; i++) {
     pool[i]!.active = false;

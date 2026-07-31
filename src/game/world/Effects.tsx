@@ -1,76 +1,162 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Mine, Particle, Projectile, VehicleState } from "../types";
 import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
 import { softCircleTexture, softSmokeTexture } from "./softSprite";
+import { hash01, hashString } from "./vfx/rng";
 
 /**
- * Visual radius of a tracer, deliberately decoupled from the projectile's
- * collision radius (0.3-0.45). A shot should read as a thin streak; the hitbox
- * stays whatever combat.ts needs it to be.
+ * Per-weapon projectile bodies, instanced.
+ *
+ * Two things changed here and both matter.
+ *
+ * 1. INSTANCED, POSED EVERY FRAME. The previous version mapped the projectile
+ *    array to React elements with `position={[p.x, p.y, p.z]}`, so a shot only
+ *    moved when its parent re-rendered — and LiveFx throttles that to one frame
+ *    in eight. Every tracer in the game was stepping at ~18Hz regardless of
+ *    frame rate. Posing three InstancedMeshes from a useFrame fixes that AND
+ *    collapses up to 2N draw calls into exactly 3.
+ *
+ * 2. THREE DIFFERENT OBJECTS. All three weapons drew the same tapered cylinder
+ *    with a different tint, which is the definition of a thin vocabulary. Now
+ *    the interceptor fires a thin lance, the bruiser lobs a stubby shell, and
+ *    the trickster throws an actual spinning disc — edge-on, rolling about its
+ *    line of flight, which is also what makes its ricochets readable.
+ *
+ * The COLLISION radius still comes from p.radius and is untouched: a
+ * projectile's hitbox and its silhouette have no reason to be the same size.
+ * (That decoupling is why these are not the ~1m glowing orbs they once were.)
+ *
+ * COST: 3 draw calls, 16 instances each. Bolt 36 tris, shell 48, disc 48 —
+ * 2112 triangles if every slot in every kind were somehow full at once, and
+ * realistically under 300.
  */
-const TRACER_R = 0.085;
+const PROJ_CAP = 16;
+
+const PROJ_TINT = {
+  bolt: [0.42, 1.0, 0.86],
+  cannon: [1.0, 0.63, 0.3],
+  disc: [0.46, 0.86, 1.0],
+} as const;
+
+type ProjKind = keyof typeof PROJ_TINT;
+const PROJ_ORDER: readonly ProjKind[] = ["bolt", "cannon", "disc"];
+
+/** See DebrisField: instanceColor needs a real `color` attribute to apply. */
+function withWhiteColors(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  const count = geo.getAttribute("position").count;
+  geo.setAttribute(
+    "color",
+    new THREE.BufferAttribute(new Float32Array(count * 3).fill(1), 3),
+  );
+  return geo;
+}
 
 export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) {
+  const refs = useRef<(THREE.InstancedMesh | null)[]>([]);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const color = useMemo(() => new THREE.Color(), []);
+  const t = useRef(0);
+
+  const geos = useMemo(
+    () => [
+      // Bolt: a thin lance, tapered to a point, long axis on +Z.
+      withWhiteColors(
+        new THREE.CylinderGeometry(0.055, 0.016, 1.5, 6).rotateX(Math.PI / 2),
+      ),
+      // Shell: short, fat, blunt-nosed. Reads as mass rather than as light.
+      withWhiteColors(
+        new THREE.CylinderGeometry(0.1, 0.14, 0.72, 8).rotateX(Math.PI / 2),
+      ),
+      // Disc: a saw blade flying edge-on, axis along +Z so it rolls about its
+      // own line of flight.
+      withWhiteColors(
+        new THREE.CylinderGeometry(0.4, 0.4, 0.06, 12).rotateX(Math.PI / 2),
+      ),
+    ],
+    [],
+  );
+
+  useEffect(() => {
+    const owned = geos;
+    return () => {
+      for (const g of owned) g.dispose();
+    };
+  }, [geos]);
+
+  useFrame((_, dt) => {
+    t.current += dt;
+    const counts = [0, 0, 0];
+
+    for (const p of projectiles) {
+      const k = p.kind === "cannon" ? 1 : p.kind === "disc" ? 2 : 0;
+      const mesh = refs.current[k];
+      if (!mesh) continue;
+      const n = counts[k]!;
+      if (n >= PROJ_CAP) continue;
+
+      dummy.position.set(p.x, p.y, p.z);
+      // lookAt puts local +Z along the velocity, which is the axis every one of
+      // the three geometries is authored around.
+      dummy.lookAt(p.x + p.vx, p.y + p.vy, p.z + p.vz);
+      const seed = hashString(p.id);
+      if (k === 2) {
+        // Spin rate jittered per disc so a volley does not strobe in unison.
+        dummy.rotateZ(t.current * (17 + hash01(seed) * 9) + hash01(seed ^ 0x33) * 6.28);
+      } else {
+        dummy.rotateZ(hash01(seed) * 6.28);
+      }
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(n, dummy.matrix);
+
+      const tint = PROJ_TINT[PROJ_ORDER[k]!];
+      // Per-shot brightness jitter: identical tracers stacked in a burst is the
+      // clearest tell that they came out of a loop.
+      const b = 0.86 + hash01(seed ^ 0x9e37) * 0.3;
+      color.setRGB(tint[0] * b, tint[1] * b, tint[2] * b);
+      mesh.setColorAt(n, color);
+      counts[k] = n + 1;
+    }
+
+    dummy.position.set(0, -900, 0);
+    dummy.quaternion.identity();
+    dummy.scale.setScalar(0.0001);
+    dummy.updateMatrix();
+    for (let k = 0; k < 3; k++) {
+      const mesh = refs.current[k];
+      if (!mesh) continue;
+      for (let i = counts[k]!; i < PROJ_CAP; i++) mesh.setMatrixAt(i, dummy.matrix);
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.visible = counts[k]! > 0;
+    }
+  }, FRAME.LATE);
+
   return (
     <group>
-      {projectiles.map((p) => {
-        const col =
-          p.kind === "cannon"
-            ? "#fdba74"
-            : p.kind === "disc"
-              ? "#7dd3fc"
-              : "#5eead4";
-        const em =
-          p.kind === "cannon"
-            ? "#f97316"
-            : p.kind === "disc"
-              ? "#38bdf8"
-              : "#2dd4bf";
-        const len = p.kind === "cannon" ? 1.4 : p.kind === "disc" ? 0.9 : 1.1;
-        const yaw = Math.atan2(-p.vx, -p.vz);
-        const segs = qualityManager.get().tier === "low" ? 6 : 10;
-        return (
-          <group key={p.id} position={[p.x, p.y, p.z]} rotation={[0, yaw, 0]}>
-            {/*
-              A tracer, not an orb.
-
-              This drew a sphere at p.radius (0.3-0.45), i.e. a ~1m glowing ball
-              hanging in the air — which is why it kept being reported as
-              "yellow/orange balls in the middle of the road". Stretching it was
-              not enough; the silhouette was still round and huge.
-
-              The COLLISION radius still comes from p.radius and is unchanged.
-              Only the visual is decoupled: a projectile's hitbox and its
-              silhouette have no reason to be the same size.
-            */}
-            <mesh rotation={[Math.PI / 2, 0, 0]}>
-              <cylinderGeometry
-                args={[TRACER_R, TRACER_R * 0.45, len * 2.4, segs]}
-              />
-              <meshStandardMaterial
-                color={col}
-                emissive={em}
-                emissiveIntensity={0.9}
-                roughness={0.3}
-                metalness={0.3}
-              />
-            </mesh>
-            {/* Short wake behind it — reads as speed without adding mass. */}
-            <mesh position={[0, 0, len * 1.5]} rotation={[Math.PI / 2, 0, 0]}>
-              <cylinderGeometry args={[TRACER_R * 0.5, 0.005, len * 2.2, 6]} />
-              <meshBasicMaterial
-                color={em}
-                transparent
-                opacity={0.2}
-                depthWrite={false}
-              />
-            </mesh>
-          </group>
-        );
-      })}
+      {PROJ_ORDER.map((kind, i) => (
+        <instancedMesh
+          key={kind}
+          ref={(m) => {
+            refs.current[i] = m as THREE.InstancedMesh | null;
+          }}
+          args={[undefined, undefined, PROJ_CAP]}
+          frustumCulled={false}
+          visible={false}
+          renderOrder={3}
+        >
+          <primitive object={geos[i]!} attach="geometry" />
+          {/*
+            Self-lit, not shaded: a tracer that takes the sun's shading reads as
+            a thrown pebble. Tone mapped, though — leaving it unmapped put these
+            past the bloom threshold and haloed the whole road.
+          */}
+          <meshBasicMaterial vertexColors toneMapped={true} />
+        </instancedMesh>
+      ))}
     </group>
   );
 }

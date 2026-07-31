@@ -4,6 +4,48 @@ import { applyDamage } from "./physics";
 import { getGroundHeight } from "./track";
 import { emitAudioCue } from "./audio/cues";
 import type { Mine, Particle, PlayerInput, Projectile, VehicleState } from "./types";
+import {
+  vfxExplosion,
+  vfxImpactBurst,
+  vfxMuzzleFlash,
+  vfxSparkShower,
+} from "./world/vfx/particles";
+import { spawnShockwave } from "./world/vfx/shockwave";
+import { vfxSeed } from "./world/vfx/rng";
+import { spawnDebrisBurst } from "./world/debris";
+import { addCrater, addImpactMark, addScorch } from "./world/damage/landscape";
+import { addVehicleDeformHitWorld } from "./world/damage/meshDeform";
+
+/**
+ * A projectile hit is the one place in the game where the exact world point of
+ * an impact is known, so it is the one place that can put a dent where the shot
+ * actually landed rather than on a nominal panel centre. Depth is derived from
+ * damage, radius from the projectile's own size — a cannon shell craters a
+ * door, a bolt pocks it.
+ */
+function dentFromProjectile(v: VehicleState, p: Projectile): void {
+  const dx = v.x - p.x;
+  const dz = v.z - p.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const depth = Math.min(0.16, 0.025 + p.damage * 0.0032);
+  const radius = 0.45 + p.radius * 1.4;
+  addVehicleDeformHitWorld(
+    v.id,
+    p.x,
+    p.y,
+    p.z,
+    dx / len,
+    -0.1,
+    dz / len,
+    v.x,
+    v.y,
+    v.z,
+    v.yaw,
+    depth,
+    radius,
+    vfxSeed(p.x, p.y, p.z),
+  );
+}
 
 let nextId = 1;
 function uid(prefix: string) {
@@ -114,6 +156,20 @@ export function tryPrimary(
     v.z,
     0.75 + chargeMul * 0.35,
     v.isPlayer,
+  );
+
+  // Muzzle flash goes here, not on the input edge, for the same reason the
+  // audio cue does: the shot is only real once the cooldown has passed, and
+  // this is the single point every vehicle — player and AI — fires through.
+  vfxMuzzleFlash(
+    v.x + aimX * 1.7,
+    v.y + 0.6,
+    v.z + aimZ * 1.7,
+    aimX,
+    aimZ,
+    v.classId === "interceptor" ? "bolt" : v.classId === "bruiser" ? "cannon" : "disc",
+    chargeMul - COMBAT.weaponMinMul,
+    vfxSeed(v.x, v.y, v.z),
   );
 
   if (v.classId === "interceptor") {
@@ -254,12 +310,44 @@ export function stepProjectiles(
     p.z += p.vz * dt;
     if (p.kind === "cannon") {
       p.vy -= 6 * dt;
-      const ground = getGroundHeight(p.x, p.z) + 0.2;
+      const groundY = getGroundHeight(p.x, p.z);
+      const ground = groundY + 0.2;
       if (p.y < ground) {
-        // Only the first real bounce is worth hearing. A shell that has settled
-        // keeps re-entering this branch every step with a near-zero vy.
+        // Only the first real bounce is worth hearing — and worth SEEING. A
+        // shell that has settled keeps re-entering this branch every step with
+        // a near-zero vy, so gating the terrain damage on the same threshold as
+        // the audio is what stops one shell excavating a trench.
         if (p.vy < -2.5) {
           emitAudioCue("shell-land", p.x, p.y, p.z, 0.8, false);
+          const seed = vfxSeed(p.x, p.y, p.z);
+          const impactE = Math.min(1.2, -p.vy / 14);
+          vfxExplosion(p.x, groundY + 0.25, p.z, {
+            kind: "shell",
+            radius: 1.1 + impactE * 0.7,
+            energy: 0.5 + impactE,
+            groundY,
+            dirX: p.vx,
+            dirZ: p.vz,
+            seed,
+          });
+          spawnDebrisBurst(
+            "ejecta",
+            p.x,
+            groundY + 0.2,
+            p.z,
+            p.vx,
+            p.vz,
+            impactE,
+            groundY,
+            0.7,
+          );
+          // addCrater refuses on tarmac (see landscape.ts) — a shell burns the
+          // road rather than digging it, so the scorch is the fallback.
+          if (!addCrater(p.x, p.z, 1.0 + impactE * 0.8, 0.22 + impactE * 0.2, seed)) {
+            addScorch(p.x, p.z, 1.1 + impactE * 0.6, seed);
+          } else {
+            addScorch(p.x, p.z, 1.5 + impactE * 0.7, seed ^ 0x1f3a);
+          }
         }
         p.y = ground;
         p.vy *= -0.22;
@@ -289,6 +377,28 @@ export function stepProjectiles(
         v.impactFlash = Math.max(v.impactFlash, 0.12);
         v.speed += ((p.vx * dx + p.vz * dz) / len) * 0.018;
         spawnHitSparks(particles, p.x, p.y, p.z, p.kind === "cannon" ? "#fdba74" : "#5eead4");
+        // Rich impact, keyed off the weapon: the bolt is an energy discharge
+        // (arcs, no debris), the shell and the disc are kinetic (sparks and
+        // scale off the panel). The reversed projectile velocity stands in for
+        // the surface normal, which is what makes the spray go back the way the
+        // shot came rather than exploding radially.
+        {
+          const seed = vfxSeed(p.x, p.y, p.z);
+          const il = Math.hypot(p.vx, p.vy, p.vz) || 1;
+          vfxImpactBurst(
+            p.x,
+            p.y,
+            p.z,
+            -p.vx / il,
+            -p.vy / il + 0.35,
+            -p.vz / il,
+            p.kind === "bolt" ? "energy" : "metal",
+            0.35 + p.damage / 45,
+            getGroundHeight(p.x, p.z),
+            seed,
+          );
+          dentFromProjectile(v, p);
+        }
         // The impact belongs to the victim, not the shooter: `self` is what
         // decides whether the player hears it dry (their own hull) or panned.
         emitAudioCue(
@@ -353,23 +463,65 @@ export function stepMines(
         v.impactFlash = Math.max(v.impactFlash, 0.25);
         spawnHitSparks(particles, m.x, m.y + 0.5, m.z, "#f87171");
         emitAudioCue("mine-blast", m.x, m.y + 0.5, m.z, 1.3, v.isPlayer);
-        for (let k = 0; k < 6; k++) {
-          const a = Math.random() * Math.PI * 2;
-          particles.push({
-            id: uid("fx"),
-            x: m.x,
-            y: m.y + 0.3,
-            z: m.z,
-            vx: Math.cos(a) * 6,
-            vy: 3 + Math.random() * 5,
-            vz: Math.sin(a) * 6,
-            life: 0.4,
-            maxLife: 0.5,
-            color: "#fdba74",
-            size: 0.2,
-            kind: "spark",
-          });
+
+        /*
+         * The full blast. `m.y` is where the mine was PLACED (tryUltimate
+         * already sampled getGroundHeight for it), but the mine may have been
+         * dropped a while ago and the blast damage has to land on the ground
+         * under it right now — so the terrain is re-sampled here rather than
+         * trusting a cached y. Everything downstream (crater floor, scorch,
+         * shockwave, spark rest plane) hangs off that one number.
+         */
+        const groundY = getGroundHeight(m.x, m.z);
+        const seed = vfxSeed(m.x, m.y, m.z);
+        vfxExplosion(m.x, groundY + 0.45, m.z, {
+          kind: "mine",
+          radius: m.radius * 0.72,
+          energy: 1.15,
+          groundY,
+          dirX: nx,
+          dirZ: nz,
+          seed,
+        });
+        spawnShockwave(m.x, groundY, m.z, m.radius * 0.85, nx, nz, seed, {
+          r: 1,
+          g: 0.94,
+          b: 0.86,
+        });
+        spawnDebrisBurst(
+          "ejecta",
+          m.x,
+          groundY + 0.3,
+          m.z,
+          nx,
+          nz,
+          1.2,
+          groundY,
+          m.radius * 0.5,
+        );
+        if (!addCrater(m.x, m.z, m.radius * 0.8, 0.5, seed)) {
+          addImpactMark(m.x, m.z, m.radius * 0.7, seed);
         }
+        addScorch(m.x, m.z, m.radius * 1.05, seed ^ 0x2c9d);
+        // A mine detonating under a car folds the floorpan up into it: the
+        // deform direction is straight down-to-up through the contact point.
+        addVehicleDeformHitWorld(
+          v.id,
+          v.x - nx * 0.4,
+          groundY + 0.2,
+          v.z - nz * 0.4,
+          -nx * 0.35,
+          0.9,
+          -nz * 0.35,
+          v.x,
+          v.y,
+          v.z,
+          v.yaw,
+          0.13,
+          1.25,
+          seed,
+        );
+
         mines.splice(i, 1);
         break;
       }
@@ -377,6 +529,15 @@ export function stepMines(
   }
 }
 
+/**
+ * Legacy spark puff, kept because the shared `particles` array is also what the
+ * HUD-adjacent systems and physics.ts feed, and pulling combat out of it
+ * entirely would change the pacing of that pool for everyone.
+ *
+ * Halved, though: the real sparks now come from the pooled VFX layer, which
+ * bounces off the terrain and stretches along its velocity. Running both at the
+ * old count just doubled the overdraw for no extra read.
+ */
 function spawnHitSparks(
   particles: Particle[],
   x: number,
@@ -384,8 +545,9 @@ function spawnHitSparks(
   z: number,
   color: string,
 ) {
+  vfxSparkShower(x, y, z, 0, 0, 0.7, getGroundHeight(x, z), vfxSeed(x, y, z));
   if (particles.length > 110) return;
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 2; i++) {
     const a = Math.random() * Math.PI * 2;
     particles.push({
       id: uid("spk"),

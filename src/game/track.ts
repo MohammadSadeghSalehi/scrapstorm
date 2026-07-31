@@ -18,8 +18,12 @@ import { sampleDuneField, sampleRockMask } from "./world/terrainHeight";
  */
 export type CoreTrackId = "ash_spire" | "cinder_bowl";
 
-/** Legacy narrow alias. Kept for source compatibility — see CoreTrackId. */
-export type TrackId = CoreTrackId;
+/**
+ * The id type the rest of the game uses. Now the full catalogue: types.ts
+ * re-exports AnyTrackId under this name, so the two must agree or every
+ * assignment across the module boundary fails.
+ */
+export type TrackId = AnyTrackId;
 
 /** Every circuit in the catalogue. What new code should be written against. */
 export type AnyTrackId =
@@ -125,9 +129,12 @@ export const TRACK_CATALOG: TrackDef[] = [
  * Derived rather than duplicated so the two lists cannot drift. Widening
  * types.ts (see CoreTrackId) makes this alias the whole catalogue.
  */
-export const TRACK_DEFS: CoreTrackDef[] = TRACK_CATALOG.filter(
-  (d): d is CoreTrackDef => d.id === "ash_spire" || d.id === "cinder_bowl",
-);
+/**
+ * Every circuit, selectable. Was filtered to the two launch tracks because the
+ * id union could not express the others; now that it can, filtering would just
+ * be four finished circuits nobody can reach.
+ */
+export const TRACK_DEFS: TrackDef[] = TRACK_CATALOG;
 
 export function getTrackDef(id: AnyTrackId): TrackDef {
   return TRACK_CATALOG.find((d) => d.id === id) ?? TRACK_CATALOG[0]!;

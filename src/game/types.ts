@@ -1,6 +1,21 @@
 export type VehicleClassId = "interceptor" | "bruiser" | "trickster";
 
-export type TrackId = "ash_spire" | "cinder_bowl";
+/*
+ * Widened to the whole catalogue.
+ *
+ * This was a two-circuit union, and it was load-bearing in a way that is easy
+ * to miss: sim.setTrack() assigns a track-module id into this field, and Menus
+ * passes one into a callback typed with it — which strictFunctionTypes checks
+ * CONTRAVARIANTLY, so a narrow parameter type here rejects a wider argument.
+ * The practical effect was that startCountdown would call
+ * setActiveTrack(state.selectedTrack) and silently revert any mission started
+ * on one of the four new circuits.
+ *
+ * Re-exported from track.ts rather than restated, so the type and the
+ * TRACK_CATALOG it describes cannot drift apart.
+ */
+import type { AnyTrackId as TrackId } from "./track";
+export type { TrackId };
 
 export type MatchPhase =
   | "menu"
