@@ -27,7 +27,14 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
         const segs = qualityManager.get().tier === "low" ? 6 : 10;
         return (
           <group key={p.id} position={[p.x, p.y, p.z]} rotation={[0, yaw, 0]}>
-            <mesh>
+            {/*
+              Stretched along travel rather than a round ball. A bright
+              untonemapped sphere hanging in the air reads as a floating orb
+              dropped on the track, not as a shot in flight — it was reported
+              as "yellow balls in the middle of the road". Elongating it gives
+              the eye a direction and a speed cue.
+            */}
+            <mesh scale={[1, 1, p.kind === "cannon" ? 2.6 : 2.0]}>
               <sphereGeometry
                 args={[
                   p.radius * (p.kind === "cannon" ? 1.15 : 1),

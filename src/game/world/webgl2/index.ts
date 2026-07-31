@@ -13,5 +13,5 @@ export {
   listLoadedPacks,
   type PbrPack,
 } from "./textureLibrary";
-export { EnvLighting } from "./environment";
+export { EnvLighting, prefetchHdri } from "./environment";
 export { FREE_ASSET_CATALOG } from "./catalog";

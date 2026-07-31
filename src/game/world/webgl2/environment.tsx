@@ -58,6 +58,23 @@ function makeGradientEnv(gl: THREE.WebGLRenderer): THREE.Texture {
   return rt.texture;
 }
 
+/**
+ * Pull the tier's HDRI into the HTTP cache ahead of the race.
+ *
+ * EnvLighting still owns the decode and PMREM pass, but without this the file
+ * itself was still downloading when the race started — which is why the world
+ * stayed unlit for several seconds and then popped.
+ */
+export function prefetchHdri(): Promise<void> {
+  if (typeof fetch === "undefined" || !qualityManager.get().hdriEnv) {
+    return Promise.resolve();
+  }
+  return fetch(hdriUrl(), { cache: "force-cache" })
+    .then((r) => r.arrayBuffer())
+    .then(() => undefined)
+    .catch(() => undefined);
+}
+
 export function EnvLighting() {
   const { gl, scene } = useThree();
 

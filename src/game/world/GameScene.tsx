@@ -34,6 +34,7 @@ import {
   EnvLighting,
   preloadPbrLibrary,
   isPbrLibraryReady,
+  prefetchHdri,
 } from "./webgl2";
 import {
   TerrainCullDriver,
@@ -53,7 +54,7 @@ import { getRivalGhost, subscribeRivalGhost } from "../ghostDuel";
 import { FRAME } from "./framePriority";
 import { PhysicsPropsView } from "./PhysicsPropsView";
 import { SceneryDecor } from "./SceneryDecor";
-import { preloadPhRaceProps } from "./polyHavenAssets";
+import { preloadPhRaceProps, preloadSceneryModels } from "./polyHavenAssets";
 
 const USE_GLTF_CARS = true;
 const SIM_STEP = 1 / 60;
@@ -1090,6 +1091,10 @@ export function GameCanvas({
         // before any glTF referencing a .ktx2 texture is decoded.
         initGltfDecoders(gl);
         if (typeof window !== "undefined") {
+          // Scene handle for QA: lets a probe walk the graph to identify a
+          // stray object by geometry/material rather than guessing from a
+          // screenshot.
+          window.__scene = scene;
           window.__webgl2Caps = caps;
           // Live getters, not a snapshot: gl.info.autoReset is on, so these
           // read the last frame's real numbers, and exposure/intensity are
@@ -1161,6 +1166,13 @@ export async function prepareRaceAssets(
     ["Surfaces", () => preloadPbrLibrary()],
     ["Vehicles", () => preloadCarModels()],
     ["Track props", () => preloadPhRaceProps()],
+    // Set dressing: SceneryDecor pulls far more keys than the four race props,
+    // and they were still arriving mid-lap (props visibly popping in).
+    ["Set dressing", () => preloadSceneryModels()],
+    // Warm the HTTP cache for the tier's HDRI. EnvLighting owns the decode, but
+    // fetching the file here means the environment is not still downloading
+    // when the lights go green — that was the world lighting up seconds late.
+    ["Lighting", () => prefetchHdri()],
   ];
   for (let i = 0; i < steps.length; i++) {
     const [label, run] = steps[i]!;
@@ -1207,6 +1219,8 @@ declare global {
       getFps: () => number;
     };
     __webgl2Caps?: import("./webgl2/configure").WebGL2Caps;
+    /** Live scene graph — QA/diagnostics only. */
+    __scene?: THREE.Scene;
     /** Current dynamic-resolution multiplier applied under the tier's dprMax. */
     __resScale?: number;
     __webgpuProbe?: { status: string; recommendation: string };

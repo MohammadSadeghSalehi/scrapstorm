@@ -143,6 +143,31 @@ export function loadPhModel(
   return p.then((root) => root.clone(true) as THREE.Group);
 }
 
+/**
+ * Warm every template SceneryDecor places, so set dressing is resident before
+ * the countdown instead of popping in over the opening lap.
+ *
+ * Deliberately broader than preloadPhRaceProps (which only covers the four
+ * race-critical props) and tolerant of misses — an unavailable key should not
+ * hold up the grid.
+ */
+export function preloadSceneryModels(): Promise<void> {
+  const jobs: [PhModelKey, number][] = [
+    ["coveredCar", 4.4],
+    ["barrier", 1.8],
+    ["boulder", 2.2],
+    ["trash", 1.15],
+    ["hydrant", 0.95],
+    ["tyre", 1.0],
+    ["rim", 0.9],
+    ["pipes", 6],
+    ["fence", 4],
+  ];
+  return Promise.all(
+    jobs.map(([k, len]) => loadPhModel(k, len).catch(() => null)),
+  ).then(() => undefined);
+}
+
 /** Keys with no loadable candidate this session (QA + set-dressing density). */
 export function unavailablePhKeys(): PhModelKey[] {
   return [...unavailable];
