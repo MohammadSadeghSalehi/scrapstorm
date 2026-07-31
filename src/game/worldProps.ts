@@ -46,6 +46,13 @@ export function spawnWorldProps(): PhysProp[] {
   // Fresh grid — every post stands again.
   resetEdgeDamage();
 
+  /**
+   * Track samples either side of the start line kept free of obstacles. The
+   * whole field launches abreast and accelerating through here, so anything
+   * placed in this stretch guaranteed contact before the first corner.
+   */
+  const GRID_CLEAR = Math.max(8, Math.floor(TRACK_SAMPLES.length * 0.06));
+
   // Soft barriers from edge markers. Stride 10 rather than 5: only every Nth
   // post carries a collider anyway, and dense colliders meant clipping a
   // corner put you into something almost immediately.
@@ -53,9 +60,9 @@ export function spawnWorldProps(): PhysProp[] {
   // GRID_CLEAR skips the markers flanking the start line entirely. Four cars
   // launching abreast fan out across the full width, so barrier colliders
   // right there turned a normal start into an instant collision.
-  const GRID_CLEAR = Math.min(26, Math.floor(EDGE_MARKERS.length * 0.05));
   for (let i = 0; i < EDGE_MARKERS.length; i += 10) {
-    if (i < GRID_CLEAR || i > EDGE_MARKERS.length - GRID_CLEAR) continue;
+    const markerClear = Math.max(10, Math.floor(EDGE_MARKERS.length * 0.06));
+    if (i < markerClear || i > EDGE_MARKERS.length - markerClear) continue;
     const m = EDGE_MARKERS[i];
     props.push({
       id: nid("bar"),
@@ -78,9 +85,13 @@ export function spawnWorldProps(): PhysProp[] {
     });
   }
 
-  // Dynamic barrels / crates along track — close enough to hit while racing
-  const step = Math.max(3, Math.floor(TRACK_SAMPLES.length / 36));
+  // Dynamic barrels / crates along track — close enough to hit while racing.
+  // GRID_CLEAR keeps the launch straight empty; the whole field is bunched and
+  // accelerating there, so props in that stretch guaranteed a first-corner
+  // pile-up rather than a race.
+  const step = Math.max(3, Math.floor(TRACK_SAMPLES.length / 26));
   for (let i = 1; i < TRACK_SAMPLES.length; i += step) {
+    if (i < GRID_CLEAR || i > TRACK_SAMPLES.length - GRID_CLEAR * 0.5) continue;
     const s = TRACK_SAMPLES[i];
     const rx = Math.cos(s.yaw);
     const rz = -Math.sin(s.yaw);
@@ -116,8 +127,9 @@ export function spawnWorldProps(): PhysProp[] {
   // when the whole grid is accelerating into it, so it cost both frame time
   // and a clean launch. Halved the rows and doubled the spacing, and each row
   // now populates one side only so there is always a clear line through.
+  // Starts past GRID_CLEAR — at idx 5 these sat directly on the launch.
   for (let k = 0; k < 7; k++) {
-    const idx = 5 + k * 4;
+    const idx = GRID_CLEAR + 4 + k * 5;
     const s = TRACK_SAMPLES[idx % TRACK_SAMPLES.length];
     if (!s) continue;
     const rx = Math.cos(s.yaw);
@@ -146,9 +158,10 @@ export function spawnWorldProps(): PhysProp[] {
     }
   }
 
-  // A few props ON the racing line (dodge or smash)
-  for (let k = 0; k < 12; k++) {
-    const idx = 10 + k * 14;
+  // A few props ON the racing line (dodge or smash) — also held back past the
+  // grid so the opening straight is genuinely clear.
+  for (let k = 0; k < 10; k++) {
+    const idx = GRID_CLEAR + 12 + k * 16;
     const s = TRACK_SAMPLES[idx % TRACK_SAMPLES.length];
     if (!s) continue;
     const rx = Math.cos(s.yaw);
@@ -292,14 +305,21 @@ function spawnPropFx(
 }
 
 /** Vehicle ↔ prop collisions (circle). Mutates both. Broadphase: skip far pairs. */
-/** Closing speed (m/s) below which a prop absorbs the hit instead of moving. */
-const PROP_NUDGE_SPEED = 2.2;
+/**
+ * Closing speed (m/s) below which a prop absorbs the hit instead of moving.
+ * Low, so props start reacting almost as soon as you are actually rolling —
+ * a barrel that ignores a 5 m/s shunt reads as welded to the ground.
+ */
+const PROP_NUDGE_SPEED = 1.0;
 /** Closing speed at which a light prop is fully launched/airborne. */
-const PROP_LAUNCH_SPEED = 11;
+const PROP_LAUNCH_SPEED = 8;
 /** Closing speed above which a barrel ruptures rather than tumbling. */
-const BARREL_RUPTURE_SPEED = 19;
-/** Closing speed above which a static barrier breaks apart instead of holding. */
-const BARRIER_BREAK_SPEED = 12;
+const BARREL_RUPTURE_SPEED = 16;
+/**
+ * Closing speed above which a barrier breaks apart instead of holding. Below
+ * this it still deflects rather than stopping you — see the static branch.
+ */
+const BARRIER_BREAK_SPEED = 9;
 /** Reference prop mass (a light barrel) that reaction is scaled against. */
 const PROP_REF_MASS = 9;
 
@@ -392,18 +412,49 @@ export function collideVehiclesWithProps(
         continue;
       }
 
-      if (p.dynamic) {
-        const total = massV + p.mass;
-        v.x -= nx * pen * (p.mass / total) * 0.9;
-        v.z -= nz * pen * (p.mass / total) * 0.9;
-        p.x += nx * pen * (massV / total) * 1.2;
-        p.z += nz * pen * (massV / total) * 1.2;
-      } else {
-        // Static barriers: full push-out + slight yaw scrub
-        v.x -= nx * pen * 1.15;
-        v.z -= nz * pen * 1.15;
-        v.yaw += (nx * Math.cos(v.yaw) + nz * -Math.sin(v.yaw)) * pen * 0.08;
+      // Intact barrier (below break speed): deflect, never reverse.
+      //
+      // A static prop has invSum = 1/massV, so the shared restitution impulse
+      // below worked out to -(1 + e) x approach — it flipped the car's velocity
+      // straight back out of the wall. That is the "it stops us dead and throws
+      // us back" behaviour. Instead cancel only the component INTO the barrier
+      // and keep the component along it, so you scrape past and lose speed in
+      // proportion to how square the hit was. Handled entirely here so the
+      // generic impulse never runs for barriers.
+      if (!p.dynamic) {
+        v.x -= nx * pen;
+        v.z -= nz * pen;
+        v.yaw += (nx * Math.cos(v.yaw) + nz * -Math.sin(v.yaw)) * pen * 0.06;
+        const closing = Math.max(0, velN);
+        if (closing > 0.4) {
+          // Kill the inward component (leaving a sliver avoids re-sticking),
+          // then take a speed cost that scales with the impact.
+          const removeN = closing * 0.9;
+          const scrub = 1 - Math.min(0.3, closing * 0.012);
+          const nvx = (va.vx - nx * removeN) * scrub;
+          const nvz = (va.vz - nz * removeN) * scrub;
+          applyWorldVel(v, nvx, nvz);
+          va.vx = nvx;
+          va.vz = nvz;
+          if (closing > 6) {
+            v.impactFlash = Math.max(v.impactFlash, 0.22);
+            v.hitStun = Math.max(v.hitStun, 0.04);
+            v.health = Math.max(0, v.health - closing * 0.06);
+            v.damageVisual = Math.min(
+              1,
+              Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
+            );
+          }
+        }
+        maxImpact = Math.max(maxImpact, Math.abs(velN));
+        continue;
       }
+
+      const total = massV + p.mass;
+      v.x -= nx * pen * (p.mass / total) * 0.9;
+      v.z -= nz * pen * (p.mass / total) * 0.9;
+      p.x += nx * pen * (massV / total) * 1.2;
+      p.z += nz * pen * (massV / total) * 1.2;
       // Still apply soft push when nested even if not approaching
       if (velN < -0.5 && pen < 0.05) continue;
 

@@ -1142,6 +1142,38 @@ export function GameCanvas({
   );
 }
 
+/**
+ * Wait for everything a race needs before the lights go green.
+ *
+ * These preloads used to run *during* the race, so the opening lap paid for
+ * texture decode, glTF parsing and prop instancing as they landed — props
+ * popping in, the world lighting up several seconds late, and frame spikes
+ * exactly when the field is bunched and accelerating. Paying for it up front
+ * behind a loading state trades a few seconds of wait for a clean start.
+ *
+ * Failures resolve rather than reject: a missing optional pack should delay
+ * the grid, not block it.
+ */
+export async function prepareRaceAssets(
+  onProgress?: (pct: number, label: string) => void,
+): Promise<void> {
+  const steps: [string, () => Promise<unknown>][] = [
+    ["Surfaces", () => preloadPbrLibrary()],
+    ["Vehicles", () => preloadCarModels()],
+    ["Track props", () => preloadPhRaceProps()],
+  ];
+  for (let i = 0; i < steps.length; i++) {
+    const [label, run] = steps[i]!;
+    onProgress?.(Math.round((i / steps.length) * 100), label);
+    try {
+      await run();
+    } catch {
+      /* optional asset — never block the grid */
+    }
+  }
+  onProgress?.(100, "Ready");
+}
+
 export function wireControlsTest(
   sim: GameSimulation,
   input: InputController,

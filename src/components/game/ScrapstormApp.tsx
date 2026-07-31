@@ -66,6 +66,9 @@ type EngineKit = {
   }>;
   GraphicsDebug: ComponentType<{ phase: string }>;
   FpsMeter: ComponentType<{ phase: string }>;
+  prepareRaceAssets: (
+    onProgress?: (pct: number, label: string) => void,
+  ) => Promise<void>;
 };
 
 function loadName() {
@@ -277,6 +280,7 @@ async function loadEngine(
     MobileControls: mobileMod.MobileControls,
     GraphicsDebug: debugMod.GraphicsDebug,
     FpsMeter: debugMod.FpsMeter,
+    prepareRaceAssets: sceneMod.prepareRaceAssets,
   };
 }
 
@@ -307,6 +311,9 @@ export function ScrapstormApp() {
   const bootGen = useRef(0);
   const prefs = useRef({ name: loadName(), classId: loadClass(), trackId: loadTrack() });
   const [ghostOn, setGhostOn] = useState(() => loadGhostOn());
+  const [raceLoad, setRaceLoad] = useState<{ pct: number; label: string } | null>(
+    null,
+  );
   const shellPhaseRef = useRef<MatchPhase>("menu");
 
   const refreshHud = useCallback(() => {
@@ -564,13 +571,25 @@ export function ScrapstormApp() {
     k.audioEngine.playUi("confirm");
     sim.setGuest(prefs.current.name, prefs.current.classId);
     sim.setTrack(prefs.current.trackId);
-    sim.setPhase("countdown");
-    lastHit.current = 999;
-    rewardApplied.current = false;
-    lastHudSig.current = "";
-    setSceneEpoch(sim.worldEpoch);
-    setMenuState(snapshotMenu(sim.state));
-    setHud(k.snapshotHud(sim.state));
+
+    // Load everything the race needs BEFORE the countdown. These preloads used
+    // to run during the opening lap, so the first corner paid for texture
+    // decode and glTF parsing — props popping in and frame spikes exactly when
+    // the field is bunched. A few seconds of loading buys a clean start.
+    setRaceLoad({ pct: 0, label: "Surfaces" });
+    void k
+      .prepareRaceAssets((pct, label) => setRaceLoad({ pct, label }))
+      .finally(() => {
+        setRaceLoad(null);
+        if (simRef.current !== sim) return; // menu changed under us
+        sim.setPhase("countdown");
+        lastHit.current = 999;
+        rewardApplied.current = false;
+        lastHudSig.current = "";
+        setSceneEpoch(sim.worldEpoch);
+        setMenuState(snapshotMenu(sim.state));
+        setHud(k.snapshotHud(sim.state));
+      });
   };
 
   const onGhostToggle = useCallback((on: boolean) => {
@@ -698,6 +717,28 @@ export function ScrapstormApp() {
         ghostOn={ghostOn}
         onGhostToggle={onGhostToggle}
       />
+
+      {raceLoad ? (
+        <div className="pointer-events-auto absolute inset-0 z-[60] flex items-center justify-center bg-bg/80 backdrop-blur-sm">
+          <div className="w-full max-w-xs px-6 text-center">
+            <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-muted">
+              Preparing race
+            </p>
+            <p className="mt-1 font-display text-lg font-semibold text-fg">
+              {raceLoad.label}
+            </p>
+            <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
+                style={{ width: `${Math.max(6, raceLoad.pct)}%` }}
+              />
+            </div>
+            <p className="mt-2 text-[0.65rem] text-muted">
+              Loading up front so the race runs clean
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {hud && GameHUD ? <GameHUD hud={hud} onPause={onPause} /> : null}
       {GraphicsDebug ? <GraphicsDebug phase={scenePhase} /> : null}
