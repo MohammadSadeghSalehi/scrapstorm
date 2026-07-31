@@ -1,20 +1,58 @@
 # Scrapstorm League — AAA Punch-List
 
-## Measured baseline (medium tier, 960x540)
-`draws=302  tris=1.17M  programs=92  textures=101`
-Player-reported on a real GPU: **57fps / 17.5ms / max 27.9ms**.
+## Measured baseline (medium tier, 960x540, software GL)
+`draws=280  tris=715k  programs=95  textures=113`
+Down from `draws=302 tris=1.17M` via AI-car LODs and start-line prop thinning.
 
-## Next up, in leverage order
-1. **Vehicle LODs** — each custom car is ~100k tris (`scripts/inspect-mesh-orientation.mjs`
-   reports 96-105k) with no LOD, so a 4-car grid spends ~400k tris/frame on vehicles.
-   Needs offline decimation (`@gltf-transform/cli` + meshoptimizer).
-2. **KTX2 + Draco compression** — 43MB JPEG / 45MB meshes / 22MB HDRI still
-   uncompressed. Decoders are already wired (`gltfLoaders.ts`), transcoders staged
-   by `scripts/copy-decoders.mjs`. This is the remaining cause of first-load hitching.
-3. **Baked lightmaps** + true multi-cascade CSM (three's `CSM.js` is bundled).
-4. **TAA** over SMAA — also unlocks temporal upsampling.
-5. Terrain: triplanar/slope-blended detail maps; the heightmap is now sampled
-   properly but still uses a single tiled sand set.
+## Pipeline review — where AAA actually comes from
+
+### 1. Asset pipeline (offline) — the biggest untapped tier
+| item | state | note |
+|---|---|---|
+| Vehicle LODs | **done** | `build-vehicle-lods.mjs`; lod1 ~25k (-75%). lod2 not wired — error, not ratio, binds at ~23k, so it gains ~5% over lod1 and is not worth a distance switch on this topology |
+| Draco / meshopt | decoders wired | `gltfLoaders.ts` + `copy-decoders.mjs`; geometry not yet encoded |
+| KTX2 / Basis | **blocked** | needs a native `toktx`/`basisu`; textures are standalone JPEGs so `textureLibrary.ts` also needs `KTX2Loader`. Buys VRAM + main-thread decode, **not** download size (they are already 1024²) |
+| Lightmap bake | not started | **highest visual leverage.** Bake bounce + AO offline; this is the single biggest gap vs a UE scene |
+| HLOD / proxy merge | not started | merge distant scenery clusters into baked proxies |
+
+### 2. Build / load
+- Race assets now preload behind a gate (`prepareRaceAssets`): PBR library,
+  vehicles, race props, set dressing, HDRI prefetch. Textures resident at green
+  light rose 95 → 113.
+- **Next:** PSO/shader manifest — enumerate material×light×shadow permutations at
+  build time and warm them all during the countdown. `ShaderWarmup` currently
+  does two timed `compileAsync` passes, which is a heuristic, not a guarantee.
+- **Next:** streamed track sectors instead of whole-world upfront.
+
+### 3. Runtime culling / batching
+- Scenery instanced (~15-20 draws), edge posts instanced + grid-culled,
+  terrain grid-culled. Frustum + distance culling present.
+- **Missing:** occlusion culling (UE uses HW queries + a software rasteriser).
+  Third leg of the stool; 280 draws is not yet the bottleneck so this is later.
+
+### 4. Render / image quality
+| item | state |
+|---|---|
+| Colour-managed PBR, ACES, sRGB | done |
+| GTAO (N8AO, half-res) | done |
+| Player-following shadow cascade | done (single tight cascade) |
+| **Multi-cascade CSM** | not started — `three/examples/jsm/csm` is bundled |
+| **TAA** | not started — needs velocity buffers + reprojection; also unlocks temporal upsampling |
+| **LUT grade** | not started — needs an authored grading texture |
+| Dynamic resolution | done (`AdaptiveResolution`, 60-100% of tier ceiling) |
+
+### 5. Terrain / world
+- Heightmap now sampled at 2.5m quads with exact road-corridor carving and
+  slope-driven rock/sand blending.
+- **Next:** triplanar detail maps + a second detail normal near the camera;
+  currently one tiled sand set does all the work.
+
+## Recommended order
+1. **Lightmap bake** — biggest visual delta, and prerender is on the table.
+2. **Multi-cascade CSM** — the most visible remaining real-time gap.
+3. **TAA** — quality *and* perf (temporal upsampling).
+4. KTX2 once an encoder is available; Draco encode is free to do now.
+5. Terrain detail maps, then occlusion culling when draws justify it.
 
 _Not safe as originally written:_ `shadowMap.autoUpdate = false` — vehicles move,
 so freezing the map freezes their shadows. Needs split static/dynamic lights.
