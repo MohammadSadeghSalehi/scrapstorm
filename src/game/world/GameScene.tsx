@@ -50,7 +50,8 @@ import { VEHICLE_CLASSES } from "../classes";
 import { getTrackEpoch } from "../track";
 import { sampleGhost } from "../ghost";
 import { makeTires } from "../tires";
-import { sharedTrauma } from "./cameraShake";
+import { sharedHitStop, sharedTrauma, snoise } from "./cameraShake";
+import { CHASE, approach, speedNorm, speedResponse } from "./camera/speedCurve";
 import { getRivalGhost, subscribeRivalGhost } from "../ghostDuel";
 import { FRAME } from "./framePriority";
 import { PhysicsPropsView } from "./PhysicsPropsView";
@@ -67,6 +68,145 @@ const SIM_STEP = 1 / 60;
  */
 const SIM_MAX_STEPS = 5;
 const SIM_DELTA_CLAMP = 0.08;
+
+/**
+ * Cached sim pose for render interpolation.
+ *
+ * `p*` is the authoritative pose before the most recent fixed step, `c*` the
+ * authoritative pose after it. What the meshes read between steps is a blend of
+ * the two; neither is ever computed from a blend.
+ */
+type RenderPose = {
+  px: number;
+  py: number;
+  pz: number;
+  pyaw: number;
+  cx: number;
+  cy: number;
+  cz: number;
+  cyaw: number;
+};
+
+const TAU = Math.PI * 2;
+
+/**
+ * Squared distance above which a pose change is a teleport, not motion.
+ *
+ * One 1/60s step at the fastest speed in the game covers ~1.5 units. A wreck
+ * respawn snaps the car to the nearest track sample, which is routinely tens of
+ * units — interpolating that would fly the car across the desert over a frame.
+ */
+const TELEPORT_SQ = 16;
+
+/**
+ * Fraction of the current sim step already elapsed, published for anything else
+ * in this file that samples on the sim clock (the replay ghosts). Written once
+ * per frame in the SIM band, read in PRE_POSE.
+ */
+let renderAlpha = 0;
+
+/**
+ * Put the authoritative post-step pose back before the sim runs again.
+ *
+ * The meshes read VehicleState directly, so interpolation has to write into the
+ * same fields the sim integrates. That is only safe if the sim never sees a
+ * blended pose as its starting point — hence restore, step, re-blend, all
+ * inside the SIM band before anything else in the frame runs.
+ */
+function restoreSimPose(
+  vehicles: VehicleState[],
+  poses: Map<string, RenderPose>,
+) {
+  if (poses.size === 0) return;
+  for (const v of vehicles) {
+    const p = poses.get(v.id);
+    if (!p) continue;
+    v.x = p.cx;
+    v.y = p.cy;
+    v.z = p.cz;
+    v.yaw = p.cyaw;
+  }
+}
+
+function capturePrevPose(
+  vehicles: VehicleState[],
+  poses: Map<string, RenderPose>,
+) {
+  for (const v of vehicles) {
+    const p = poses.get(v.id);
+    if (p) {
+      p.px = v.x;
+      p.py = v.y;
+      p.pz = v.z;
+      p.pyaw = v.yaw;
+    } else {
+      poses.set(v.id, {
+        px: v.x,
+        py: v.y,
+        pz: v.z,
+        pyaw: v.yaw,
+        cx: v.x,
+        cy: v.y,
+        cz: v.z,
+        cyaw: v.yaw,
+      });
+    }
+  }
+}
+
+function captureCurrPose(
+  vehicles: VehicleState[],
+  poses: Map<string, RenderPose>,
+) {
+  for (const v of vehicles) {
+    const p = poses.get(v.id);
+    if (!p) continue;
+    p.cx = v.x;
+    p.cy = v.y;
+    p.cz = v.z;
+    p.cyaw = v.yaw;
+  }
+}
+
+/**
+ * Blend toward the current sim step by the leftover accumulator fraction.
+ *
+ * This renders up to one step (16.7ms) in the past, which is what makes it
+ * interpolation rather than extrapolation: no overshoot to correct, no rubber
+ * band when a car hits something. The lag is invisible; the stutter it replaces
+ * was not — at 144Hz roughly three frames in five previously drew an identical
+ * pose to the one before.
+ */
+function applyRenderPose(
+  vehicles: VehicleState[],
+  poses: Map<string, RenderPose>,
+  alpha: number,
+) {
+  const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+  for (const v of vehicles) {
+    const p = poses.get(v.id);
+    if (!p) continue;
+    const dx = p.cx - p.px;
+    const dz = p.cz - p.pz;
+    if (dx * dx + dz * dz > TELEPORT_SQ) {
+      v.x = p.cx;
+      v.y = p.cy;
+      v.z = p.cz;
+      v.yaw = p.cyaw;
+      continue;
+    }
+    v.x = p.px + dx * a;
+    v.y = p.py + (p.cy - p.py) * a;
+    v.z = p.pz + dz * a;
+    // Shortest arc. Yaw accumulates freely while driving, but a respawn assigns
+    // an absolute track heading that can be most of a turn from the current
+    // one, and blending the raw numbers would take the long way round.
+    let dyaw = p.cyaw - p.pyaw;
+    if (dyaw > Math.PI) dyaw -= TAU;
+    else if (dyaw < -Math.PI) dyaw += TAU;
+    v.yaw = p.pyaw + dyaw * a;
+  }
+}
 
 function VehicleView(props: {
   vehicle: VehicleState;
@@ -101,6 +241,16 @@ function ChaseCamera({ sim }: { sim: GameSimulation }) {
   const { camera } = useThree();
   const look = useRef(new THREE.Vector3());
   const desired = useRef(new THREE.Vector3());
+  /**
+   * The smoothed rig position, WITHOUT shake.
+   *
+   * Shake used to be folded into `desired` and then run through the position
+   * lerp, which put a ~5Hz low-pass on an 18Hz signal: the trauma curve was
+   * doing its job and the smoothing was eating almost all of it. Keeping the
+   * un-shaken rig separate and adding the offset after smoothing is what makes
+   * a heavy hit actually move the frame.
+   */
+  const rig = useRef(new THREE.Vector3());
   const ready = useRef(false);
   const traumaSys = useRef(sharedTrauma);
   const boostPunch = useRef(0);
@@ -108,6 +258,14 @@ function ChaseCamera({ sim }: { sim: GameSimulation }) {
   const prevBoost = useRef(0);
   const prevFlash = useRef(0);
   const prevShake = useRef(0);
+  /**
+   * Smoothed normalised speed. Every speed-reactive term below reads this and
+   * never the raw value: a wall takes the car from 70 u/s to 0 inside one fixed
+   * step, and a rig that tracked that would slam forward and collapse the FOV
+   * on the same frame as the hitstop and the shake. Three violent things at
+   * once reads as a glitch, not a crash.
+   */
+  const sn = useRef(0);
 
   useFrame((_, dt) => {
     const state = sim.state;
@@ -149,37 +307,64 @@ function ChaseCamera({ sim }: { sim: GameSimulation }) {
     boostPunch.current = Math.max(0, boostPunch.current - dt * 1.8);
     hitPunch.current = Math.max(0, hitPunch.current - dt * 3.2);
 
+    // The one speed curve: normalise once, smooth once, and drive pull-back,
+    // height, look-ahead, shake gain and FOV off the same number. Asymmetric so
+    // gaining speed is felt immediately and losing it is not thrown back at you.
+    const rawSn = speedNorm(target.speed);
+    sn.current = approach(
+      sn.current,
+      rawSn,
+      rawSn > sn.current ? CHASE.snRiseTau : CHASE.snFallTau,
+      dt,
+    );
+    const s01 = sn.current;
+    const top = speedResponse(s01);
+
     const fx = -Math.sin(target.yaw);
     const fz = -Math.cos(target.yaw);
-    const speed = Math.abs(target.speed);
     const dist =
-      (racing ? 13.5 + Math.min(3.2, speed * 0.035) : 16) -
+      (racing ? CHASE.distBase + CHASE.distGain * s01 : 16) -
       boostPunch.current * 0.8 +
       hitPunch.current * 0.4;
     const height =
-      (racing ? 7.2 + Math.min(1.6, speed * 0.025) : 8) + hitPunch.current * 0.25;
-    const lookAhead = 10 + Math.min(7, speed * 0.09) + boostPunch.current * 1.5;
+      (racing ? CHASE.heightBase + CHASE.heightGain * s01 : 8) +
+      hitPunch.current * 0.25;
+    const lookAhead =
+      CHASE.lookBase + CHASE.lookGain * s01 + boostPunch.current * 1.5;
 
     desired.current.set(
       target.x - fx * dist,
       target.y + height,
       target.z - fz * dist,
     );
-    const tSec = performance.now() * 0.001;
-    const s = ts.sample(tSec);
-    desired.current.x += s.ox;
-    desired.current.y += s.oy;
-    desired.current.z += s.oz;
 
     if (!ready.current) {
-      camera.position.copy(desired.current);
+      rig.current.copy(desired.current);
       ready.current = true;
     } else {
       const lag =
         target.boostTimer > 0 ? 4.2 : hitPunch.current > 0.2 ? 7.5 : 5.2;
-      const k = 1 - Math.exp(-lag * dt);
-      camera.position.lerp(desired.current, k);
+      rig.current.lerp(desired.current, 1 - Math.exp(-lag * dt));
     }
+
+    const tSec = performance.now() * 0.001;
+    const s = ts.sample(tSec);
+    // Shake reads harder the faster you are going — the same impulse against a
+    // stationary car should barely register.
+    const gain = CHASE.shakeBase + CHASE.shakeGain * s01;
+    camera.position.set(
+      rig.current.x + s.ox * gain,
+      rig.current.y + s.oy * gain,
+      rig.current.z + s.oz * gain,
+    );
+    // Continuous rumble above the knee. Deliberately tiny: this is the line
+    // between "the car is fast" and "the camera is broken".
+    const rumble = CHASE.rumble * top;
+    if (rumble > 0.0005) {
+      camera.position.x += snoise(tSec * 23.7, 6) * rumble;
+      camera.position.y += snoise(tSec * 31.1, 7) * rumble * 0.7;
+    }
+
     look.current.set(
       target.x + fx * lookAhead,
       target.y + 1 + (target.boostTimer > 0 ? 0.25 : 0),
@@ -187,24 +372,26 @@ function ChaseCamera({ sim }: { sim: GameSimulation }) {
     );
     camera.lookAt(look.current);
     if (s.roll !== 0 || s.pitch !== 0) {
-      camera.rotateZ(s.roll);
-      camera.rotateX(s.pitch);
+      camera.rotateZ(s.roll * gain);
+      camera.rotateX(s.pitch * gain);
     }
     const cam = camera as THREE.PerspectiveCamera;
     if (cam.isPerspectiveCamera) {
+      // No shake term here on purpose. FOV pumping in sympathy with a
+      // positional shake is the classic motion-sickness combination, and the
+      // shake is already moving the frame — the punch terms below carry the
+      // impact instead, and they decay smoothly.
       const targetFov =
-        56 +
-        Math.min(18, speed * 0.24) +
-        (target.boostTimer > 0 ? 7 : 0) +
-        (target.driftMeter > 0.5 ? 2.5 : 0) +
+        CHASE.fovBase +
+        CHASE.fovSpeedGain * s01 +
+        CHASE.fovTopGain * top +
+        (target.boostTimer > 0 ? CHASE.fovBoost : 0) +
+        (target.driftMeter > 0.5 ? CHASE.fovDrift : 0) +
         boostPunch.current * 8 +
-        hitPunch.current * 4 +
-        ts.magnitude * 3;
-      cam.fov = THREE.MathUtils.lerp(
-        cam.fov,
-        targetFov,
-        1 - Math.exp(-3.6 * dt),
-      );
+        hitPunch.current * 5;
+      // Time constant, never a raw assignment: the target contains hard steps
+      // (boost on/off, drift latch) and this is what stops them being a snap.
+      cam.fov = approach(cam.fov, targetFov, CHASE.fovTau, dt);
       if (cam.far < 850) cam.far = 900;
       if (cam.near > 0.5) cam.near = 0.35;
       cam.updateProjectionMatrix();
@@ -396,7 +583,10 @@ function GhostVehicle({ sim }: { sim: GameSimulation }) {
     const on =
       phase === "racing" || phase === "countdown" || phase === "paused";
     if (on !== active) setActive(on);
-    const t = Math.max(0, sim.state.raceTime);
+    // raceTime is quantised to the fixed step like everything else, so carry
+    // the same leftover fraction the live cars are interpolated by — otherwise
+    // the ghost stutters against the car it is racing.
+    const t = Math.max(0, sim.state.raceTime + renderAlpha * SIM_STEP);
     const ghost = sim.activeGhost;
     if (!on || !ghost) {
       pb.y = -50;
@@ -551,12 +741,39 @@ function SimDriver({
   lastInput: React.MutableRefObject<PlayerInput | null>;
 }) {
   const acc = useRef(0);
+  const poses = useRef(new Map<string, RenderPose>());
+  const epoch = useRef(-1);
+
   useFrame((state, delta) => {
     // Earliest band (FRAME.SIM), so the counters accumulate across every pass
     // of the frame that follows and the HUD reads a real total.
     state.gl.info.reset();
     if (input.consumePause()) onPauseToggle();
-    acc.current += Math.min(delta, SIM_DELTA_CLAMP);
+
+    // A rebuilt field reuses the same vehicle ids ("player", "bot-0", …), so a
+    // pose cached from the previous race would be restored straight onto a car
+    // that has just been placed on the new grid.
+    if (sim.worldEpoch !== epoch.current) {
+      epoch.current = sim.worldEpoch;
+      poses.current.clear();
+    }
+    restoreSimPose(sim.state.vehicles, poses.current);
+
+    const raw = Math.min(delta, SIM_DELTA_CLAMP);
+    /**
+     * Hitstop scales the REAL time handed to the accumulator, so the fixed step
+     * itself is untouched — the sim still advances in exact 1/60 increments,
+     * just fewer of them per second. Doing it here rather than inside the sim
+     * means the stopped time is deferred into the accumulator instead of being
+     * thrown away, and a light hit can be a hesitation rather than a stop.
+     *
+     * Gated on "racing": consuming it during countdown would burn the freeze
+     * before the lights go green, and pause/menu do not advance anyway.
+     */
+    const timeScale =
+      sim.state.phase === "racing" ? sharedHitStop.consume(raw) : 1;
+    acc.current += raw * timeScale;
+
     let steps = 0;
     let playerInput: PlayerInput | undefined;
     const needInput =
@@ -570,6 +787,10 @@ function SimDriver({
       lastInput.current = playerInput ?? null;
     }
     while (acc.current >= SIM_STEP && steps < SIM_MAX_STEPS) {
+      // Overwritten each iteration, so after the loop this holds the pose
+      // before the LAST step — which is the one the leftover fraction is
+      // measured against.
+      capturePrevPose(sim.state.vehicles, poses.current);
       sim.tick(SIM_STEP, playerInput ?? null);
       acc.current -= SIM_STEP;
       steps += 1;
@@ -580,7 +801,18 @@ function SimDriver({
     // on a ~14fps capture. Clamp only far enough to prevent a death spiral.
     const maxCarry = SIM_STEP * SIM_MAX_STEPS;
     if (acc.current > maxCarry) acc.current = maxCarry;
-    if (steps > 0) onHud();
+    if (steps > 0) {
+      captureCurrPose(sim.state.vehicles, poses.current);
+      onHud();
+    }
+    // Runs even on a frame that stepped nothing — that is the whole point. At
+    // 144Hz most frames step zero times, and without this they redraw the
+    // previous pose verbatim.
+    // Clamped: on a frame slow enough to exhaust SIM_MAX_STEPS the carry is
+    // still several steps deep, and an unclamped fraction would push the ghost
+    // sampler ahead of the sim clock rather than behind it.
+    renderAlpha = Math.min(1, acc.current / SIM_STEP);
+    applyRenderPose(sim.state.vehicles, poses.current, renderAlpha);
     qualityManager.sampleFrame(delta);
   }, FRAME.SIM);
   return null;
@@ -631,7 +863,7 @@ function emptyStats() {
 function PostFxLive({ sim }: { sim: GameSimulation }) {
   const [boost, setBoost] = useState(false);
   const [hit, setHit] = useState(false);
-  const [speedNorm, setSpeedNorm] = useState(0);
+  const [speedBand, setSpeedBand] = useState(0);
   const [drifting, setDrifting] = useState(false);
   const [on, setOn] = useState(false);
   const [tier, setTier] = useState(qualityManager.get().tier);
@@ -659,17 +891,20 @@ function PostFxLive({ sim }: { sim: GameSimulation }) {
     const player = sim.state.vehicles.find((v) => v.isPlayer);
     const b = (player?.boostTimer ?? 0) > 0;
     const h = (player?.impactFlash ?? 0) > 0.15;
-    const sn = Math.min(1, Math.abs(player?.speed ?? 0) / 84);
+    // Same normalisation the chase rig uses. These were independently
+    // hard-coded, which is how the blur and the FOV push ended up arriving at
+    // different points on the speedo.
+    const sn = speedNorm(player?.speed ?? 0);
     const d = (player?.driftMeter ?? 0) > 0.12;
     if (b !== boost) setBoost(b);
     if (h !== hit) setHit(h);
-    if (Math.abs(sn - speedNorm) > 0.04) setSpeedNorm(sn);
+    if (Math.abs(sn - speedBand) > 0.04) setSpeedBand(sn);
     if (d !== drifting) setDrifting(d);
   }, FRAME.LATE);
 
   if (!on || tier === "low" || !PostFX) return null;
   return (
-    <PostFX boost={boost} hit={hit} speedNorm={speedNorm} drifting={drifting} />
+    <PostFX boost={boost} hit={hit} speedNorm={speedBand} drifting={drifting} />
   );
 }
 

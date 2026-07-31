@@ -59,6 +59,27 @@ export const HANDLING = {
    * so low-speed pull stays strong and Vmax is a real climb.
    */
   aeroCoeff: 0.00000055,
+
+  /**
+   * Steering input ramp, in steer units per second (full lock = 1).
+   *
+   * Keyboard steering is a step function — 0 to full lock between two frames —
+   * and the yaw integrator turns that into an instant change of heading. That
+   * is the twitch: a 60ms tap intended as a lane correction produces the same
+   * initial yaw rate as leaning on the key through a hairpin.
+   *
+   * Release is faster than load so catching a slide stays sharp; only the
+   * commitment into a turn is slowed.
+   */
+  steerRampLoad: 6.0,
+  steerRampRelease: 12,
+  /**
+   * Fraction of the load rate given up at Vmax. ~170ms to full lock parked,
+   * ~260ms flat out — enough weight to feel deliberate, short enough to still
+   * dodge something. This is the first number to change if the car feels either
+   * twitchy or vague.
+   */
+  steerRampSpeedDrop: 0.35,
 } as const;
 
 export const COMBAT = {
@@ -80,6 +101,61 @@ export const COMBAT = {
   impactDmgThreshold: 6.5,
   impactDmgScale: 0.55,
   impactStunScale: 0.018,
+} as const;
+
+/**
+ * Game feel — presentation timing that is not physics but has to be tuned
+ * against it. Nothing here changes what the sim computes, only how much real
+ * time it is handed.
+ */
+export const FEEL = {
+  /**
+   * Impact energy, read as the world-space velocity (u/s) the collision solver
+   * removed from the player inside a single fixed step.
+   *
+   * The floor matters more than the ceiling: kerbing a verge post, brushing a
+   * barrier or nudging a barrel must produce nothing at all. A hitstop that
+   * fires on every contact stops reading as weight within one lap and starts
+   * reading as a frame-rate problem.
+   */
+  hitstopMinDv: 6,
+  hitstopFullDv: 26,
+  /**
+   * Second, independent trigger: the rise in the player's hitStun this step.
+   * Every impact path in the codebase already sets hitStun — weapons, barrel
+   * rupture, barrier, prop, car-to-car — so this catches hits that hurt without
+   * transferring much momentum. A direct rocket is 0.38s of stun and almost no
+   * change in velocity.
+   */
+  hitstopMinStun: 0.1,
+  hitstopFullStun: 0.4,
+  /** Freeze length in REAL seconds, at zero and at full impact energy. */
+  hitstopMinDuration: 0.04,
+  hitstopMaxDuration: 0.08,
+  /**
+   * Sim time scale held during the freeze, at zero and at full energy. A light
+   * hit is a hesitation; a heavy one is very nearly stopped. Not zero, because
+   * a hard 0 also freezes the particles and debris thrown by the hit, and those
+   * still moving — slowly — is most of what sells it.
+   */
+  hitstopLightScale: 0.4,
+  hitstopHeavyScale: 0.05,
+  /**
+   * Fraction of the freeze spent ramping back up to real time. The rest is held
+   * flat, so the release still reads as a snap; this only stops the camera
+   * seeing a step change in world velocity on the frame it ends.
+   */
+  hitstopRelease: 0.25,
+  /**
+   * After a freeze, incoming energy is scaled by `hitstopCooldownScale` for
+   * `hitstopCooldown` seconds.
+   *
+   * A four-car pile-up produces a qualifying collision on almost every step.
+   * Without this the sim spends a full second in slow motion and the game reads
+   * as having hung. A genuinely bigger second hit still gets through.
+   */
+  hitstopCooldown: 0.2,
+  hitstopCooldownScale: 0.35,
 } as const;
 
 export const OFFROAD = {

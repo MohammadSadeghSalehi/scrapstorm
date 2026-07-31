@@ -1,5 +1,5 @@
 import { BOT_NAMES, CLASS_ORDER, VEHICLE_CLASSES } from "./classes";
-import { RACE, COMBAT } from "./balance";
+import { RACE, COMBAT, FEEL } from "./balance";
 import { aiInput, catchUpFactor } from "./ai";
 import {
   findLockTarget,
@@ -14,8 +14,10 @@ import { createEmptyInput } from "./input";
 import {
   collideVehicles,
   isDrifting,
+  resetSteerRamp,
   spawnDamageSmoke,
   stepVehicle,
+  worldVelocity,
 } from "./physics";
 import {
   collideVehiclesWithProps,
@@ -347,6 +349,38 @@ function updateStandings(state: SimState) {
     });
 }
 
+/**
+ * Normalised impact energy in [0,1] for the player, over one fixed step.
+ *
+ * Two independent signals, taken at whichever is larger:
+ *
+ * - The world-velocity delta, which is the physical energy of the hit. This is
+ *   the one that matters for anything you drive into.
+ * - The rise in hitStun, which every impact path in the codebase sets. A direct
+ *   rocket barely changes the car's velocity but is unambiguously a big hit,
+ *   and would score zero on the delta alone.
+ *
+ * Both have a floor well above incidental contact. A hitstop that fires when
+ * you clip a verge post stops meaning anything within a lap.
+ */
+function impactEnergy(
+  player: VehicleState,
+  preVx: number,
+  preVz: number,
+  preStun: number,
+): number {
+  const pv = worldVelocity(player);
+  const dv = Math.hypot(pv.vx - preVx, pv.vz - preVz);
+  const eDv =
+    (dv - FEEL.hitstopMinDv) / (FEEL.hitstopFullDv - FEEL.hitstopMinDv);
+  const stunRise = player.hitStun - preStun;
+  const eStun =
+    (stunRise - FEEL.hitstopMinStun) /
+    (FEEL.hitstopFullStun - FEEL.hitstopMinStun);
+  const e = eDv > eStun ? eDv : eStun;
+  return e < 0 ? 0 : e > 1 ? 1 : e;
+}
+
 function updateWrecks(state: SimState, dt: number) {
   for (const v of state.vehicles) {
     if (v.wreckTimer > 0) {
@@ -482,6 +516,11 @@ export class GameSimulation {
   startCountdown() {
     setActiveTrack(this.state.selectedTrack);
     runtime.clear();
+    // Feel state persists across races because it lives outside SimState —
+    // without this a crash on the last corner leaves the new grid in slow
+    // motion, and a key held at the flag starts you already at full lock.
+    sharedHitStop.reset();
+    resetSteerRamp();
     this.ghostRecorder.reset();
     this.ghostFinalized = false;
     this.activeGhost = this.ghostEnabled ? getGhost(this.state.selectedTrack) : null;
@@ -561,11 +600,11 @@ export class GameSimulation {
       state.time += dt;
       return;
     }
-    // Hit-stop: slow clock presentation
-    if (sharedHitStop.tick(dt)) {
-      state.time += dt * 0.15;
-      return;
-    }
+    // Hitstop is NOT applied here any more. The fixed-step driver scales the
+    // real time it feeds its accumulator before it ever calls tick(), so the
+    // stopped time is deferred rather than discarded and the step size stays
+    // exactly FIXED_DT. Freezing inside tick() threw away time the driver had
+    // already committed, and could only ever express a total stop.
     this.accumulator += Math.min(dt, ACC_CAP);
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_FIXED_STEPS) {
@@ -644,6 +683,31 @@ export class GameSimulation {
       updateCheckpoints(v, state, dt);
     }
 
+    const player = state.vehicles.find((v) => v.isPlayer);
+    /**
+     * Baseline for this step's impact energy, taken after every vehicle has
+     * driven but before anything can collide.
+     *
+     * Impact energy is read as the world velocity the solver takes off the
+     * player across the step, rather than from any individual collision's
+     * reported number, because none of those numbers describe what the player
+     * absorbed: collideVehiclesWithProps returns a max over the whole field, so
+     * it fires for a bot clipping a barrel on the far side of the track, and
+     * collideVehicles reports a closing speed for a pair regardless of how the
+     * mass ratio split it. The delta covers cars, props, barriers, blast
+     * knockback and weapon recoil in one measurement, and is proportional to
+     * what actually happened to the player by construction.
+     */
+    let preVx = 0;
+    let preVz = 0;
+    let preStun = 0;
+    if (player) {
+      const pv = worldVelocity(player);
+      preVx = pv.vx;
+      preVz = pv.vz;
+      preStun = player.hitStun;
+    }
+
     // Two-pass collisions: first with FX, second resolve residual
     for (let pass = 0; pass < 2; pass++) {
       const parts = pass === 0 ? state.particles : null;
@@ -660,7 +724,9 @@ export class GameSimulation {
             state.cameraShake = Math.min(1.2, state.cameraShake + 0.25 + impact * 0.008);
             state.cameraKick = { x: b.x - a.x, z: b.z - a.z };
             if (impact > 28 && (a.isPlayer || b.isPlayer)) {
-              sharedHitStop.add(0.045 + Math.min(0.06, (impact - 28) * 0.002));
+              // Hitstop is triggered once per step from the measured player
+              // velocity delta below, not per colliding pair — a three-car
+              // sandwich is one hit, not three.
               sharedTrauma.add(0.2 + Math.min(0.35, impact * 0.004), {
                 x: b.x - a.x,
                 z: b.z - a.z,
@@ -686,10 +752,13 @@ export class GameSimulation {
     // Keep particle pool modest for GPU
     if (state.particles.length > 90) state.particles.length = 90;
 
+    // Everything that can hit the player has now run. One measurement, one
+    // hitstop request.
+    if (player) sharedHitStop.trigger(impactEnergy(player, preVx, preVz, preStun));
+
     updateWrecks(state, dt);
     updateStandings(state);
 
-    const player = state.vehicles.find((v) => v.isPlayer);
     if (player && player.health < this.lastPlayerHealth - 1) {
       const dmg = this.lastPlayerHealth - player.health;
       state.lastHitFlash = 0.25;
@@ -698,7 +767,6 @@ export class GameSimulation {
         x: Math.sin(player.yaw),
         z: Math.cos(player.yaw),
       };
-      if (dmg > 8) sharedHitStop.add(0.05);
       sharedTrauma.add(Math.min(0.45, 0.12 + dmg * 0.015));
     }
     if (player) this.lastPlayerHealth = player.health;

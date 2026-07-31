@@ -57,7 +57,14 @@ function dragForSurface(kind: VehicleState["surface"], factor: number, coasting:
   return 0.38 + factor * 0.14 + (coasting ? 0.16 : 0);
 }
 
-function worldVel(v: VehicleState) {
+/**
+ * Body-frame (speed, lateral) resolved into world XZ.
+ *
+ * Exported because impact energy has to be measured in world space: a barrier
+ * scrape changes yaw as well as speed, so comparing `v.speed` before and after
+ * a collision reports a delta that is partly just the body frame rotating.
+ */
+export function worldVelocity(v: VehicleState): { vx: number; vz: number } {
   const fx = -Math.sin(v.yaw);
   const fz = -Math.cos(v.yaw);
   const rx = Math.cos(v.yaw);
@@ -75,6 +82,42 @@ function applyWorldVel(v: VehicleState, vx: number, vz: number) {
   const rz = -Math.sin(v.yaw);
   v.speed = vx * fx + vz * fz;
   v.lateral = vx * rx + vz * rz;
+}
+
+/**
+ * Ramped steering command for the player, carried across fixed steps.
+ *
+ * Deliberately not a VehicleState field: types.ts is shared with the UI layer,
+ * which builds VehicleState literals of its own, and this is an input
+ * conditioner rather than part of the observable vehicle state. `v.steerAngle`
+ * cannot serve as the store either — tires.ts overwrites it every step with its
+ * own load-weighted visual angle.
+ *
+ * One scalar because only one vehicle is ever player-controlled. AI is
+ * excluded on purpose: aiInput is a continuous closed-loop controller, and
+ * inserting a couple hundred milliseconds of phase lag into a loop already
+ * correcting on lateral error is how you get bots that weave.
+ */
+let playerSteerCmd = 0;
+
+/** Clear on a grid reset so a key held at the flag does not survive into it. */
+export function resetSteerRamp() {
+  playerSteerCmd = 0;
+}
+
+function rampPlayerSteer(target: number, speedRatio: number, dt: number): number {
+  const prev = playerSteerCmd;
+  // Unwinding — including crossing centre — takes the fast rate, so catching a
+  // slide or lifting out of a corner stays sharp. Only committing further into
+  // a turn is slowed, which is where the twitch actually lives.
+  const releasing = Math.abs(target) < Math.abs(prev) || target * prev < 0;
+  const rate = releasing
+    ? HANDLING.steerRampRelease
+    : HANDLING.steerRampLoad * (1 - speedRatio * HANDLING.steerRampSpeedDrop);
+  const max = rate * dt;
+  const d = target - prev;
+  playerSteerCmd = prev + (d > max ? max : d < -max ? -max : d);
+  return playerSteerCmd;
 }
 
 /**
@@ -323,13 +366,19 @@ export function stepVehicle(
 
   const drifting = holdingDrift;
 
-  // Steering
+  // Steering. Everything downstream of here — yaw, drift push, body lean, tyre
+  // slip — reads the RAMPED command rather than the raw key state, so a tap is
+  // a nudge and the car, the wheels and the lean all agree on what was asked
+  // for. steerAngle itself is owned by stepTires (it weights the visual angle
+  // by load), so it is not set here.
   const speedFactor = Math.min(
     1,
     Math.max(0.12, Math.abs(v.speed) / Math.max(HANDLING.minSteerSpeed, 4)),
   );
-  const steerIn = Math.max(-1, Math.min(1, input.steering));
-  v.steerAngle += (steerIn * 0.55 - v.steerAngle) * Math.min(1, 10 * dt);
+  const steerRaw = Math.max(-1, Math.min(1, input.steering));
+  const steerIn = v.isPlayer
+    ? rampPlayerSteer(steerRaw, speedRatio, dt)
+    : steerRaw;
   if (Math.abs(v.speed) > 0.4) {
     const sign = v.speed >= 0 ? 1 : -1;
     v.yaw += steerIn * turnRate * speedFactor * sign * dt;
@@ -527,8 +576,8 @@ export function collideVehicles(
   b.x += nx * pen * (massA / total) * (0.55 + soft * 0.45);
   b.z += nz * pen * (massA / total) * (0.55 + soft * 0.45);
 
-  const va = worldVel(a);
-  const vb = worldVel(b);
+  const va = worldVelocity(a);
+  const vb = worldVelocity(b);
   const rvx = va.vx - vb.vx;
   const rvz = va.vz - vb.vz;
   const velN = rvx * nx + rvz * nz;

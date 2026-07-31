@@ -9,6 +9,8 @@
  * Presentation only — never mutates gameplay.
  */
 
+import { FEEL } from "../balance";
+
 export type ShakeSettings = {
   /** 0..1 user scale (0 = off) */
   intensity: number;
@@ -122,24 +124,109 @@ export class CameraTrauma {
   }
 }
 
-/** Presentation hitstop — freezes sim ticks briefly without stopping render. */
+/**
+ * Impact hitstop — a scale on the sim's clock, not a frame skip.
+ *
+ * The previous version answered "should this frame's fixed steps be skipped?",
+ * which can only express a total freeze, and it was consumed inside the sim's
+ * own tick — after the driver had already subtracted a full step from its
+ * accumulator, so the stopped time was silently discarded rather than deferred.
+ *
+ * Scaling the real time fed into the fixed accumulator instead keeps the step
+ * size at exactly 1/60 (the sim stays deterministic and merely advances more
+ * slowly), returns the time properly to the accumulator, and makes a light hit
+ * expressible as a hesitation rather than a stop.
+ *
+ * Presentation only. Nothing that decides gameplay may read this.
+ */
 export class HitStop {
-  remaining = 0;
-  private readonly max = 0.14;
+  private remaining = 0;
+  private duration = 0;
+  private scale = 1;
+  private cooldown = 0;
+  private reduced = false;
 
-  add(seconds: number) {
+  constructor() {
     if (typeof window !== "undefined") {
-      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-      if (reduced) seconds *= 0.35;
+      this.reduced =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
     }
-    this.remaining = Math.min(this.max, Math.max(this.remaining, seconds));
   }
 
-  /** Returns true if simulation should skip this frame's fixed steps. */
-  tick(dt: number): boolean {
-    if (this.remaining <= 0) return false;
-    this.remaining -= dt;
-    return true;
+  get active(): boolean {
+    return this.remaining > 0;
+  }
+
+  /**
+   * Request a stop. `energy01` is normalised impact energy in [0,1]; both the
+   * duration and how hard the clock is pulled scale with it, so a scrape and a
+   * head-on are not the same event with the same pause.
+   *
+   * Re-triggering during a stop deepens and extends, never shortens: the second
+   * car in a pile-up must not cut the first impact short.
+   */
+  trigger(energy01: number) {
+    let e = energy01 < 0 ? 0 : energy01 > 1 ? 1 : energy01;
+    if (this.cooldown > 0) e *= FEEL.hitstopCooldownScale;
+    if (e <= 0.02) return;
+
+    let dur =
+      FEEL.hitstopMinDuration +
+      (FEEL.hitstopMaxDuration - FEEL.hitstopMinDuration) * e;
+    let sc =
+      FEEL.hitstopLightScale +
+      (FEEL.hitstopHeavyScale - FEEL.hitstopLightScale) * e;
+    if (this.reduced) {
+      // Shorter and much less severe rather than off: a hit that produces no
+      // response at all is a legibility loss, and the nausea risk here is the
+      // time distortion, not its existence.
+      dur *= 0.5;
+      sc = 1 - (1 - sc) * 0.35;
+    }
+
+    if (this.remaining > 0) {
+      this.duration = Math.max(this.duration, dur);
+      this.remaining = Math.max(this.remaining, dur);
+      this.scale = Math.min(this.scale, sc);
+    } else {
+      this.duration = dur;
+      this.remaining = dur;
+      this.scale = sc;
+    }
+  }
+
+  /**
+   * Advance by one frame of REAL time and return the scale to apply to the sim
+   * clock. Must be called exactly once per rendered frame, by the fixed-step
+   * driver and nowhere else.
+   */
+  consume(dtReal: number): number {
+    if (this.cooldown > 0) {
+      this.cooldown -= dtReal;
+      if (this.cooldown < 0) this.cooldown = 0;
+    }
+    if (this.remaining <= 0) return 1;
+    this.remaining -= dtReal;
+    if (this.remaining <= 0) {
+      this.remaining = 0;
+      this.cooldown = FEEL.hitstopCooldown;
+      return 1;
+    }
+    // t runs 1 -> 0 across the stop. Held flat until the release window so the
+    // recovery still reads as a snap.
+    const t = this.remaining / this.duration;
+    if (t < FEEL.hitstopRelease) {
+      return this.scale + (1 - this.scale) * (1 - t / FEEL.hitstopRelease);
+    }
+    return this.scale;
+  }
+
+  /** Clear on a grid reset so a finish-line crash cannot bleed into the next race. */
+  reset() {
+    this.remaining = 0;
+    this.duration = 0;
+    this.scale = 1;
+    this.cooldown = 0;
   }
 }
 
