@@ -1,7 +1,7 @@
 /**
  * Cinematic post: bloom, vignette, speed chroma, grain.
  */
-import { forwardRef, useMemo } from "react";
+import { forwardRef, useEffect, useMemo, useRef } from "react";
 import {
   EffectComposer,
   Bloom,
@@ -11,11 +11,13 @@ import {
   SMAA,
   N8AO,
 } from "@react-three/postprocessing";
+import type { EffectComposer as EffectComposerImpl } from "postprocessing";
 import { BlendFunction } from "postprocessing";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
 import { GradeEffect } from "./GradeEffect";
 import { MotionBlurEffect } from "./MotionBlurEffect";
+import { FrameProfiler } from "./FrameProfiler";
 
 /**
  * The grade replaces the HueSaturation + BrightnessContrast pair it supersedes:
@@ -62,6 +64,8 @@ export function PostFX({
   const low = q.tier === "low";
   const sn = Math.min(1, Math.max(0, speedNorm));
 
+  const composer = useRef<EffectComposerImpl>(null);
+
   const chroma = useMemo(() => {
     const base = boost ? 0.0028 : hit ? 0.0018 : drifting ? 0.0014 : 0.0005;
     const v = base + sn * 0.0014;
@@ -103,7 +107,14 @@ export function PostFX({
       : 0.14 + sn * 0.08;
 
   return (
-    <EffectComposer multisampling={0} enableNormalPass={false}>
+    <EffectComposer
+      ref={composer}
+      multisampling={0}
+      enableNormalPass={false}
+    >
+      {/* Instruments the composer's own passes. Mounted inside so it can take
+          the composer instance by ref; contributes no geometry and no pass. */}
+      <FrameProfiler composer={composer} />
       {/*
         AO first: it darkens creases and contact points, and everything after
         (bloom, grade) should see that darkening rather than blooming light

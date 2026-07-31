@@ -6,6 +6,7 @@
  * persisted user option (F key), separate from this full diagnostic panel.
  */
 import { useEffect, useState } from "react";
+import { gpuProfiler, type ProfileSnap } from "@/game/world/gpuProfiler";
 import { qualityManager, type QualityTier } from "@/game/world/quality";
 import { getWasmNoiseStatus } from "@/game/world/procmat/wasmRuntime";
 import { listLoadedPacks } from "@/game/world/webgl2/textureLibrary";
@@ -147,6 +148,7 @@ export function GraphicsDebug({ phase }: { phase: string }) {
     calls: 0,
     tris: 0,
     programs: 0,
+    prof: null as ProfileSnap | null,
   });
   const caps = getWebGL2Caps();
   const gpu = caps?.renderer && caps.renderer !== "unknown" ? caps.renderer : null;
@@ -165,6 +167,20 @@ export function GraphicsDebug({ phase }: { phase: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  /*
+   * Only profile while the panel is open.
+   *
+   * Timer queries are cheap but not free, and a profiler that costs frame time
+   * whenever it is not being read is a profiler that changes the thing it
+   * measures. The rotation and the query pool idle at zero cost when disabled.
+   */
+  useEffect(() => {
+    gpuProfiler.enabled = open;
+    return () => {
+      gpuProfiler.enabled = false;
+    };
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const id = window.setInterval(() => {
@@ -180,6 +196,7 @@ export function GraphicsDebug({ phase }: { phase: string }) {
         calls: window.__renderDebug?.drawCalls ?? 0,
         tris: window.__renderDebug?.triangles ?? 0,
         programs: window.__renderDebug?.programs ?? 0,
+        prof: window.__gpuProfile ?? null,
       });
     }, 250);
     return () => clearInterval(id);
@@ -226,6 +243,45 @@ export function GraphicsDebug({ phase }: { phase: string }) {
       {c?.edges && line("edges", `${c.edges.visible}/${c.edges.total}`)}
       {c?.beacons &&
         line("beacons", `${c.beacons.visible}/${c.beacons.tested}`)}
+      {/*
+        GPU vs CPU for the same bracket is the whole point. A 70ms frame
+        because the GPU is saturated and a 70ms frame because the main thread
+        is blocked look identical from outside and share no fix: if gpu is
+        small and cpu is large, resolution and shader work will not help.
+      */}
+      {snap.prof && (
+        <div className="mt-1 border-t border-stone-800 pt-1">
+          <div className="text-stone-500">
+            frame gpu/cpu ms
+            {!snap.prof.supported
+              ? " (no timer ext)"
+              : snap.prof.health.completed === 0
+                ? snap.prof.health.discarded > 0
+                  ? " (all disjoint)"
+                  : " (pending)"
+                : ""}
+          </div>
+          {Object.entries(snap.prof.gpu)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 7)
+            .map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3">
+                <span className="truncate text-stone-500">{k}</span>
+                <span className="font-mono text-stone-200">
+                  {v.toFixed(2)}
+                  <span className="text-stone-500">
+                    /{(snap.prof?.cpu[k] ?? 0).toFixed(2)}
+                  </span>
+                </span>
+              </div>
+            ))}
+          {snap.prof.longTasks.count > 0 &&
+            line(
+              "long tasks",
+              `${snap.prof.longTasks.count} worst ${snap.prof.longTasks.worstMs}ms`,
+            )}
+        </div>
+      )}
       <div className="mt-1.5 border-t border-stone-800 pt-1 text-[9px] text-stone-600">
         ` panel · F fps · Alt+1/2/3 tier · Alt+0 auto
       </div>
