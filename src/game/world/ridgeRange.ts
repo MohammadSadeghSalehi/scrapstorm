@@ -1,0 +1,209 @@
+/**
+ * Continuous mountain ranges for the skyline.
+ *
+ * The skyline used to be 25 separate displaced cones planted on a ring. No
+ * amount of per-cone displacement fixes that, because the thing that reads as
+ * "primitive" is not the surface detail — it is the SILHOUETTE. A cone has one
+ * summit, a convex outline and a base that meets the ground all the way round,
+ * so 25 of them spaced evenly always read as 25 pyramids. A real range is one
+ * continuous landform: ridgelines that run for kilometres, summits connected by
+ * saddles, spurs that overlap and occlude each other, and a horizon that is
+ * never twice the same shape.
+ *
+ * So this builds an annulus heightfield instead — a ring of terrain around the
+ * circuit, displaced by ridged multifractal noise. Overlapping spurs come free
+ * because it is genuine 3D geometry rather than a billboard, and the whole
+ * range is ONE draw call instead of 25.
+ *
+ * Cost went DOWN: 25 cones at ~140 triangles was ~3.5k triangles in 25 draws;
+ * a 192x20 band is ~7.7k triangles in one.
+ */
+import * as THREE from "three";
+import { perlin2 } from "./terrainHeight";
+
+export type RangeOpts = {
+  seed: number;
+  /** Inner radius — start it inside the sand plane so the base is buried. */
+  innerR: number;
+  outerR: number;
+  /** Angular / radial resolution. */
+  segsA: number;
+  segsR: number;
+  /** Height of the tallest summit, in metres above `baseY`. */
+  peak: number;
+  /** World y the range grows from. */
+  baseY: number;
+  /** Metres per noise unit — larger means broader landforms. */
+  featureSize: number;
+  /** Shadowed rock, sun-bleached rock, and the horizon haze to fade into. */
+  rockLow: string;
+  rockHigh: string;
+  haze: string;
+  /** Radii between which aerial perspective ramps from none to full. */
+  hazeFrom: number;
+  hazeTo: number;
+  /** Haze strength at hazeTo, 0..1. */
+  hazeMax: number;
+};
+
+/**
+ * Ridged multifractal — the standard way to get mountains rather than hills.
+ *
+ * `1 - |noise|` folds the noise about zero, turning what would be smooth peaks
+ * and troughs into sharp creases; squaring sharpens them further. Weighting
+ * each octave by the previous one is what makes it *multi*fractal: detail is
+ * suppressed in the valleys and piled onto the ridges, which is roughly what
+ * erosion does to a real range. Plain fBm gives rolling dunes — correct for the
+ * desert floor, wrong for a mountain.
+ */
+function ridgeField(x: number, z: number, seed: number): number {
+  // Domain warp first: without it the ridges run in visibly straight lines
+  // along the noise lattice axes.
+  const wx = x + perlin2(x * 0.5 + seed * 3.1, z * 0.5) * 1.3;
+  const wz = z + perlin2(x * 0.5, z * 0.5 + seed * 2.7) * 1.3;
+
+  let sum = 0;
+  let norm = 0;
+  let amp = 1;
+  let freq = 1;
+  let prev = 1;
+  for (let i = 0; i < 6; i++) {
+    let n = 1 - Math.abs(perlin2(wx * freq + seed * 17.3, wz * freq - seed * 9.1));
+    n = n * n * prev;
+    prev = Math.min(1, n * 1.5);
+    sum += n * amp;
+    norm += amp;
+    amp *= 0.48;
+    freq *= 2.07;
+  }
+  return sum / Math.max(1e-6, norm);
+}
+
+function smoothstep(a: number, b: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - a) / Math.max(1e-6, b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * A ring of mountains centred on the origin of the returned geometry.
+ *
+ * Vertex colours carry rock stratification AND aerial perspective, because the
+ * scene has no fog: without a distance fade the far range would be the same
+ * saturated brown as the near one and the two would fuse into a single flat
+ * band. Haze is what separates them into layers.
+ */
+export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
+  const { segsA, segsR } = o;
+  const cols = segsA + 1;
+  const rows = segsR + 1;
+  const count = cols * rows;
+
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+
+  const low = new THREE.Color(o.rockLow);
+  const high = new THREE.Color(o.rockHigh);
+  const haze = new THREE.Color(o.haze);
+  const tmp = new THREE.Color();
+
+  for (let r = 0; r < rows; r++) {
+    const tr = r / segsR;
+    const R = o.innerR + (o.outerR - o.innerR) * tr;
+
+    /*
+     * Rise out of the desert rather than starting at full height.
+     *
+     * The first rows sit BELOW baseY so the range emerges from under the sand
+     * plane — an annulus that began exactly at ground level would show a hard
+     * rim where its inner edge met the desert, and any gap between the two
+     * would show sky through the floor. Amplitude then keeps growing outward,
+     * so the outermost ridge is always the tallest and there is no "edge of the
+     * world" visible over the top of the range.
+     */
+    const emerge = smoothstep(0, 0.18, tr);
+    const amp = emerge * (0.55 + 0.75 * tr);
+    const sink = (1 - emerge) * 40;
+
+    for (let a = 0; a < cols; a++) {
+      // cols-1 == segsA, so a = 0 and a = segsA land on the same angle and the
+      // seam closes exactly.
+      const ang = (a / segsA) * Math.PI * 2;
+      const x = Math.cos(ang) * R;
+      const z = Math.sin(ang) * R;
+
+      const f = ridgeField(x / o.featureSize, z / o.featureSize, o.seed);
+      // Sharpen: pushes the mass down into valleys and leaves distinct summits
+      // instead of a uniformly lumpy blanket.
+      const hN = Math.pow(f, 1.7);
+      const h = hN * o.peak * amp;
+
+      const i = r * cols + a;
+      pos[i * 3] = x;
+      pos[i * 3 + 1] = o.baseY + h - sink;
+      pos[i * 3 + 2] = z;
+
+      // Sun-bleached toward the summits, shadowed rock in the gullies.
+      tmp.copy(low).lerp(high, smoothstep(0.08, 0.85, hN));
+      // Aerial perspective by distance, minus a little on the peaks — summits
+      // stand above the densest air, which is what makes a range read as deep
+      // rather than as a flat cut-out.
+      const f2 = smoothstep(o.hazeFrom, o.hazeTo, R) * o.hazeMax;
+      tmp.lerp(haze, Math.min(1, f2 * (1 - hN * 0.3)));
+
+      col[i * 3] = tmp.r;
+      col[i * 3 + 1] = tmp.g;
+      col[i * 3 + 2] = tmp.b;
+    }
+  }
+
+  const idx: number[] = [];
+  for (let r = 0; r < segsR; r++) {
+    for (let a = 0; a < segsA; a++) {
+      const i0 = r * cols + a;
+      const i1 = i0 + 1;
+      const i2 = i0 + cols;
+      const i3 = i2 + 1;
+      /*
+       * (i0, i1, i2) is tangential-then-radial, which cross-products to +Y.
+       * The reverse order gives -Y: computeVertexNormals then points the whole
+       * range DOWNWARD, backface culling removes every slope you look down at,
+       * and the only geometry left is whatever sits above eye level — lit from
+       * underneath. It renders as a lump of rock floating in the sky, which is
+       * exactly what it did.
+       */
+      idx.push(i0, i1, i2, i1, i3, i2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+
+  /*
+   * Slope darkening, applied AFTER normals exist so it costs nothing extra.
+   *
+   * Height alone gives a range that reads as smooth clay: every face at a given
+   * altitude is the same colour, so the eye gets no cue about form. In reality
+   * the steep faces are bare rock — too sheer to hold sand or catch much sky
+   * light — while the shallower shoulders are dust-covered and paler. Keying
+   * off normal.y separates crag from shoulder and is what makes the silhouette
+   * read as stone.
+   *
+   * Damped by the haze already in the colour, so the far range stays soft
+   * rather than getting its contrast handed back at the horizon.
+   */
+  const nrm = geo.attributes.normal as THREE.BufferAttribute;
+  for (let i = 0; i < count; i++) {
+    const steep = 1 - Math.min(1, Math.max(0, nrm.getY(i)));
+    const shade = 1 - smoothstep(0.12, 0.62, steep) * 0.3;
+    col[i * 3] *= shade;
+    col[i * 3 + 1] *= shade * 0.99;
+    col[i * 3 + 2] *= shade * 0.96;
+  }
+  (geo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+
+  geo.computeBoundingSphere();
+  return geo;
+}

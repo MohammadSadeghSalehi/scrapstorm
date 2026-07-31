@@ -6,7 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
-import { ridgeGeometry } from "./ridgeGeometry";
+import { buildRidgeRange } from "./ridgeRange";
 import { TRACK_SAMPLES } from "../track";
 import {
   softCircleTexture,
@@ -44,7 +44,19 @@ export function Atmosphere() {
   );
 
   const skyGeo = useMemo(() => {
-    const R = 420;
+    /*
+     * 420 put the dome closer than the camera's far plane by a wide margin, but
+     * also closer than the mesas that were supposed to sit in front of it: the
+     * far ring reached ~780 from the track centre, so the "distant" skyline was
+     * drawing OUTSIDE its own sky. And because the dome is world-locked at the
+     * origin while the circuit spans 317m, the horizon visibly swung as you
+     * drove — the sky behaved like a nearby object.
+     *
+     * The whole backdrop is now camera-anchored (see backdrop below), so the
+     * dome only has to clear the far range at 840 and stay inside the 900m far
+     * plane.
+     */
+    const R = 870;
     const geo = new THREE.SphereGeometry(
       R,
       skySeg,
@@ -128,28 +140,37 @@ export function Atmosphere() {
     const n = q.tier === "low" ? 5 : 10;
     return Array.from({ length: n }, (_, i) => {
       const a = (i / n) * Math.PI * 2 + 0.5;
-      const r = 180 + (i % 5) * 28;
+      // Pushed out past the far range (840) and scaled to match, so clouds sit
+      // beyond the mountains instead of in front of them. At r = 180 they were
+      // nearer than the skyline they were meant to sit behind.
+      const r = 720 + (i % 5) * 60;
       return {
         x: Math.cos(a) * r,
-        y: 38 + (i % 4) * 7,
+        y: 150 + (i % 4) * 34,
         z: Math.sin(a) * r,
-        sx: 50 + (i % 4) * 18,
-        sy: 14 + (i % 3) * 5,
+        sx: 210 + (i % 4) * 76,
+        sy: 58 + (i % 3) * 21,
         op: 0.2 + (i % 3) * 0.07,
       };
     });
   }, [q.tier]);
 
   /**
-   * Two rings of mesas. The near ring reads as terrain you could drive toward;
-   * the far ring is taller, hazier and desaturated so the skyline has depth
-   * (cheap aerial perspective) instead of one flat band of identical cones.
+   * Two ranges, and they are deliberately not the same KIND of object.
+   *
+   * The mid range is world-locked: it sits at a real place in the world, so it
+   * parallaxes as you drive and you can tell you are moving relative to it.
+   * The far range is anchored to the camera, which means zero parallax — and
+   * that is correct, because it is standing in for something tens of
+   * kilometres away, where parallax across a 317m circuit would be
+   * imperceptible anyway. Anchoring it also keeps it inside the 900m far plane
+   * no matter where on the circuit the player is; a world-locked far range
+   * would be clipped from the far side of the track, which is what was
+   * happening to the old outer mesa ring.
+   *
+   * That split is what actually sells depth: one layer moves, one does not.
    */
-  const ridges = useMemo(() => {
-    // Ring radii were fixed at 160+ from the WORLD ORIGIN while the circuit
-    // itself reaches ~240 out, so mesas were being planted straight onto the
-    // track. Derive the rings from the actual track bounds instead, and keep a
-    // clear margin outside the furthest piece of road.
+  const midRange = useMemo(() => {
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     for (const s of TRACK_SAMPLES) {
       if (s.x < minX) minX = s.x;
@@ -158,59 +179,80 @@ export function Atmosphere() {
       if (s.z > maxZ) maxZ = s.z;
     }
     const hasTrack = Number.isFinite(minX);
-    const tcx = hasTrack ? (minX + maxX) * 0.5 : 0;
-    const tcz = hasTrack ? (minZ + maxZ) * 0.5 : 0;
-    // Radius that encloses the whole circuit from its own centre.
-    const trackR = hasTrack
-      ? Math.hypot(maxX - minX, maxZ - minZ) * 0.5
-      : 200;
-    const nearR = trackR + 90;
-    const farR = trackR + 320;
-
-    const near = q.tier === "low" ? 10 : 16;
-    const far = q.tier === "low" ? 5 : 9;
-    const out: {
-      x: number;
-      z: number;
-      s: number;
-      h: number;
-      rot: number;
-      seed: number;
-      base: string;
-      peak: string;
-    }[] = [];
-    for (let i = 0; i < near; i++) {
-      const a = (i / near) * Math.PI * 2 + 0.1;
-      const r = nearR + (i % 5) * 34;
-      out.push({
-        x: tcx + Math.cos(a) * r,
-        z: tcz + Math.sin(a) * r,
-        s: 32 + (i % 4) * 14,
-        h: 12 + (i % 5) * 6,
-        rot: a + Math.PI / 2,
-        seed: i * 3 + 1,
-        base: i % 2 === 0 ? "#4a3828" : "#523c2a",
-        peak: i % 2 === 0 ? "#7d6144" : "#8a6c4c",
-      });
-    }
-    for (let i = 0; i < far; i++) {
-      const a = (i / far) * Math.PI * 2 + 0.55;
-      const r = farR + (i % 4) * 90;
-      out.push({
-        x: tcx + Math.cos(a) * r,
-        z: tcz + Math.sin(a) * r,
-        s: 90 + (i % 3) * 40,
-        h: 46 + (i % 4) * 20,
-        rot: a + Math.PI / 2,
-        seed: 100 + i * 5,
-        // Washed toward the fog colour — distance haze without a second pass.
-        base: "#6b5f57",
-        peak: "#9d8c78",
-      });
-    }
-    return out;
+    return {
+      cx: hasTrack ? (minX + maxX) * 0.5 : 0,
+      cz: hasTrack ? (minZ + maxZ) * 0.5 : 0,
+      geo: buildRidgeRange({
+        seed: 7,
+        // Starts inside the sand plane (halfExtent 340) so the base is buried
+        // and no rim shows where range meets desert.
+        innerR: 300,
+        outerR: 660,
+        /*
+         * Denser than the far range because it is genuinely near: at 176x16
+         * the quads were ~20m across, and from a camera that can sit 132m from
+         * the inner edge that is 8 degrees per quad. That is what made the
+         * first attempt read as faceted slabs rather than hills.
+         */
+        segsA: q.tier === "low" ? 144 : q.tier === "high" ? 256 : 200,
+        segsR: q.tier === "low" ? 16 : q.tier === "high" ? 32 : 24,
+        /*
+         * FOOTHILLS, not mountains. At 78 this rose 30 degrees off a camera
+         * beside it — a wall running along the track, not a horizon. The far
+         * range does the mountain work at 14 degrees; this layer's job is to
+         * fill the gap between the desert and that range, and to hide the seam
+         * where the heightmap terrain stops at ~288 and the flat sand plane
+         * takes over.
+         */
+        peak: 42,
+        // Ground out there measures 4.5-10.6m; 4 keeps the skirt under it.
+        baseY: 4,
+        featureSize: 190,
+        // Lifted out of near-black: at #4a3628 under this grade the band read
+        // as a dark mass rather than as sunlit desert rock.
+        rockLow: "#6b4f38",
+        rockHigh: "#a4855f",
+        haze: "#cfb089",
+        hazeFrom: 300,
+        hazeTo: 660,
+        hazeMax: 0.62,
+      }),
+    };
   }, [q.tier]);
 
+  const farRange = useMemo(
+    () =>
+      buildRidgeRange({
+        seed: 23,
+        innerR: 600,
+        outerR: 840,
+        segsA: q.tier === "low" ? 128 : q.tier === "high" ? 224 : 176,
+        segsR: q.tier === "low" ? 8 : q.tier === "high" ? 14 : 11,
+        /*
+         * Tall enough to clear the mid range from any point on the circuit — a
+         * far range that peeks between near summits reads as a second row of
+         * hills, not as mountains beyond them. Capped by the SUN, though: it
+         * sits at 18.6 degrees elevation with a 1.6-degree disc, so its lower
+         * limb is at 17.0. At peak 250 the ridgeline reached 18.1 degrees and
+         * swallowed it. 190 tops out near 14.3, which leaves the disc clear.
+         * The sun is the anchor the whole lighting and bloom are built around;
+         * it does not get to be hidden by set dressing.
+         */
+        peak: 190,
+        baseY: 0,
+        featureSize: 340,
+        rockLow: "#6a5a52",
+        rockHigh: "#a89380",
+        // Fades most of the way to the sky's horizon band (#f5d4a0 / #e0a068).
+        haze: "#e3c49c",
+        hazeFrom: 600,
+        hazeTo: 840,
+        hazeMax: 0.82,
+      }),
+    [q.tier],
+  );
+
+  const backdrop = useRef<THREE.Group>(null);
   const moteGroup = useRef<THREE.Group>(null);
   const hazeGroup = useRef<THREE.Group>(null);
   const cloudGroup = useRef<THREE.Group>(null);
@@ -233,93 +275,102 @@ export function Atmosphere() {
     }
     if (hazeGroup.current) hazeGroup.current.rotation.y = t * 0.0035;
     if (cloudGroup.current) cloudGroup.current.rotation.y = t * 0.0015;
+    /*
+     * Track the camera in XZ only. Y is left alone so the horizon stays put
+     * relative to the world as the camera rises and falls — following Y as
+     * well would drag the whole sky up and down with every bump.
+     */
+    if (backdrop.current) {
+      backdrop.current.position.x = state.camera.position.x;
+      backdrop.current.position.z = state.camera.position.z;
+    }
   }, FRAME.LATE);
 
   return (
     <group>
-      <mesh geometry={skyGeo} frustumCulled={false}>
-        <meshBasicMaterial
-          vertexColors
-          side={THREE.BackSide}
-          depthWrite={false}
-          fog={false}
-          toneMapped={false}
-        />
-      </mesh>
-
-      <group position={[140, 58, -100]}>
-        <mesh>
-          <sphereGeometry args={[5, 16, 12]} />
-          <meshBasicMaterial color="#fff8ec" fog={false} toneMapped={false} />
-        </mesh>
-        <sprite scale={[30, 30, 1]}>
-          <spriteMaterial
-            map={sunTex}
-            color="#ffe8c0"
-            transparent
-            opacity={0.85}
+      {/* Everything that is meant to be at infinity: sky, sun, clouds, far
+          range. World-locked, these slid relative to the player across a 317m
+          circuit, which is exactly what makes a backdrop read as a nearby prop
+          rather than as distance. */}
+      <group ref={backdrop}>
+        <mesh geometry={skyGeo} frustumCulled={false}>
+          <meshBasicMaterial
+            vertexColors
+            side={THREE.BackSide}
             depthWrite={false}
             fog={false}
             toneMapped={false}
-            blending={THREE.AdditiveBlending}
           />
-        </sprite>
-        {q.tier !== "low" && (
-          <sprite scale={[55, 55, 1]}>
+        </mesh>
+
+        {/* No renderOrder override — three.js sorts opaque front-to-back, and
+            forcing the farthest object first would make everything else
+            overdraw it. */}
+        <mesh geometry={farRange} frustumCulled={false}>
+          {/* Lambert, not Standard: this covers the full width of the horizon
+              band, and distant hazed rock has no specular response worth
+              paying a PBR fragment for. */}
+          <meshLambertMaterial vertexColors fog={false} />
+        </mesh>
+        {/* Same DIRECTION as before (so it still lines up with SunLight and
+            the shadows), pushed out to just inside the dome. At 179m it was
+            nearer than the mountains it is supposed to be setting behind. */}
+        <group position={[666, 276, -476]}>
+          <mesh>
+            <sphereGeometry args={[24, 16, 12]} />
+            <meshBasicMaterial color="#fff8ec" fog={false} toneMapped={false} />
+          </mesh>
+          <sprite scale={[145, 145, 1]}>
             <spriteMaterial
               map={sunTex}
-              color="#ffb060"
+              color="#ffe8c0"
               transparent
-              opacity={0.28}
+              opacity={0.85}
               depthWrite={false}
               fog={false}
               toneMapped={false}
               blending={THREE.AdditiveBlending}
             />
           </sprite>
-        )}
-      </group>
-
-      <group ref={cloudGroup}>
-        {clouds.map((c, i) => (
-          <sprite key={`cl${i}`} position={[c.x, c.y, c.z]} scale={[c.sx, c.sy, 1]}>
-            <spriteMaterial
-              map={cloudTex}
-              color="#f0e8dc"
-              transparent
-              opacity={c.op}
-              depthWrite={false}
-              fog={false}
-              toneMapped={false}
-            />
-          </sprite>
-        ))}
-      </group>
-
-      {ridges.map((r, i) => (
-        <mesh
-          key={`rd${i}`}
-          position={[r.x, r.h * 0.35, r.z]}
-          rotation={[0, r.rot, 0]}
-          scale={[r.s, r.h, r.s * 0.62]}
-          geometry={ridgeGeometry(
-            r.seed,
-            q.tier === "low" ? 9 : 14,
-            q.tier === "low" ? 4 : 6,
-            r.base,
-            r.peak,
+          {q.tier !== "low" && (
+            <sprite scale={[265, 265, 1]}>
+              <spriteMaterial
+                map={sunTex}
+                color="#ffb060"
+                transparent
+                opacity={0.28}
+                depthWrite={false}
+                fog={false}
+                toneMapped={false}
+                blending={THREE.AdditiveBlending}
+              />
+            </sprite>
           )}
-        >
-          {/* vertexColors carries the baked strata; flatShading keeps the
-              displaced faces reading as rock facets rather than soft dunes. */}
-          <meshStandardMaterial
-            vertexColors
-            roughness={0.96}
-            metalness={0}
-            flatShading
-          />
+        </group>
+
+        <group ref={cloudGroup}>
+          {clouds.map((c, i) => (
+            <sprite key={`cl${i}`} position={[c.x, c.y, c.z]} scale={[c.sx, c.sy, 1]}>
+              <spriteMaterial
+                map={cloudTex}
+                color="#f0e8dc"
+                transparent
+                opacity={c.op}
+                depthWrite={false}
+                fog={false}
+                toneMapped={false}
+              />
+            </sprite>
+          ))}
+        </group>
+      </group>
+
+      <group position={[midRange.cx, 0, midRange.cz]}>
+        <mesh geometry={midRange.geo} frustumCulled={false}>
+          <meshLambertMaterial vertexColors fog={false} />
         </mesh>
-      ))}
+      </group>
+
 
       <group ref={hazeGroup}>
         {hazeSheets.map((h, i) => (
