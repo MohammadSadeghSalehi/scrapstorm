@@ -121,28 +121,15 @@ function buildSamples(ctrls: Ctrl[], segsPer = 20): TrackSample[] {
       const y3 = c3.y ?? 0;
       const y = catmullRom(y0, y1, y2, y3, t);
       const zone = t < 0.5 ? (c1.zone ?? "race") : (c2.zone ?? "race");
-      /*
-       * Jump lift, applied per SEGMENT rather than per sample.
-       *
-       * This keyed off `zone`, which flips at t = 0.5. On the segment where the
-       * jump run ends, samples just before the midpoint got sin(0.5*PI)*1.8 =
-       * 1.8m of lift and samples just after got none — a 1.8m vertical step
-       * between two adjacent samples, i.e. a wall across the road at the exit
-       * of the ramp.
-       *
-       * Requiring BOTH endpoints to be jump control points makes it continuous
-       * by construction: sin(t*PI) is already zero at t = 0 and t = 1, so the
-       * ramp meets the flat segments on either side at exactly their height,
-       * and no segment can carry a half-applied lift.
-       */
-      const spanIsJump =
-        (c1.zone ?? "race") === "jump" && (c2.zone ?? "race") === "jump";
-      let lift = y;
-      if (spanIsJump) lift += Math.sin(t * Math.PI) * 1.8;
+      // Lift is applied below, once the whole section is known — it cannot be
+      // computed here because it depends on arc length across a run of
+      // samples that this loop has not finished producing.
       const w = (c1.w ?? 26) * (1 - t) + (c2.w ?? 26) * t;
-      raw.push({ x, y: lift, z, w, zone });
+      raw.push({ x, y, z, w, zone });
     }
   }
+
+  applyJumpLift(raw);
 
   // Arc-length + yaw + bank
   const samples: TrackSample[] = [];
@@ -179,6 +166,108 @@ function buildSamples(ctrls: Ctrl[], segsPer = 20): TrackSample[] {
   }
   void sAcc;
   return samples;
+}
+
+/** Peak height of a jump ramp, in metres above the surrounding road. */
+const JUMP_LIFT = 1.8;
+/**
+ * Crest sharpness. sin(u*PI) ** JUMP_SHAPE.
+ *
+ * A plain sine spread over the whole section is smooth but does not JUMP.
+ * Launch needs the crest radius R to satisfy v^2/R > g, and R grows with
+ * L^2/A: stretching the same 1.8m over a ~120m section instead of a ~60m
+ * control span pushed R to 913m, i.e. 95 m/s to get airborne when the cars top
+ * out near 84. The zone became a hump you drive over.
+ *
+ * Raising A is the wrong lever — it would take a 10m ramp. Curvature at the
+ * crest scales linearly with this exponent instead, so it buys the launch back
+ * without touching the height or the section length, and it makes the profile
+ * MORE continuous at the boundaries rather than less: the first derivative of
+ * sin^k is zero at both ends for any k > 1, where a plain sine's is not.
+ *
+ * The shape it produces — long shallow run-up into a defined crest — is also
+ * closer to a real ramp than a pure sine hump.
+ */
+const JUMP_SHAPE = 5.5;
+
+/**
+ * Raise each jump section as one arc over its OWN arc length.
+ *
+ * The lift used to be sin(t * PI) * 1.8 where `t` is the parameter within a
+ * single Catmull-Rom control span, gated on the per-sample `zone`. Two things
+ * were wrong with that:
+ *
+ *  - `zone` flips at t = 0.5, so on the span where the jump run ended, samples
+ *    just before the midpoint carried sin(0.5*PI) * 1.8 = the FULL 1.8m and
+ *    samples just after carried none. That is a 1.8m vertical step between
+ *    adjacent samples — a wall across the road, which the road and apron
+ *    ribbons in roadSegments.ts inherit and any road decal then disagrees with.
+ *  - The ramp was a property of a control SPAN, not of the jump section. A
+ *    section covering three or more control points would have got one hump per
+ *    interior span instead of a single ramp, and samples labelled "jump" on the
+ *    approach span got no lift at all — so `zone === "jump"` and "is actually
+ *    raised" disagreed. Gameplay and audio both key off `zone`.
+ *
+ * Keying on arc length across the contiguous run fixes both: sin is zero at
+ * both ends of the section by construction, so it meets the flat road on either
+ * side exactly, and the whole labelled section is the ramp.
+ *
+ * Runs wrap the array, because the circuit is a loop and a jump section is free
+ * to straddle the seam.
+ */
+function applyJumpLift(
+  raw: { x: number; y: number; z: number; w: number; zone: TrackSample["zone"] }[],
+): void {
+  const n = raw.length;
+  if (n < 3) return;
+
+  const seg: number[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = raw[i]!;
+    const b = raw[(i + 1) % n]!;
+    seg[i] = Math.hypot(b.x - a.x, b.z - a.z);
+  }
+
+  const isJump = (i: number) => raw[i]!.zone === "jump";
+
+  // Start scanning at a sample that begins a run, so a run straddling index 0
+  // is walked as one piece rather than as two truncated halves.
+  let start = -1;
+  for (let i = 0; i < n; i++) {
+    if (isJump(i) && !isJump((i - 1 + n) % n)) {
+      start = i;
+      break;
+    }
+  }
+  // No boundary at all means either no jump zone or the entire loop is one,
+  // and a lift with no flat road to return to is meaningless either way.
+  if (start < 0) return;
+
+  let i = 0;
+  while (i < n) {
+    const head = (start + i) % n;
+    if (!isJump(head)) {
+      i++;
+      continue;
+    }
+    let len = 1;
+    while (len < n && isJump((start + i + len) % n)) len++;
+
+    // Arc length from the first sample of the run to the last.
+    let total = 0;
+    for (let k = 0; k < len - 1; k++) total += seg[(start + i + k) % n]!;
+
+    if (total > 1e-3) {
+      let acc = 0;
+      for (let k = 0; k < len; k++) {
+        const idx = (start + i + k) % n;
+        const u = acc / total;
+        raw[idx]!.y += Math.sin(u * Math.PI) ** JUMP_SHAPE * JUMP_LIFT;
+        acc += seg[idx]!;
+      }
+    }
+    i += len;
+  }
 }
 
 function buildCheckpointsFrom(samples: TrackSample[], count = 14): CheckpointGate[] {
@@ -401,6 +490,30 @@ export function setActiveTrack(id: TrackId) {
   SCENERY = pack.scenery;
   syncSceneryHeights();
   trackEpoch += 1;
+}
+
+/**
+ * Live accessors for the mutable track exports.
+ *
+ * `export let TRACK_SAMPLES` is a live binding under real ESM, but that
+ * guarantee does NOT survive transpilation to CJS: a tool like jiti snapshots
+ * the namespace property at module init, so a consumer that calls
+ * setActiveTrack and then reads TRACK_SAMPLES gets the OLD array while
+ * getActiveTrackId() correctly reports the new id. A verification script built
+ * on that read cinder_bowl and silently reported ash_spire twice — identical
+ * sample count, identical worst step, identical index — which is exactly the
+ * kind of quiet agreement that looks like a passing test.
+ */
+export function getTrackSamples(): TrackSample[] {
+  return TRACK_SAMPLES;
+}
+
+export function getEdgeMarkers() {
+  return EDGE_MARKERS;
+}
+
+export function getScenery(): SceneryItem[] {
+  return SCENERY;
 }
 
 export function getActiveTrackId(): TrackId {
