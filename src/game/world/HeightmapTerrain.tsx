@@ -139,9 +139,20 @@ function nearestTrack(field: TrackField, x: number, z: number) {
   return { dist: Math.sqrt(best), roadY, half };
 }
 
+/**
+ * How far the terrain sits below the road surface inside the corridor.
+ *
+ * The terrain used to return exactly `roadY` there, making it coplanar with
+ * the road mesh — and coplanar geometry z-fights, which showed up as the road
+ * tearing into patches of sand. Sinking it slightly means the road always wins
+ * the depth test, and at this scale it just reads as a shallow kerb.
+ */
+const ROAD_SINK = 0.15;
+
 function meshHeight(field: TrackField, x: number, z: number): number {
   const { dist, roadY, half } = nearestTrack(field, x, z);
-  if (dist <= half + 2) return roadY;
+  const sunk = roadY - ROAD_SINK;
+  if (dist <= half + 2) return sunk;
   const dune = sampleDuneField(x, z);
   const rock = sampleRockMask(x, z);
   const apron = half + 22;
@@ -149,7 +160,9 @@ function meshHeight(field: TrackField, x: number, z: number): number {
   if (dist < apron) {
     const u = (dist - half - 2) / Math.max(0.01, apron - half - 2);
     const s = u * u * (3 - 2 * u);
-    return roadY + dune * 1.2 * s + rock * 0.35 * s;
+    // Rise from just-below-road back to the open dune field across the apron.
+    const target = roadY + dune * 1.2 + rock * 0.35;
+    return sunk + (target - sunk) * s;
   }
   if (dist < deep) {
     const u = (dist - apron) / Math.max(0.01, deep - apron);

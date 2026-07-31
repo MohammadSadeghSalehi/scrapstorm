@@ -7,6 +7,7 @@ import type { Particle, VehicleState } from "./types";
 import { VEHICLE_HITBOX } from "./physics";
 import { EDGE_MARKERS, TRACK_SAMPLES, SCENERY } from "./track";
 import { VEHICLE_CLASSES } from "./classes";
+import { downEdgeAt, resetEdgeDamage } from "./world/edgeDamage";
 
 export type PropKind = "barrel" | "crate" | "scrap" | "barrier";
 
@@ -42,9 +43,13 @@ function nid(prefix: string) {
 /** Build props for the active track (call on grid / track change). */
 export function spawnWorldProps(): PhysProp[] {
   const props: PhysProp[] = [];
+  // Fresh grid — every post stands again.
+  resetEdgeDamage();
 
-  // Soft barriers from edge markers (stride 5 for collision budget)
-  for (let i = 0; i < EDGE_MARKERS.length; i += 5) {
+  // Soft barriers from edge markers. Stride 8 rather than 5: only every Nth
+  // post carries a collider anyway, and at 5 the track edge was dense enough
+  // that clipping a corner meant hitting something almost immediately.
+  for (let i = 0; i < EDGE_MARKERS.length; i += 8) {
     const m = EDGE_MARKERS[i];
     props.push({
       id: nid("bar"),
@@ -346,29 +351,38 @@ export function collideVehiclesWithProps(
       // the track that simply stopped the car dead. Hit one above the break
       // speed and it becomes debris: the car ploughs through with a speed
       // penalty rather than being pinned.
-      // The barrier gives way rather than being deleted: its post is drawn by
-      // CulledEdgePosts, which has no notion of prop death, so removing the
-      // collider would leave a solid-looking post you drive straight through.
-      // Yielding keeps visuals and collision honest while removing the dead
-      // stop — you plough past at a cost instead of being pinned.
+      // Hit hard enough, the barrier is destroyed outright: the collider dies
+      // and downEdgeAt tells CulledEdgePosts to stop drawing that post, so the
+      // world stays honest. No push-back at all — being bounced backwards off
+      // scenery at speed is the thing that felt worst — just a speed cost and
+      // hull damage as you plough through.
       if (!p.dynamic && velN > BARRIER_BREAK_SPEED) {
         const drive = Math.min(2.0, velN / BARRIER_BREAK_SPEED);
-        // Partial push-out only, so the car keeps its line through the impact.
-        v.x -= nx * pen * 0.35;
-        v.z -= nz * pen * 0.35;
-        applyWorldVel(v, va.vx * 0.86, va.vz * 0.86);
-        va.vx *= 0.86;
-        va.vz *= 0.86;
-        v.hitStun = Math.max(v.hitStun, 0.07);
-        v.impactFlash = Math.max(v.impactFlash, 0.35);
+        p.dead = true;
+        p.hp = 0;
+        downEdgeAt(p.x, p.z);
+        const keep = 0.9 - 0.06 * drive; // heavier hits scrub more speed
+        applyWorldVel(v, va.vx * keep, va.vz * keep);
+        va.vx *= keep;
+        va.vz *= keep;
+        v.hitStun = Math.max(v.hitStun, 0.06);
+        v.impactFlash = Math.max(v.impactFlash, 0.4);
         v.health = Math.max(0, v.health - 3.5 * drive);
         v.damageVisual = Math.min(
           1,
           Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
         );
-        p.dent = Math.min(1, p.dent + 0.4);
         maxImpact = Math.max(maxImpact, velN);
-        spawnPropFx(particles, p.x, p.y + 0.3, p.z, "#d6d3d1");
+        // Debris thrown along the car's line of travel.
+        for (let k = 0; k < 3; k++) {
+          spawnPropFx(
+            particles,
+            p.x + (Math.random() - 0.5) * 1.2,
+            p.y + 0.3 + Math.random() * 0.9,
+            p.z + (Math.random() - 0.5) * 1.2,
+            k === 0 ? "#dc2626" : "#d6d3d1",
+          );
+        }
         continue;
       }
 

@@ -18,6 +18,7 @@ import {
   rebuildInstanceCount,
   type InstanceStream,
 } from "./instanceStream";
+import { anyEdgeDown, edgeKey, isEdgeDown } from "../edgeDamage";
 
 export type EdgeMarker = { x: number; y: number; z: number; side: number };
 
@@ -74,6 +75,10 @@ export function CulledEdgePosts({ markers }: { markers: EdgeMarker[] }) {
     const redMats: THREE.Matrix4[] = [];
     const whiteSpheres: { x: number; y: number; z: number; r: number }[] = [];
     const redSpheres: { x: number; y: number; z: number; r: number }[] = [];
+    // Marker keys parallel to each stream, so a destroyed barrier can be
+    // matched back to the post instance that represents it.
+    const whiteKeys: string[] = [];
+    const redKeys: string[] = [];
     const dummy = new THREE.Object3D();
     const step = tier === "low" ? 2 : 1;
 
@@ -87,9 +92,11 @@ export function CulledEdgePosts({ markers }: { markers: EdgeMarker[] }) {
       if (Math.floor(i / 2) % 2 === 0) {
         whiteMats.push(dummy.matrix.clone());
         whiteSpheres.push(sphere);
+        whiteKeys.push(edgeKey(m.x, m.z));
       } else {
         redMats.push(dummy.matrix.clone());
         redSpheres.push(sphere);
+        redKeys.push(edgeKey(m.x, m.z));
       }
     });
 
@@ -99,6 +106,8 @@ export function CulledEdgePosts({ markers }: { markers: EdgeMarker[] }) {
       matB,
       white: createInstanceStream(whiteMats, whiteSpheres),
       red: createInstanceStream(redMats, redSpheres),
+      whiteKeys,
+      redKeys,
       whiteGrid: buildSphereGrid(whiteSpheres, 40),
       redGrid: buildSphereGrid(redSpheres, 40),
     };
@@ -108,6 +117,7 @@ export function CulledEdgePosts({ markers }: { markers: EdgeMarker[] }) {
     <group>
       <CulledInstanceLayer
         stream={packs.white}
+        keys={packs.whiteKeys}
         grid={packs.whiteGrid}
         geometry={packs.geo}
         material={packs.matA}
@@ -115,6 +125,7 @@ export function CulledEdgePosts({ markers }: { markers: EdgeMarker[] }) {
       />
       <CulledInstanceLayer
         stream={packs.red}
+        keys={packs.redKeys}
         grid={packs.redGrid}
         geometry={packs.geo}
         material={packs.matB}
@@ -126,12 +137,14 @@ export function CulledEdgePosts({ markers }: { markers: EdgeMarker[] }) {
 
 function CulledInstanceLayer({
   stream,
+  keys,
   grid,
   geometry,
   material,
   color,
 }: {
   stream: InstanceStream;
+  keys?: string[];
   grid: ReturnType<typeof buildSphereGrid>;
   geometry: THREE.BufferGeometry;
   material: THREE.Material;
@@ -171,12 +184,23 @@ function CulledInstanceLayer({
       cfgRef.current = cullConfigForTier(qualityManager.get().tier);
     }
 
-    const candidates = queryGridRadius(
+    let candidates = queryGridRadius(
       grid,
       camera.position.x,
       camera.position.z,
       cfgRef.current.maxDistance + 20,
     );
+    // Drop posts that have been smashed. Guarded on anyEdgeDown so an intact
+    // grid pays nothing for this — the common case by far.
+    if (anyEdgeDown() && keys) {
+      candidates = candidates.filter((i) => !isEdgeDown(keys[i]!));
+      if (candidates.length === 0) {
+        m.count = 0;
+        m.instanceMatrix.needsUpdate = true;
+        edgeCullState[color] = empty;
+        return;
+      }
+    }
     const stats = rebuildInstanceCount(
       m,
       stream,
