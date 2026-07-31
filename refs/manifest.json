@@ -1,0 +1,62 @@
+[
+  {
+    "cat": "cars",
+    "slug": "interceptor-scout",
+    "prompt": "Three-quarter front view of a lightweight fast interceptor: low, narrow, aerodynamic, stripped to bare frame in places for weight. Twin roof-mounted energy bolt emitters, minimal armour, oversized rear wing, exposed turbo. Reads as the fastest and most fragile class at a glance.",
+    "file": "refs/cars/interceptor-scout.jpg"
+  },
+  {
+    "cat": "cars",
+    "slug": "bruiser-ram",
+    "prompt": "Three-quarter front view of a heavy bruiser: a wide, tall, brutally armoured muscle car built to ram. Massive reinforced spiked ram plate, thick plate armour over every panel, dual exhaust stacks, short-barrel cannon on the roof. Reads as the heaviest and slowest class at a glance.",
+    "file": "refs/cars/bruiser-ram.jpg"
+  },
+  {
+    "cat": "cars",
+    "slug": "duelist-technical",
+    "prompt": "Three-quarter front view of a balanced mid-weight duelist: a widebody hatchback converted for combat. Side-mounted disc launchers, moderate armour, spare wheels and fuel cans lashed to the rear, roof rack. Reads as the versatile all-rounder class.",
+    "file": "refs/cars/duelist-technical.jpg"
+  },
+  {
+    "cat": "cars",
+    "slug": "boss-warlord",
+    "prompt": "Three-quarter front view of a final-boss vehicle: an intimidating oversized armoured car with an asymmetric silhouette, a heavy rotating turret, trophy plating made from the wrecks of defeated rivals, and a distinctive black and gold warlord paint scheme. Must read as the most dangerous vehicle in the game at a single glance.",
+    "file": "refs/cars/boss-warlord.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "antagonist-warlord",
+    "prompt": "Character reference sheet, full body plus head close-up, of the league's reigning champion and antagonist: scarred, arrogant, wearing a patched racing suit made from armour plate and leather, trophy plating on the shoulders, driving goggles pushed up. Menacing but charismatic.",
+    "file": "refs/characters/antagonist-warlord.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-mechanic",
+    "prompt": "Character reference sheet, full body plus head close-up, of a wiry scrapyard mechanic and the player's only ally: coveralls, welding goggles, tool harness, oil-stained hands, sardonic expression. Practical and unglamorous.",
+    "file": "refs/characters/rival-mechanic.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-roster",
+    "prompt": "A lineup of six distinct rival drivers standing shoulder to shoulder, full body, each visually differentiated by silhouette, helmet design and colour so they can be told apart instantly on a leaderboard. Varied builds, ages and gear.",
+    "file": "refs/characters/rival-roster.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "missile-rack",
+    "prompt": "Weapon prop reference: a car-mounted improvised missile rack, four tubes, scratch-built from pipe and scrap plate, with a single missile shown separately alongside it in profile and three-quarter view. Include the mounting bracket.",
+    "file": "refs/weapons/missile-rack.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "projectiles-set",
+    "prompt": "Prop sheet of four distinct combat racing projectiles laid out side by side on neutral grey: a spinning saw disc, a glowing energy bolt, a cluster mine, and a shaped-charge rocket. Each labelled, each visually distinct in silhouette and colour so they are readable at speed.",
+    "file": "refs/weapons/projectiles-set.jpg"
+  },
+  {
+    "cat": "environment",
+    "slug": "start-arena",
+    "prompt": "Environment concept: the league's start-line arena in a desert canyon — scrap-built grandstands, floodlight towers, a gantry over the start line, hanging banners, pit lane of welded shipping containers. Wide establishing shot, dusk light. Ignore the neutral-backdrop instruction for this one and render a full environment.",
+    "file": "refs/environment/start-arena.jpg"
+  }
+]
