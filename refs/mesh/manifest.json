@@ -1,0 +1,116 @@
+[
+  {
+    "cat": "cars",
+    "slug": "interceptor-scout",
+    "prompt": "A lightweight fast combat racing car. Low, narrow, aerodynamic, partly stripped to bare frame for weight. Twin slim roof-mounted emitter pods, minimal armour plating, oversized rear wing, exposed turbocharger.",
+    "file": "refs/mesh/cars/interceptor-scout.jpg"
+  },
+  {
+    "cat": "cars",
+    "slug": "bruiser-ram",
+    "prompt": "A heavy armoured combat racing muscle car built to ram. Wide and tall, massive reinforced spiked ram plate on the front, thick welded plate armour over every panel, twin vertical exhaust stacks, short-barrel cannon on the roof.",
+    "file": "refs/mesh/cars/bruiser-ram.jpg"
+  },
+  {
+    "cat": "cars",
+    "slug": "duelist-technical",
+    "prompt": "A mid-weight combat racing widebody hatchback. Side-mounted disc launcher pods, moderate plate armour, spare wheels and fuel cans lashed to the rear, roof rack.",
+    "file": "refs/mesh/cars/duelist-technical.jpg"
+  },
+  {
+    "cat": "cars",
+    "slug": "boss-warlord",
+    "prompt": "An oversized intimidating armoured combat car with an asymmetric silhouette. Heavy rotating turret, trophy plating welded across the flanks, black and gold paint.",
+    "file": "refs/mesh/cars/boss-warlord.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "antagonist-warlord",
+    "prompt": "Full body character, standing, arms at sides in a neutral stance. A scarred arrogant champion driver in a patched racing suit of armour plate and leather, trophy plating on the shoulders, driving goggles pushed up on the forehead.",
+    "file": "refs/mesh/characters/antagonist-warlord.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "mechanic",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. A wiry scrapyard mechanic in oil-stained coveralls, welding goggles on the forehead, tool harness across the chest, heavy boots.",
+    "file": "refs/mesh/characters/mechanic.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-veteran",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. An older grizzled driver in an orange and rust patched racing suit with an open-face helmet and goggles, sponsor patches, weathered gloves.",
+    "file": "refs/mesh/characters/rival-veteran.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-heavy",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. A broad heavyset driver in a welded steel vest over grey coveralls, cage-style bare-metal helmet, bare scarred arms.",
+    "file": "refs/mesh/characters/rival-heavy.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-ace",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. A lean young driver in a clean fitted racing suit with a bold diagonal orange stripe and a sleek modern aerodynamic full-face helmet, visibly the best-equipped of the field.",
+    "file": "refs/mesh/characters/rival-ace.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-brute",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. A towering armoured driver in heavy riveted plate armour with a spiked industrial helm, chainmail skirt, oversized boots.",
+    "file": "refs/mesh/characters/rival-brute.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-scavenger",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. A driver in a patchwork canvas and leather suit, rebreather half-helm with a hose to a belt canister, ear defenders, orange neck scarf, utility pouches.",
+    "file": "refs/mesh/characters/rival-scavenger.jpg"
+  },
+  {
+    "cat": "characters",
+    "slug": "rival-rookie",
+    "prompt": "Full body character, standing, neutral stance, arms at sides. A small slight young driver in black and orange with a chrome moto helmet and light strapped plate armour over the torso.",
+    "file": "refs/mesh/characters/rival-rookie.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "missile-rack",
+    "prompt": "A car-mounted improvised four-tube missile rack, scratch-built from steel pipe and scrap plate, with its mounting bracket attached.",
+    "file": "refs/mesh/weapons/missile-rack.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "missile",
+    "prompt": "A single improvised rocket-propelled missile with fins, a shaped charge nose cone and a welded steel body.",
+    "file": "refs/mesh/weapons/missile.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "saw-disc",
+    "prompt": "A single heavy circular saw blade projectile, serrated, worn steel with a reinforced hub, edge nicked and scarred from use.",
+    "file": "refs/mesh/weapons/saw-disc.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "cluster-mine",
+    "prompt": "A single improvised cluster mine: a squat cylindrical canister with protruding trigger prongs, a carry handle and hazard-striped casing.",
+    "file": "refs/mesh/weapons/cluster-mine.jpg"
+  },
+  {
+    "cat": "weapons",
+    "slug": "cannon-turret",
+    "prompt": "A roof-mounted vehicle cannon turret with a short heavy barrel, ammo belt feed, hand grips and a rotating base ring.",
+    "file": "refs/mesh/weapons/cannon-turret.jpg"
+  },
+  {
+    "cat": "props",
+    "slug": "fuel-barrel",
+    "prompt": "A single rusted 55-gallon steel fuel drum, dented, paint peeling, standing upright.",
+    "file": "refs/mesh/props/fuel-barrel.jpg"
+  },
+  {
+    "cat": "props",
+    "slug": "scrap-barricade",
+    "prompt": "A single freestanding road barricade improvised from welded scrap metal, corrugated sheet and rebar, with hazard paint.",
+    "file": "refs/mesh/props/scrap-barricade.jpg"
+  }
+]
