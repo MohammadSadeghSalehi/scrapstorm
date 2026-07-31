@@ -8,6 +8,13 @@ import { VEHICLE_HITBOX } from "./physics";
 import { EDGE_MARKERS, TRACK_SAMPLES, SCENERY } from "./track";
 import { VEHICLE_CLASSES } from "./classes";
 import { downEdgeAt, resetEdgeDamage } from "./world/edgeDamage";
+import {
+  debrisActiveCount,
+  disturbDebris,
+  resetDebris,
+  spawnPropDebris,
+  stepDebris,
+} from "./world/debris";
 
 export type PropKind = "barrel" | "crate" | "scrap" | "barrier";
 
@@ -32,6 +39,14 @@ export interface PhysProp {
   /** scrap visual damage 0..1 */
   dent: number;
   dead: boolean;
+  /**
+   * Can be ploughed through and destroyed above BARRIER_BREAK_SPEED.
+   *
+   * Only the track-edge posts. Scenery blockers (towers, cranes) are ALSO
+   * `dynamic: false` with `kind: "barrier"`, so a bare `!p.dynamic` test let a
+   * 9 m/s nudge delete a crane's collider and call downEdgeAt at its position.
+   */
+  breakable?: boolean;
 }
 
 let seq = 0;
@@ -43,8 +58,9 @@ function nid(prefix: string) {
 /** Build props for the active track (call on grid / track change). */
 export function spawnWorldProps(): PhysProp[] {
   const props: PhysProp[] = [];
-  // Fresh grid — every post stands again.
+  // Fresh grid — every post stands again and the road is swept.
   resetEdgeDamage();
+  resetDebris();
 
   /**
    * Track samples either side of the start line kept free of obstacles. The
@@ -82,6 +98,7 @@ export function spawnWorldProps(): PhysProp[] {
       scale: 1,
       dent: 0,
       dead: false,
+      breakable: true,
     });
   }
 
@@ -309,6 +326,76 @@ function spawnPropFx(
   }
 }
 
+/**
+ * Secondary FX per break, layered on top of the physical debris: the chunks
+ * carry the weight of the hit, these sell the material it was made of.
+ */
+const DEATH_FX: Record<PropKind, { puffs: number; colors: readonly string[] }> = {
+  barrel: { puffs: 4, colors: ["#fb923c", "#fde68a", "#fb923c", "#7c2d12"] },
+  crate: { puffs: 3, colors: ["#d6c7b0", "#a1887f", "#e7d9c3"] },
+  scrap: { puffs: 2, colors: ["#a8a29e", "#facc15"] },
+  barrier: { puffs: 4, colors: ["#e7e5e4", "#d6d3d1", "#dc2626", "#a8a29e"] },
+};
+
+/** Barriers are spawned at markerY + 0.4, so their footprint is 0.4 below. */
+const BARRIER_BASE_DROP = 0.4;
+
+/**
+ * The single exit point for a prop's death.
+ *
+ * Every route to `dead` — barrel rupture, crate shatter, chain blast, worn-down
+ * hp, barrier ploughed through — used to just flip the flag and drop a six
+ * particle puff, so the prop simply blinked out. Routing them all through here
+ * means each one throws real, kind-appropriate debris exactly once.
+ *
+ * `dirX/dirZ` is the impactor's travel (0,0 for a directionless collapse) and
+ * `energy` is roughly closing speed / 12.
+ */
+function destroyProp(
+  p: PhysProp,
+  particles: Particle[] | null,
+  dirX: number,
+  dirZ: number,
+  energy: number,
+) {
+  if (p.dead) return;
+  p.dead = true;
+  p.hp = 0;
+  const fx = DEATH_FX[p.kind];
+  /**
+   * Plane the chunks bounce on. Deliberately the same plane stepWorldProps
+   * rests props on rather than a terrain query: debris and the props it came
+   * from must agree, and taking the current y would leave chunks from a prop
+   * killed mid-flight bouncing in mid-air. Inherits that plane's one flaw —
+   * it is absolute, so raised track sections are approximated — but sampling
+   * the dune field here would only make debris disagree with the props.
+   */
+  const groundY = p.dynamic
+    ? Math.min(p.y, p.kind === "barrel" ? 0.48 : 0.42)
+    : Math.max(0, p.y - BARRIER_BASE_DROP);
+  spawnPropDebris(
+    p.kind,
+    p.x,
+    p.y,
+    p.z,
+    dirX,
+    dirZ,
+    energy,
+    groundY,
+    Math.max(0.35, p.radius * p.scale),
+  );
+  const spread = p.radius * 1.4;
+  for (let k = 0; k < fx.puffs; k++) {
+    spawnPropFx(
+      particles,
+      p.x + (Math.random() - 0.5) * spread,
+      p.y + 0.25 + Math.random() * 1.0,
+      p.z + (Math.random() - 0.5) * spread,
+      fx.colors[k % fx.colors.length]!,
+    );
+  }
+}
+
 /** Vehicle ↔ prop collisions (circle). Mutates both. Broadphase: skip far pairs. */
 /**
  * Closing speed (m/s) below which a prop absorbs the hit instead of moving.
@@ -320,6 +407,13 @@ const PROP_NUDGE_SPEED = 1.0;
 const PROP_LAUNCH_SPEED = 8;
 /** Closing speed above which a barrel ruptures rather than tumbling. */
 const BARREL_RUPTURE_SPEED = 16;
+/**
+ * Closing speed above which a crate bursts into slats instead of being launched.
+ * Deliberately above PROP_LAUNCH_SPEED so the whole momentum-proportional
+ * launch band is untouched — you still punt crates around at racing pace, and
+ * only a genuinely square hit takes one apart.
+ */
+const CRATE_SHATTER_SPEED = 19;
 /**
  * Closing speed above which a barrier breaks apart instead of holding. Below
  * this it still deflects rather than stopping you — see the static branch.
@@ -352,6 +446,12 @@ export function collideVehiclesWithProps(
     const hb = VEHICLE_HITBOX[v.classId];
     const massV = VEHICLE_CLASSES[v.classId].mass;
     const va = worldVel(v);
+
+    // Sweep settled debris out of the car's path. Guarded on the count so a
+    // clean road costs one integer compare rather than a pool scan per car.
+    if (debrisActiveCount() > 0) {
+      disturbDebris(v.x, v.z, va.vx, va.vz, hb.halfL + 1.2);
+    }
 
     for (const p of props) {
       if (p.dead) continue;
@@ -395,11 +495,13 @@ export function collideVehiclesWithProps(
       // world stays honest. No push-back at all — being bounced backwards off
       // scenery at speed is the thing that felt worst — just a speed cost and
       // hull damage as you plough through.
-      if (!p.dynamic && velN > BARRIER_BREAK_SPEED) {
+      if (!p.dynamic && p.breakable && velN > BARRIER_BREAK_SPEED) {
         const drive = Math.min(2.0, velN / BARRIER_BREAK_SPEED);
-        p.dead = true;
-        p.hp = 0;
         downEdgeAt(p.x, p.z);
+        // Slabs go where the car was going. A radial burst would read as an
+        // explosion; a barrier is something you plough through.
+        const carSpd = Math.hypot(va.vx, va.vz) || 1;
+        destroyProp(p, particles, va.vx / carSpd, va.vz / carSpd, drive * 0.9);
         const keep = 0.9 - 0.06 * drive; // heavier hits scrub more speed
         applyWorldVel(v, va.vx * keep, va.vz * keep);
         va.vx *= keep;
@@ -412,16 +514,6 @@ export function collideVehiclesWithProps(
           Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
         );
         maxImpact = Math.max(maxImpact, velN);
-        // Debris thrown along the car's line of travel.
-        for (let k = 0; k < 3; k++) {
-          spawnPropFx(
-            particles,
-            p.x + (Math.random() - 0.5) * 1.2,
-            p.y + 0.3 + Math.random() * 0.9,
-            p.z + (Math.random() - 0.5) * 1.2,
-            k === 0 ? "#dc2626" : "#d6d3d1",
-          );
-        }
         continue;
       }
 
@@ -524,13 +616,13 @@ export function collideVehiclesWithProps(
         const impact = closing + pen * 4;
         maxImpact = Math.max(maxImpact, impact);
 
-        // A barrel taken at speed ruptures rather than tumbling away.
-        if (p.kind === "barrel" && closing > BARREL_RUPTURE_SPEED && !p.dead) {
-          p.dead = true;
-          p.hp = 0;
+        // A barrel taken at speed ruptures rather than tumbling away. A barrel
+        // you have already clipped goes early — accumulated dent is visible on
+        // the mesh, so the primed one is the one you can see is primed.
+        const ruptureAt = BARREL_RUPTURE_SPEED * (1 - p.dent * 0.35);
+        if (p.kind === "barrel" && closing > ruptureAt && !p.dead) {
           const blast = Math.min(2.4, closing / BARREL_RUPTURE_SPEED);
-          p.vy = Math.max(p.vy, 6 * blast);
-          p.spin += (Math.random() - 0.5) * 12;
+          destroyProp(p, particles, nx, nz, blast * 1.1);
           v.hitStun = Math.max(v.hitStun, 0.14 * blast);
           v.impactFlash = Math.max(v.impactFlash, 0.6);
           v.health = Math.max(0, v.health - 6 * blast);
@@ -538,15 +630,6 @@ export function collideVehiclesWithProps(
             1,
             Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
           );
-          for (let k = 0; k < 4; k++) {
-            spawnPropFx(
-              particles,
-              p.x + (Math.random() - 0.5) * 1.6,
-              p.y + 0.3 + Math.random() * 1.2,
-              p.z + (Math.random() - 0.5) * 1.6,
-              k < 2 ? "#fb923c" : "#fde68a",
-            );
-          }
           // Blast radius: throws nearby props and hurts nearby cars, so a
           // cluster of barrels chain-reacts instead of each one popping in
           // isolation. This is what makes them worth aiming at.
@@ -566,7 +649,10 @@ export function collideVehiclesWithProps(
             o.vy = Math.max(o.vy, 4 * falloff);
             o.spin += (Math.random() - 0.5) * 8 * falloff;
             o.hp -= 22 * falloff;
-            if (o.hp <= 0) o.dead = true;
+            // Survivors of a nearby blast carry the scorch. Without this the
+            // only visible outcome of a chain reaction was "gone" or "fine".
+            o.dent = Math.min(1, o.dent + falloff * 0.45);
+            if (o.hp <= 0) destroyProp(o, particles, ox / od, oz / od, falloff * 1.5);
           }
           for (const other of vehicles) {
             if (!other.alive || other.wreckTimer > 0) continue;
@@ -585,6 +671,27 @@ export function collideVehiclesWithProps(
           }
           continue;
         }
+
+        // A crate taken square comes apart into slats. No blast, no push-back
+        // and no extra impulse on the car — the launch above already happened,
+        // this only decides whether what flies away is a crate or its planks.
+        if (
+          p.kind === "crate" &&
+          closing > CRATE_SHATTER_SPEED * (1 - p.dent * 0.3) &&
+          !p.dead
+        ) {
+          destroyProp(p, particles, va.vx, va.vz, closing / 11);
+          v.impactFlash = Math.max(v.impactFlash, 0.34);
+          v.hitStun = Math.max(v.hitStun, 0.06);
+          v.health = Math.max(0, v.health - closing * 0.08);
+          v.damageVisual = Math.min(
+            1,
+            Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
+          );
+          maxImpact = Math.max(maxImpact, impact);
+          continue;
+        }
+
         if (impact > 2.5) {
           p.hp -= impact * 1.4;
           p.dent = Math.min(1, p.dent + impact * 0.07);
@@ -609,10 +716,9 @@ export function collideVehiclesWithProps(
             );
           }
           if (p.hp <= 0) {
-            p.dead = true;
-            p.vx *= 1.6;
-            p.vz *= 1.6;
-            spawnPropFx(particles, p.x, p.y + 0.3, p.z, "#a8a29e");
+            // Worn down rather than blown apart, so the burst inherits the
+            // last hit's direction at whatever energy actually finished it.
+            destroyProp(p, particles, nx, nz, impact / 12);
           }
         }
       } else {
@@ -635,6 +741,11 @@ export function collideVehiclesWithProps(
 
 /** Integrate dynamic props after vehicle collisions. */
 export function stepWorldProps(props: PhysProp[], dt: number) {
+  // Driven from here rather than sim.ts so debris rides the same fixed
+  // timestep as the props it came from, with no extra plumbing through the
+  // sim loop. Early-outs internally when the pool is empty.
+  stepDebris(dt);
+
   for (const p of props) {
     if (p.dead || !p.dynamic) continue;
     if (p.vy === undefined) p.vy = 0;
@@ -689,6 +800,14 @@ export function stepWorldProps(props: PhysProp[], dt: number) {
         a.vz -= vn * nz * 0.5;
         b.vx += vn * nx * 0.5;
         b.vz += vn * nz * 0.5;
+        // Props batter each other too. Only cosmetic (no hp), so a launched
+        // barrel scattering a stack leaves visibly scuffed survivors without
+        // props being able to destroy props behind the player's back.
+        if (vn > 3.5) {
+          const scuff = Math.min(0.22, (vn - 3.5) * 0.03);
+          a.dent = Math.min(1, a.dent + scuff);
+          b.dent = Math.min(1, b.dent + scuff);
+        }
       }
     }
   }

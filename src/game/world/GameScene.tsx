@@ -811,19 +811,23 @@ function ShaderWarmup() {
     const timers: number[] = [];
     const warm = () => {
       if (cancelled) return;
-      const r = gl as THREE.WebGLRenderer & {
-        compileAsync?: (
-          scene: THREE.Object3D,
-          camera: THREE.Camera,
-        ) => Promise<unknown>;
-      };
       try {
-        if (typeof r.compileAsync === "function") {
-          void r.compileAsync(scene, camera);
-        } else {
-          // Synchronous fallback: still better than hitching mid-race.
-          gl.compile(scene, camera);
-        }
+        // Synchronous compile, deliberately NOT compileAsync.
+        //
+        // compileAsync snapshots the material set, then re-polls
+        // `materialProperties.currentProgram.isReady()` from a setTimeout
+        // loop. This scene mutates that set constantly — CSM re-patches
+        // shaders every 45 frames, the prop pool clones materials per slot,
+        // glTF lands late — so a material's program routinely disappears
+        // between snapshot and poll and the poll throws. Because the retries
+        // run from a timer rather than inside the promise, that throw is an
+        // uncaught timer exception: .catch() on the returned promise cannot
+        // see it, which is why guarding it did not help.
+        //
+        // The synchronous path has no polling loop and cannot hit that. Its
+        // cost is a one-off hitch, and prepareRaceAssets already holds a
+        // loading screen over exactly this window.
+        gl.compile(scene, camera);
       } catch {
         /* warmup is best-effort */
       }

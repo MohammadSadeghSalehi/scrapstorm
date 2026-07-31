@@ -8,7 +8,7 @@ import { VEHICLE_CLASSES } from "../classes";
 import { RACE } from "../balance";
 import { isDrifting } from "../physics";
 import { audioEngine } from "./AudioEngine";
-import type { PlayerInput, VehicleClassId } from "../types";
+import type { GameEvent, PlayerInput, VehicleClassId } from "../types";
 import { FRAME } from "../world/framePriority";
 
 export function AudioDriver({
@@ -18,13 +18,19 @@ export function AudioDriver({
   sim: GameSimulation;
   lastInput: MutableRefObject<PlayerInput | null>;
 }) {
-  const prevEvents = useRef(0);
+  // Newest event we've already fed. sim.ts caps `events` at 12 entries, so the
+  // old length-based diff went permanently deaf once the log saturated —
+  // identity of the head entry survives the trim.
+  const lastEvent = useRef<GameEvent | null>(null);
   const prevBoost = useRef(0);
   const prevPhase = useRef(sim.state.phase);
   const prevCd = useRef(-1);
   const prevWreck = useRef(0);
   const prevImpact = useRef(0);
   const prevDrift = useRef(false);
+  const prevLap = useRef(0);
+  const prevPos = useRef(0);
+  const voFlip = useRef(0);
 
   const musicBoot = useRef(false);
   useFrame(() => {
@@ -79,11 +85,18 @@ export function AudioDriver({
       if (st.phase === "countdown") {
         audioEngine.playUi("confirm");
         audioEngine.playMusic("race_heat");
+        audioEngine.playVoice("grid-locked");
       }
       if (st.phase === "racing") audioEngine.playMusic("race_intensity");
       if (st.phase === "finished") {
         audioEngine.playUi("finish");
         audioEngine.playMusic("victory");
+        // finishedOrder is authoritative once anyone crossed; `position` is the
+        // fallback for a heat that ended without a finisher (retire/restart).
+        const won = st.finishedOrder.length
+          ? st.finishedOrder[0] === player.id
+          : player.position === 1;
+        audioEngine.playVoice(won ? "win" : "loss");
       }
       if (st.phase === "paused") audioEngine.playUi("pause");
       if (st.phase === "menu") {
@@ -104,6 +117,7 @@ export function AudioDriver({
       if (st.countdown <= 0 && prevCd.current !== 0) {
         prevCd.current = 0;
         audioEngine.playUi("go");
+        audioEngine.playVoice("green");
       }
     } else {
       prevCd.current = -1;
@@ -114,9 +128,35 @@ export function AudioDriver({
       audioEngine.playMusic("final_lap");
     }
 
+    // Lap calls. `finished` guards the last gate crossing, which increments
+    // lap one final time and would otherwise announce a lap the player is
+    // never going to drive.
+    if (st.phase === "racing" && player.lap > prevLap.current && !player.finished) {
+      const entersFinal = player.lap >= st.lapCount - 1;
+      audioEngine.playVoice(
+        entersFinal ? "final-lap" : player.lap % 2 === 1 ? "lap-1" : "lap-2",
+      );
+    }
+    prevLap.current = player.lap;
+
+    // Overtake: position is 1-based, so a decrease is a place gained. Skip the
+    // opening seconds where the grid is still sorting itself out.
+    if (
+      st.phase === "racing" &&
+      st.raceTime > 4 &&
+      prevPos.current > 0 &&
+      player.position < prevPos.current &&
+      !player.finished
+    ) {
+      audioEngine.playVoice("overtake");
+    }
+    prevPos.current = player.position;
+
     if (player.boostTimer > 0.4 && prevBoost.current <= 0.4) {
       audioEngine.playSfx("boost");
       audioEngine.playSfx("whoosh");
+      voFlip.current += 1;
+      audioEngine.playVoice(voFlip.current % 2 ? "boost-1" : "boost-2");
     }
     prevBoost.current = player.boostTimer;
 
@@ -127,22 +167,35 @@ export function AudioDriver({
 
     if (player.impactFlash > 0.2 && prevImpact.current <= 0.12) {
       audioEngine.playImpact(0.7 + player.impactFlash * 2);
+      // Only real hits get a call-out; the low threshold above also catches
+      // wall scrapes.
+      if (player.impactFlash > 0.45) {
+        voFlip.current += 1;
+        audioEngine.playVoice(voFlip.current % 2 ? "hit-1" : "hit-2");
+      }
     }
     prevImpact.current = player.impactFlash;
 
     if (player.wreckTimer > 0.5 && prevWreck.current <= 0) {
       audioEngine.playSfx("wreck");
+      audioEngine.playVoice("wreck");
     }
     prevWreck.current = player.wreckTimer;
 
-    if (st.events.length > prevEvents.current) {
-      const n = st.events.length - prevEvents.current;
-      const fresh = st.events.slice(0, n);
-      for (const e of fresh) {
-        audioEngine.feedEvent(e.message, e.kind);
+    // events is unshifted (newest first) and trimmed to 12 — walk back to the
+    // last entry we saw rather than diffing lengths.
+    if (st.events.length && st.events[0] !== lastEvent.current) {
+      const seen = lastEvent.current;
+      const cut = seen ? st.events.indexOf(seen) : -1;
+      // No anchor (first frame, or audio unlocked mid-heat) — play only the
+      // newest so we don't dump a backlog of one-shots at once.
+      const fresh = cut >= 0 ? st.events.slice(0, cut) : st.events.slice(0, 1);
+      // Oldest-first so a burst reads in the order it happened.
+      for (let i = fresh.length - 1; i >= 0; i--) {
+        audioEngine.feedEvent(fresh[i].message, fresh[i].kind);
       }
+      lastEvent.current = st.events[0];
     }
-    prevEvents.current = st.events.length;
   }, FRAME.LATE);
 
   return null;

@@ -4,6 +4,7 @@
  */
 const SFX_BASE = "/assets/audio/sfx";
 const MUSIC_BASE = "/assets/audio/music";
+const VO_BASE = "/assets/audio/vo";
 
 export type SfxId =
   | "engine_idle"
@@ -41,8 +42,25 @@ export type MusicId =
   | "final_lap"
   | "victory";
 
+/** Announcer lines (ElevenLabs), mirrors public/assets/audio/vo/manifest.json */
+export type VoiceId =
+  | "grid-locked"
+  | "green"
+  | "lap-1"
+  | "lap-2"
+  | "final-lap"
+  | "hit-1"
+  | "hit-2"
+  | "boost-1"
+  | "boost-2"
+  | "overtake"
+  | "win"
+  | "loss"
+  | "wreck";
+
 const buffers = new Map<string, AudioBuffer>();
 let loading: Promise<void> | null = null;
+const voiceLoads = new Map<VoiceId, Promise<AudioBuffer | null>>();
 
 async function fetchDecode(
   ctx: AudioContext,
@@ -107,6 +125,27 @@ export function preloadSamples(ctx: AudioContext): Promise<void> {
     }),
   ]).then(() => undefined);
   return loading;
+}
+
+/**
+ * Announcer lines load on first use rather than in `preloadSamples` — the VO
+ * bank is ~450 KB and most of it is never heard in a given heat.
+ * The promise (including a failed one) is memoised so a missing/404 mp3 costs
+ * exactly one fetch and then resolves null forever instead of re-requesting on
+ * every hit, boost and lap.
+ */
+export function loadVoice(
+  ctx: AudioContext,
+  id: VoiceId,
+): Promise<AudioBuffer | null> {
+  const cached = voiceLoads.get(id);
+  if (cached) return cached;
+  const p = fetchDecode(ctx, `${VO_BASE}/${id}.mp3`).then((buf) => {
+    if (buf) buffers.set(`vo:${id}`, buf);
+    return buf;
+  });
+  voiceLoads.set(id, p);
+  return p;
 }
 
 export function playSample(

@@ -1,19 +1,21 @@
 /**
  * Hybrid Web Audio mixer for Scrapstorm:
- * - ElevenLabs-generated MP3 bank (original SFX + music)
+ * - ElevenLabs-generated MP3 bank (original SFX + music + announcer VO)
  * - Procedural engine / scrub / wind layers for continuous feel
  *
- * Buses: master → music / sfx / ui
+ * Buses: destination ← limiter ← master ← music (→ duck) / sfx / ui / vo
  */
 
 import {
   preloadSamples,
   playSample,
   hasSample,
+  loadVoice,
   type MusicId,
+  type VoiceId,
 } from "./SampleBank";
 
-export type AudioBus = "master" | "music" | "sfx" | "ui";
+export type AudioBus = "master" | "music" | "sfx" | "ui" | "vo";
 
 type Ctx = AudioContext;
 
@@ -21,17 +23,87 @@ function ramp(g: GainNode, v: number, t: number, tau = 0.04) {
   g.gain.setTargetAtTime(Math.max(0, v), t, tau);
 }
 
+/**
+ * Start a deterministic ramp from wherever the param currently sits.
+ * Needed because the buses are otherwise driven by `setTargetAtTime`, and an
+ * exponential approach left running under a crossfade makes the fade curve
+ * unpredictable.
+ */
+function rampFrom(p: AudioParam, t: number, to: number, dur: number) {
+  p.cancelScheduledValues(t);
+  p.setValueAtTime(p.value, t);
+  p.linearRampToValueAtTime(Math.max(0.0001, to), t + Math.max(0.01, dur));
+}
+
 function jitter(n = 0.08) {
   return 1 + (Math.random() * 2 - 1) * n;
 }
+
+/** Per-track trim so the beds sit at comparable loudness. */
+function musicTrackVolume(id: MusicId) {
+  return id === "race_heat" ? 0.55 : id === "victory" ? 0.7 : 0.5;
+}
+
+/**
+ * Announcer barge-in ranking. A line only interrupts a line of *lower* rank;
+ * anything equal or below is dropped rather than queued (see `playVoice`).
+ */
+const VOICE_PRIORITY: Record<VoiceId, number> = {
+  "grid-locked": 3,
+  green: 3,
+  "final-lap": 3,
+  win: 3,
+  loss: 3,
+  wreck: 2,
+  overtake: 2,
+  "lap-1": 2,
+  "lap-2": 2,
+  "hit-1": 1,
+  "hit-2": 1,
+  "boost-1": 1,
+  "boost-2": 1,
+};
+
+/**
+ * Chatter variants share a cooldown key, so "hit-1"/"hit-2" can't ping-pong
+ * every time the player trades paint in a pack.
+ */
+const VOICE_GROUP: Partial<Record<VoiceId, string>> = {
+  "hit-1": "hit",
+  "hit-2": "hit",
+  "boost-1": "boost",
+  "boost-2": "boost",
+  "lap-1": "lap",
+  "lap-2": "lap",
+};
+
+/** Seconds before a group may speak again. */
+const VOICE_COOLDOWN: Record<string, number> = {
+  hit: 8,
+  boost: 11,
+  lap: 3,
+  overtake: 10,
+  wreck: 4,
+};
+const VOICE_COOLDOWN_DEFAULT = 1.5;
+
+/** Assumed line length while the mp3 is still decoding. */
+const VOICE_PROVISIONAL_LEN = 1.4;
+
+/** Chatter that took longer than this to fetch is no longer worth playing. */
+const VOICE_STALE_AFTER = 1.5;
 
 class AudioEngine {
   private ctx: Ctx | null = null;
   private unlocked = false;
   private master: GainNode | null = null;
+  private limiter: DynamicsCompressorNode | null = null;
   private musicBus: GainNode | null = null;
+  /** Sits after musicBus so ducking never fights the user's music volume. */
+  private musicDuck: GainNode | null = null;
   private sfxBus: GainNode | null = null;
   private uiBus: GainNode | null = null;
+  private voBus: GainNode | null = null;
 
   // Engine stack: fundamental + harmonic + sub + noise grit
   private engineOsc: OscillatorNode | null = null;
@@ -53,16 +125,32 @@ class AudioEngine {
   private musicPulseGain: GainNode | null = null;
 
   private muted = false;
-  private volumes = { master: 0.88, music: 0.3, sfx: 0.78, ui: 0.58 };
+  private volumes = { master: 0.88, music: 0.3, sfx: 0.78, ui: 0.58, vo: 0.95 };
 
   private lastEventAt = 0;
   private lastEventMsg = "";
   private lastGear = 0;
   private lastImpactAt = 0;
-  private musicSrc: AudioBufferSourceNode | null = null;
+  /** Currently sounding music track + its own fader (for real crossfades). */
+  private musicTrack: {
+    src: AudioBufferSourceNode;
+    gain: GainNode;
+  } | null = null;
   private musicId: MusicId | null = null;
   private musicGain: GainNode | null = null;
+  /** Track requested before the bank finished decoding; started on arrival. */
+  private pendingMusic: { id: MusicId; fade: number } | null = null;
   private samplesReady = false;
+
+  private duckDepth = 0;
+  private duckReleaseAt = 0;
+
+  private voNode: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private voPriority = 0;
+  /** Wall-clock (ctx time) the announcer is expected to stop talking. */
+  private voBusyUntil = 0;
+  private voToken = 0;
+  private voCooldowns = new Map<string, number>();
 
   isUnlocked() {
     return this.unlocked;
@@ -75,21 +163,25 @@ class AudioEngine {
   setMuted(m: boolean) {
     this.muted = m;
     if (this.master) {
-      ramp(this.master, m ? 0 : this.volumes.master, this.now(), 0.02);
+      // Squared to match the curve setVolume/unlock use — unmuting used to
+      // restore the raw slider value and jump the mix ~2 dB louder.
+      const v = this.volumes.master;
+      ramp(this.master, m ? 0 : v * v, this.now(), 0.02);
     }
+  }
+
+  private busNode(bus: AudioBus): GainNode | null {
+    if (bus === "master") return this.master;
+    if (bus === "music") return this.musicBus;
+    if (bus === "sfx") return this.sfxBus;
+    if (bus === "vo") return this.voBus;
+    return this.uiBus;
   }
 
   setVolume(bus: AudioBus, v: number) {
     const x = Math.max(0, Math.min(1, v));
     this.volumes[bus] = x;
-    const g =
-      bus === "master"
-        ? this.master
-        : bus === "music"
-          ? this.musicBus
-          : bus === "sfx"
-            ? this.sfxBus
-            : this.uiBus;
+    const g = this.busNode(bus);
     if (g) ramp(g, bus === "master" && this.muted ? 0 : x * x, this.now());
   }
 
@@ -107,16 +199,36 @@ class AudioEngine {
       this.ctx = new AC({ latencyHint: "interactive" });
       this.master = this.ctx.createGain();
       this.musicBus = this.ctx.createGain();
+      this.musicDuck = this.ctx.createGain();
       this.sfxBus = this.ctx.createGain();
       this.uiBus = this.ctx.createGain();
-      this.musicBus.connect(this.master);
+      this.voBus = this.ctx.createGain();
+      // Music routes through its own duck stage, so VO/impact ducking and the
+      // music volume slider can move independently.
+      this.musicBus.connect(this.musicDuck);
+      this.musicDuck.connect(this.master);
       this.sfxBus.connect(this.master);
       this.uiBus.connect(this.master);
-      this.master.connect(this.ctx.destination);
+      this.voBus.connect(this.master);
+
+      // Brick-wall-ish limiter on the way out. Engine + scrub + wind run
+      // continuously, so a wreck stacking four one-shots on top used to clip
+      // the destination hard.
+      this.limiter = this.ctx.createDynamicsCompressor();
+      this.limiter.threshold.value = -3;
+      this.limiter.knee.value = 0;
+      this.limiter.ratio.value = 20;
+      this.limiter.attack.value = 0.003;
+      this.limiter.release.value = 0.25;
+      this.master.connect(this.limiter);
+      this.limiter.connect(this.ctx.destination);
+
       this.master.gain.value = this.volumes.master * this.volumes.master;
       this.musicBus.gain.value = this.volumes.music * this.volumes.music;
+      this.musicDuck.gain.value = 1;
       this.sfxBus.gain.value = this.volumes.sfx * this.volumes.sfx;
       this.uiBus.gain.value = this.volumes.ui * this.volumes.ui;
+      this.voBus.gain.value = this.volumes.vo * this.volumes.vo;
       this.buildEngine();
       this.buildScrub();
       this.buildMusicBed();
@@ -125,6 +237,13 @@ class AudioEngine {
       this.musicGain.connect(this.musicBus!);
       void preloadSamples(this.ctx).then(() => {
         this.samplesReady = true;
+        // The menu bed is requested on the very first frame, long before the
+        // bank decodes — replay the last request instead of dropping it.
+        const p = this.pendingMusic;
+        if (p) {
+          this.pendingMusic = null;
+          this.playMusic(p.id, p.fade);
+        }
       });
     }
     if (this.ctx.state === "suspended") {
@@ -136,32 +255,186 @@ class AudioEngine {
   /** Crossfade looped music beds (menu / race / victory) */
   playMusic(id: MusicId, fade = 0.6) {
     if (!this.ctx || !this.unlocked || !this.musicGain) return;
-    if (this.musicId === id && this.musicSrc) return;
-    const t = this.now();
-    if (this.musicSrc) {
-      try {
-        const old = this.musicSrc;
-        const g = this.ctx.createGain();
-        // soft stop
-        old.stop(t + fade);
-      } catch { /* */ }
-      this.musicSrc = null;
+    if (this.musicId === id && this.musicTrack) return;
+    // Don't claim the id until we know we can actually play it, otherwise a
+    // request made before the bank decoded would be remembered as "playing"
+    // and never retried.
+    if (!hasSample(`music:${id}`)) {
+      this.pendingMusic = { id, fade };
+      return;
     }
+    this.pendingMusic = null;
     this.musicId = id;
-    if (!hasSample(`music:${id}`)) return;
-    const src = playSample(this.ctx, this.musicGain, `music:${id}`, {
-      vol: id === "race_heat" ? 0.55 : id === "victory" ? 0.7 : 0.5,
+    const ctx = this.ctx;
+    const t = this.now();
+    const f = Math.max(0.05, fade);
+
+    // Genuine crossfade: the outgoing track rides its own fader down over the
+    // same window the new one rides up. Previously the old source was just
+    // stopped at t+fade at full level, which is an audible hard cut.
+    this.fadeOutTrack(this.musicTrack, t, f);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.connect(this.musicGain);
+    const src = playSample(ctx, gain, `music:${id}`, {
+      vol: musicTrackVolume(id),
       loop: id !== "victory",
     });
-    this.musicSrc = src;
+    if (!src) {
+      gain.disconnect();
+      this.musicTrack = null;
+      return;
+    }
+    gain.gain.linearRampToValueAtTime(1, t + f);
+    const track = { src, gain };
+    this.musicTrack = track;
+    src.onended = () => {
+      try { gain.disconnect(); } catch { /* already torn down */ }
+      if (this.musicTrack === track) {
+        this.musicTrack = null;
+        this.musicId = null;
+      }
+    };
   }
 
-  stopMusic() {
-    if (this.musicSrc) {
-      try { this.musicSrc.stop(); } catch { /* */ }
-      this.musicSrc = null;
-      this.musicId = null;
+  /** Ramp a track out and release its nodes once the source actually ends. */
+  private fadeOutTrack(
+    track: { src: AudioBufferSourceNode; gain: GainNode } | null,
+    t: number,
+    fade: number,
+  ) {
+    if (!track) return;
+    rampFrom(track.gain.gain, t, 0.0001, fade);
+    track.src.onended = () => {
+      try { track.gain.disconnect(); } catch { /* already torn down */ }
+    };
+    try { track.src.stop(t + fade + 0.05); } catch { /* already stopped */ }
+  }
+
+  stopMusic(fade = 0.4) {
+    const track = this.musicTrack;
+    this.musicTrack = null;
+    this.musicId = null;
+    this.pendingMusic = null;
+    if (!track || !this.ctx) return;
+    this.fadeOutTrack(track, this.now(), Math.max(0.05, fade));
+  }
+
+  /**
+   * Pull the music bed down under the announcer / heavy metal, then restore.
+   * Overlapping ducks keep the deeper level and the later release so a hit
+   * landing mid-line can't pop the music back up over the VO.
+   */
+  duckMusic(depth: number, hold: number, attack = 0.08, release = 0.5) {
+    if (!this.ctx || !this.musicDuck) return;
+    const t = this.now();
+    const active = t < this.duckReleaseAt;
+    const d = Math.max(0, Math.min(0.9, Math.max(depth, active ? this.duckDepth : 0)));
+    const releaseAt = Math.max(
+      t + attack + 0.02,
+      t + Math.max(0, hold),
+      active ? this.duckReleaseAt : 0,
+    );
+    if (active && d === this.duckDepth && releaseAt <= this.duckReleaseAt) return;
+    this.duckDepth = d;
+    this.duckReleaseAt = releaseAt;
+    const p = this.musicDuck.gain;
+    const level = Math.max(0.0001, 1 - d);
+    p.cancelScheduledValues(t);
+    p.setValueAtTime(p.value, t);
+    p.linearRampToValueAtTime(level, t + attack);
+    p.setValueAtTime(level, releaseAt);
+    p.linearRampToValueAtTime(1, releaseAt + release);
+  }
+
+  /**
+   * Announcer line. Loads `/assets/audio/vo/<id>.mp3` on first use.
+   *
+   * Overlap policy is barge-in, never a queue: race VO is only worth hearing
+   * while the moment is still on screen, so a higher-priority line cuts the
+   * current one (with a short de-click fade) and a same/lower-priority line is
+   * dropped outright rather than played seconds late.
+   */
+  playVoice(id: VoiceId) {
+    if (!this.ctx || !this.unlocked || !this.voBus) return;
+    const ctx = this.ctx;
+    const t = this.now();
+    const prio = VOICE_PRIORITY[id] ?? 1;
+    const group = VOICE_GROUP[id] ?? id;
+    if (t < (this.voCooldowns.get(group) ?? 0)) return;
+    if (t < this.voBusyUntil && prio <= this.voPriority) return;
+    this.voCooldowns.set(
+      group,
+      t + (VOICE_COOLDOWN[group] ?? VOICE_COOLDOWN_DEFAULT),
+    );
+    // Claim the channel synchronously — the decode below is async, and two
+    // events in the same frame must not both think they won.
+    this.voPriority = prio;
+    this.voBusyUntil = t + VOICE_PROVISIONAL_LEN;
+    const token = ++this.voToken;
+    void loadVoice(ctx, id)
+      .then((buf) => {
+        if (token !== this.voToken) return;
+        // Missing mp3, or the first fetch took so long the moment is gone —
+        // release the channel rather than reacting to something the player has
+        // already forgotten. Race-critical calls (green/final lap/result) are
+        // still worth a late delivery.
+        if (!buf || (prio < 3 && this.now() - t > VOICE_STALE_AFTER)) {
+          this.voBusyUntil = 0;
+          this.voPriority = 0;
+          return;
+        }
+        this.startVoice(id, prio, buf.duration);
+      })
+      .catch(() => {
+        if (token !== this.voToken) return;
+        this.voBusyUntil = 0;
+        this.voPriority = 0;
+      });
+  }
+
+  private startVoice(id: VoiceId, prio: number, duration: number) {
+    if (!this.ctx || !this.voBus) return;
+    const ctx = this.ctx;
+    const t = this.now();
+    this.stopVoice();
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    gain.connect(this.voBus);
+    const src = playSample(ctx, gain, `vo:${id}`, { vol: 1 });
+    if (!src) {
+      gain.disconnect();
+      this.voBusyUntil = 0;
+      this.voPriority = 0;
+      return;
     }
+    const node = { src, gain };
+    this.voNode = node;
+    this.voPriority = prio;
+    this.voBusyUntil = t + duration;
+    src.onended = () => {
+      try { gain.disconnect(); } catch { /* already torn down */ }
+      if (this.voNode === node) {
+        this.voNode = null;
+        this.voPriority = 0;
+      }
+    };
+    // Hold the music under the whole line plus a beat of tail.
+    this.duckMusic(0.6, duration + 0.15);
+  }
+
+  /** Cut the current line with a 40 ms fade — long enough to avoid a click. */
+  private stopVoice(fade = 0.04) {
+    const node = this.voNode;
+    this.voNode = null;
+    if (!node || !this.ctx) return;
+    const t = this.now();
+    rampFrom(node.gain.gain, t, 0.0001, fade);
+    node.src.onended = () => {
+      try { node.gain.disconnect(); } catch { /* already torn down */ }
+    };
+    try { node.src.stop(t + fade + 0.02); } catch { /* already stopped */ }
   }
 
   private oneshot(sfxKey: string, vol = 0.75, rate = 1) {
@@ -646,6 +919,11 @@ class AudioEngine {
     const now = performance.now();
     if (now - this.lastImpactAt < 45) return;
     this.lastImpactAt = now;
+    // Heavy metal reads better with the bed pulled out from under it; light
+    // scrapes are frequent enough that ducking them would pump the music.
+    if (intensity >= 1.1) {
+      this.duckMusic(Math.min(0.45, 0.2 + intensity * 0.16), 0.18, 0.03, 0.4);
+    }
     if (intensity < 0.7 && this.oneshot("impact_light", 0.55 + intensity * 0.3)) return;
     if (this.oneshot("impact_metal", Math.min(1, 0.5 + intensity * 0.4))) return;
     this.layeredHit(intensity);

@@ -101,12 +101,12 @@ Audit of the live source across Visual / Performance / Feel / Audio.
 - [ ] **F (LOW)** Power-slide + counter-steer reward; slower lateral decay — `physics.ts`
 - [ ] **F (LOW)** Mobile auto-cruise 0.78→~0.95 (touch can't reach Vmax) — `input.ts`
 
-## Batch 4 — Audio + ElevenLabs (PENDING)
-- [ ] **A (HIGH)** Master DynamicsCompressor/limiter before destination (stops clipping) — `AudioEngine.ts`
+## Batch 4 — Audio + ElevenLabs (PARTIAL)
+- [x] **A (HIGH)** Master DynamicsCompressor/limiter before destination (stops clipping) — `AudioEngine.ts`
 - [ ] **A (HIGH)** Spatialize opponents/weapons/impacts (PannerNode + listener); emit AI-fire audio — `AudioEngine.ts`, `AudioDriver.tsx`, `combat.ts`
-- [ ] **A (HIGH)** Real music crossfade (per-track gain ramps, not hard cut) — `AudioEngine.ts`
-- [ ] **A (MED)** VO system: `voBus` + `playVoice()` + manifest; **ElevenLabs announcer** from `story.ts` — `AudioEngine.ts`, `SampleBank.ts`
-- [ ] **A (MED)** Music ducking under impacts/VO/victory — `AudioEngine.ts`
+- [x] **A (HIGH)** Real music crossfade (per-track gain ramps, not hard cut) — `AudioEngine.ts`
+- [x] **A (MED)** VO system: `voBus` + `playVoice()` + manifest; **ElevenLabs announcer** from `story.ts` — `AudioEngine.ts`, `SampleBank.ts`
+- [x] **A (MED)** Music ducking under impacts/VO/victory — `AudioEngine.ts`
 - [ ] **A (MED)** Use real engine samples (idle/rev crossfade) over pure synth — `AudioEngine.ts`
 - [ ] **A (LOW)** Raise music mix; mute procedural bed when MP3 track active; smooth gear-shift RPM dip
 
