@@ -76,7 +76,7 @@ export function spawnWorldProps(): PhysProp[] {
       vz: 0,
       spin: 0,
       radius: 0.55,
-      mass: 80,
+      mass: 0.35,
       dynamic: false,
       hp: 999,
       scale: 1,
@@ -112,7 +112,7 @@ export function spawnWorldProps(): PhysProp[] {
       vz: 0,
       spin: 0,
       radius: r,
-      mass: kind === "crate" ? 14 : kind === "barrel" ? 9 : 20,
+      mass: kind === "crate" ? 0.030 : kind === "barrel" ? 0.020 : 0.055,
       dynamic: true,
       hp: kind === "scrap" ? 70 : 38,
       scale: kind === "scrap" ? 1.2 : 1.05,
@@ -148,7 +148,7 @@ export function spawnWorldProps(): PhysProp[] {
         vz: 0,
         spin: 0,
         radius: kind === "barrel" ? 0.52 : kind === "crate" ? 0.75 : 0.88,
-        mass: kind === "barrel" ? 8 : kind === "crate" ? 12 : 18,
+        mass: kind === "barrel" ? 0.018 : kind === "crate" ? 0.028 : 0.048,
         dynamic: true,
         hp: 36,
         scale: 1.1,
@@ -166,20 +166,23 @@ export function spawnWorldProps(): PhysProp[] {
     if (!s) continue;
     const rx = Math.cos(s.yaw);
     const rz = -Math.sin(s.yaw);
-    const side = k % 2 === 0 ? 0.35 : -0.4;
+    // Offset toward the racing line's edge, not its centre. At 0.35 x width x
+    // 0.25 these sat ~2.5m off the centreline of a 26m road — directly in the
+    // driving line rather than something you choose to clip.
+    const side = k % 2 === 0 ? 0.62 : -0.68;
     props.push({
       id: nid("barrel"),
       kind: "barrel",
-      x: s.x + rx * side * s.width * 0.25,
+      x: s.x + rx * side * s.width * 0.5,
       y: s.y + 0.5,
-      z: s.z + rz * side * s.width * 0.25,
+      z: s.z + rz * side * s.width * 0.5,
       yaw: s.yaw,
       vx: 0,
       vy: 0,
       vz: 0,
       spin: 0,
       radius: 0.55,
-      mass: 7,
+      mass: 0.016,
       dynamic: true,
       hp: 28,
       scale: 1.15,
@@ -218,7 +221,7 @@ export function spawnWorldProps(): PhysProp[] {
         vz: 0,
         spin: 0,
         radius: y.kind === "barrel" ? 0.52 : y.kind === "crate" ? 0.75 : 0.95,
-        mass: y.kind === "barrel" ? 9 : 16,
+        mass: y.kind === "barrel" ? 0.020 : 0.040,
         dynamic: true,
         hp: 45,
         scale: 1.1,
@@ -245,7 +248,9 @@ export function spawnWorldProps(): PhysProp[] {
       vz: 0,
       spin: 0,
       radius: r,
-      mass: 200,
+      // Immovable scenery (towers, cranes). Static, so mass only matters as a
+      // "never budges" marker — but keep it in the vehicle unit scale.
+      mass: 40,
       dynamic: false,
       hp: 999,
       scale: sc.scale,
@@ -320,8 +325,16 @@ const BARREL_RUPTURE_SPEED = 16;
  * this it still deflects rather than stopping you — see the static branch.
  */
 const BARRIER_BREAK_SPEED = 9;
-/** Reference prop mass (a light barrel) that reaction is scaled against. */
-const PROP_REF_MASS = 9;
+/**
+ * Reference prop mass (a light barrel) that reaction is scaled against.
+ *
+ * Prop masses share the vehicle unit scale (classes.ts: 0.78-1.55 per car).
+ * They were previously authored at 7-80, i.e. a barrel roughly TEN TIMES the
+ * mass of the car hitting it — so the impulse exchange reversed the car and
+ * barely moved the barrel. That is the "pushed back, nothing gets thrown, props
+ * stick to you" behaviour.
+ */
+const PROP_REF_MASS = 0.02;
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
 
@@ -483,7 +496,7 @@ export function collideVehiclesWithProps(
         const closing = Math.max(0, velN);
         // Heavier props resist the same hit: an 80kg barrier barely shifts
         // where an 8kg barrel is thrown clear.
-        const massRatio = PROP_REF_MASS / Math.max(1, p.mass);
+        const massRatio = PROP_REF_MASS / Math.max(0.005, p.mass);
         // 0 at a nudge, 1 once there is enough speed to fully launch.
         const speedT = clamp01(
           (closing - PROP_NUDGE_SPEED) / (PROP_LAUNCH_SPEED - PROP_NUDGE_SPEED),
@@ -547,7 +560,7 @@ export function collideVehiclesWithProps(
             if (od2 > R2 || od2 < 1e-6) continue;
             const od = Math.sqrt(od2);
             const falloff = (1 - od / R) * blast;
-            const push = (26 * falloff) / Math.max(1, o.mass);
+            const push = (0.55 * falloff) / Math.max(0.005, o.mass);
             o.vx += (ox / od) * push;
             o.vz += (oz / od) * push;
             o.vy = Math.max(o.vy, 4 * falloff);
