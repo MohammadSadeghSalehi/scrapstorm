@@ -231,9 +231,53 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
 
       // Sun-bleached toward the summits, shadowed rock in the gullies.
       tmp.copy(low).lerp(high, smoothstep(0.08, 0.85, n));
+
+      /*
+       * STRATA — the single strongest "this is desert rock" cue.
+       *
+       * Sedimentary bands are a function of ABSOLUTE height, not of height
+       * normalised per-peak, which is why they run dead level across a whole
+       * range and continue across the gap between two summits as if the rock
+       * were once one deposit. Normalising per peak (the obvious thing, since
+       * `n` is already to hand) would tilt every band to follow its own summit
+       * and instantly read as decoration painted on.
+       *
+       * The boundaries are warped by low-frequency noise so they are not
+       * drawn with a ruler, and the band value is quantised HARD rather than
+       * smoothed: real bedding planes are abrupt: it is the sharp edge between
+       * layers that the eye reads as rock rather than as dirt.
+       */
+      const bandWarp = perlin2(x / 140, z / 140) * 3.2;
+      const bandY = (o.baseY + h + bandWarp) / 7.5;
+      const band = Math.floor(bandY);
+      // Deterministic per-band tone so a band keeps its colour all the way
+      // round the ring instead of shimmering between neighbours.
+      const bandTone = ((Math.sin(band * 12.9898) * 43758.5453) % 1 + 1) % 1;
+      const bandMix = 0.16 + bandTone * 0.2;
+      tmp.lerp(bandTone > 0.5 ? high : low, bandMix * 0.5);
+
+      /*
+       * Large-scale mineral variation. Without it the whole range is one
+       * colour and the tiled detail map has nothing to hide behind — the
+       * repetition of a 46m tile becomes obvious precisely because everything
+       * around it is uniform. This is much lower frequency than the tile, so
+       * it breaks the grid without competing with the surface detail.
+       */
+      const mineral = perlin2(x / 520 + 11.3, z / 520 - 4.7);
+      tmp.offsetHSL(mineral * 0.016, mineral * 0.05, mineral * 0.03);
+
+      /*
+       * Scree. Debris collects at the foot of a slope and it is paler and
+       * flatter than the face above it, so the base of every ridge lightens.
+       * Keyed on low normalised height, which is where the talus actually is.
+       */
+      const scree = 1 - smoothstep(0.02, 0.3, n);
+      if (scree > 0) tmp.lerp(high, scree * 0.22);
+
       // Aerial perspective by distance, minus a little on the peaks — summits
       // stand above the densest air, which is what makes a range read as deep
-      // rather than as a flat cut-out.
+      // rather than as a flat cut-out. LAST, so everything above it fades
+      // together rather than each cue fighting the haze separately.
       const f2 = smoothstep(o.hazeFrom, o.hazeTo, R) * o.hazeMax;
       tmp.lerp(haze, Math.min(1, f2 * (1 - n * 0.3)));
 
