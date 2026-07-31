@@ -1,123 +1,185 @@
-# Scrapstorm League — AAA Punch-List
+# Scrapstorm League — road to AAA
 
-## Measured baseline (medium tier, 960x540, software GL)
-`draws=280  tris=715k  programs=95  textures=113`
-Down from `draws=302 tris=1.17M` via AI-car LODs and start-line prop thinning.
+Target: *Need for Speed: Most Wanted (2005)*, with combat. Rewritten 2026-07-31
+against the live source; the previous version had drifted badly out of date
+(items marked "blocked" that shipped, items marked "done" that never attached).
 
-## Pipeline review — where AAA actually comes from
+---
 
-### 1. Asset pipeline (offline) — the biggest untapped tier
-| item | state | note |
+## 0. THE GATE — nothing below this line matters until it is closed
+
+**Frame time on the target GPU is unmeasured, and one reported reading was
+14fps at 73ms average / 226ms peak.**
+
+Everything in this document costs frame time. Planning visual work on top of an
+unmeasured 14fps is how the last regression happened: a batch of quality
+changes shipped together on a clean QA sweep, and the sweep says nothing about
+frame time — it runs on SwiftShader at 20fps by construction.
+
+### 0.1 Get a real profile, not a guess
+- [ ] **GPU timer queries.** `EXT_disjoint_timer_query_webgl2` around each
+  EffectComposer pass and each major draw group. Right now every perf claim in
+  this project — including mine — is inference from draw counts. 238 draws and
+  643k triangles is *nothing*; the cost is somewhere in fill rate, shader
+  complexity, or main-thread stalls, and we do not know which.
+- [ ] **Main-thread trace.** 226ms peaks are not a GPU problem. Suspects, in
+  order: KTX2 transcode on load, `PMREMGenerator` for the HDRI, glTF parse,
+  scenery batch build. All are one-time, so a peak *during racing* means
+  something is being rebuilt mid-race.
+- [ ] **Re-land what was cut blind.** Three things were disabled to stop the
+  bleeding, each behind one flag: `dprMax` 2→1.5, terrain `attachGpuDetail`,
+  the 49.6k crane beam. Restore one at a time with a reading between each.
+
+### 0.2 Set a budget and hold to it
+16.7ms at 60fps. Proposed split: 6ms geometry+shadow, 4ms post, 3ms main
+thread, 3.7ms slack. **Anything below that fails to land, gets reverted, not
+"optimised later".**
+
+---
+
+## 1. Where the remaining AAA gap actually is
+
+Ranked by *visible delta per millisecond*, which is not the same as ranked by
+effort.
+
+### 1.1 Lighting — the single biggest gap (HIGH value, HIGH cost)
+One directional light plus an HDRI is a 2010 lighting model. MW05's look came
+from baked bounce.
+
+- [ ] **Baked lightmaps / AO for static geometry.** Terrain, scenery, track
+  furniture. Offline bake → a second UV set → `lightMap`. Prerender is
+  explicitly on the table, and this is what it buys. Biggest single step
+  toward "not a WebGL demo".
+- [ ] **Multi-cascade CSM, properly.** Previously attempted and reverted at a
+  cost of 151→81fps. It failed because CSM adds *one directional light per
+  cascade at full intensity* and the receivers were never patched — a probe
+  measured intensities of `[0.65, 0.3, 3, 3, 3]`. The fix is to route every
+  shadow-receiving material through `csm.setupMaterial` **at creation time**
+  (`GltfCar`, `procmat`, terrain, prop pools), not via a periodic sweep. Do not
+  retry this without that change.
+- [ ] **Split static/dynamic shadow maps.** `shadowMap.autoUpdate = false` is
+  listed in the old plan as unsafe, and it is — vehicles move. Two lights: a
+  static one refreshed rarely, a dynamic one for vehicles only.
+- [ ] **Local reflection.** A handful of box-projected probes at the start/pit
+  area. Screen-space reflections are not worth their cost here.
+
+### 1.2 World density — the loudest "not AAA" tell (HIGH value, LOW cost)
+The desert is empty. Real deserts are not, and neither is a MW05 roadside.
+
+- [ ] **Instanced scatter fields.** Rocks, scrub, dead brush, debris drifts,
+  tyre walls — thousands of instances, a handful of draws, distance-faded.
+  Cheapest visual win on this list by a wide margin.
+- [ ] **Roadside continuity.** Guard rails, run-off, kerbing, painted run-off
+  markings, sponsor boards. The verge is currently posts and nothing else.
+- [ ] **Ground-cover blending.** Sand drifts creeping onto the tarmac edge,
+  darker aggregate in the racing line. The road already has wear via
+  `roadWear.ts`; the *transition* is what is missing.
+- [ ] **Replace the remaining primitives.** Some scenery still falls back to
+  boxes and cylinders when a Poly Haven key fails to resolve.
+
+### 1.3 Vehicles — the thing the player stares at (HIGH value, MED cost)
+- [ ] **Deformation, not just a damage texture.** Vertex displacement on impact
+  by proximity to hit point, accumulating. `debris.ts` already handles the
+  detached pieces; the panel itself never changes shape.
+- [ ] **Paint.** Clearcoat is listed as done, but a flake/metallic layer and a
+  proper dirt buildup mask (accumulating off-road, wiped by speed) is what
+  reads as expensive.
+- [ ] **Wheels.** Rotation, steering, and suspension travel driven from the sim
+  rather than approximated; brake-disc glow; tyre sidewall deformation on load.
+- [ ] **Interior / cockpit.** Even a low-detail one, for the chase camera to
+  see through glass.
+
+### 1.4 Image pipeline (MED value, MED cost — gated on §0)
+- [ ] **TAA.** Needs velocity buffers and reprojection. Also unlocks temporal
+  upsampling, which *gives* frame time back — arguably this belongs in §0.
+- [ ] **LUT grade from a texture.** `GradeEffect.ts` does ASC CDL + split-tone
+  in-shader; an authored 32³ LUT is both cheaper and far more art-directable.
+- [ ] **Depth of field** for replays and the garage only. Not in-race.
+- [ ] **Screen-space contact shadows** under the car — small, and it is what
+  stops a vehicle looking pasted onto the road.
+
+### 1.5 Camera and game feel (HIGH value, LOW cost)
+This is where MW05 actually lives, and it is nearly free.
+
+- [ ] **Impact hitstop.** 40–80ms of frozen time on a heavy hit, then a snap
+  back. Single largest perceived-weight gain available.
+- [ ] **Speed-reactive camera.** FOV widening, pull-back, shake, and the
+  existing radial motion blur all driven off one curve.
+- [ ] **Replay rig.** Track-side cameras, cut on lap events. Also the thing
+  that makes the world worth having built.
+- [ ] **Render interpolation between fixed sim steps.** Still pending, still
+  causing microstutter at 120/144Hz.
+- [ ] **Steering ramp** before yaw — raw keyboard input is twitchy.
+
+### 1.6 Audio (MED value, LOW cost)
+- [ ] **Real engine samples**, multi-layer, crossfaded by RPM *and* load, with
+  off-throttle overrun. The synth bed is the most obviously indie thing in the
+  build.
+- [ ] **Spatialisation.** Opponents, weapons and impacts through `PannerNode`
+  with a proper listener; AI fire currently emits no audio at all.
+- [ ] **Surface-dependent tyre noise**, tied to the same surface query physics
+  already uses.
+- [ ] **Reverb zones** — the canyon stretch should sound like a canyon.
+
+### 1.7 Content and story (user-supplied assets)
+- [ ] Video cutscenes (user generates) + ElevenLabs VO over them.
+- [ ] A second and third circuit. `cinder_bowl` exists but is thin.
+- [ ] Rival characters with voiced taunts tied to combat events.
+
+---
+
+## 2. Ordering
+
+Strictly sequential. Each phase ends with an fps reading on the target GPU
+before the next begins.
+
+| # | phase | why here |
 |---|---|---|
-| Vehicle LODs | **done** | `build-vehicle-lods.mjs`; lod1 ~25k (-75%). lod2 not wired — error, not ratio, binds at ~23k, so it gains ~5% over lod1 and is not worth a distance switch on this topology |
-| Draco / meshopt | decoders wired | `gltfLoaders.ts` + `copy-decoders.mjs`; geometry not yet encoded |
-| KTX2 / Basis | **blocked** | needs a native `toktx`/`basisu`; textures are standalone JPEGs so `textureLibrary.ts` also needs `KTX2Loader`. Buys VRAM + main-thread decode, **not** download size (they are already 1024²) |
-| Lightmap bake | not started | **highest visual leverage.** Bake bounce + AO offline; this is the single biggest gap vs a UE scene |
-| HLOD / proxy merge | not started | merge distant scenery clusters into baked proxies |
+| 1 | §0 profile + budget | every estimate below is currently a guess |
+| 2 | §1.5 camera/feel | near-zero cost, largest perceived gain |
+| 3 | §1.2 world density | cheap, and the loudest visual tell |
+| 4 | §1.4 TAA | pays for itself via temporal upsampling |
+| 5 | §1.1 lightmaps | biggest delta, but expensive and needs the headroom |
+| 6 | §1.1 CSM | only after `setupMaterial`-at-creation is in |
+| 7 | §1.3 vehicles | high value, but wasted if the frame is already full |
+| 8 | §1.6 audio | independent of frame time, can run in parallel |
+| 9 | §1.7 content | needs the engine work to be worth filming |
 
-### 2. Build / load
-- Race assets now preload behind a gate (`prepareRaceAssets`): PBR library,
-  vehicles, race props, set dressing, HDRI prefetch. Textures resident at green
-  light rose 95 → 113.
-- **Next:** PSO/shader manifest — enumerate material×light×shadow permutations at
-  build time and warm them all during the countdown. `ShaderWarmup` currently
-  does two timed `compileAsync` passes, which is a heuristic, not a guarantee.
-- **Next:** streamed track sectors instead of whole-world upfront.
+Audio (§1.6) is the one track that can proceed in parallel — it does not
+compete for frame time.
 
-### 3. Runtime culling / batching
-- Scenery instanced (~15-20 draws), edge posts instanced + grid-culled,
-  terrain grid-culled. Frustum + distance culling present.
-- **Missing:** occlusion culling (UE uses HW queries + a software rasteriser).
-  Third leg of the stool; 280 draws is not yet the bottleneck so this is later.
+---
 
-### 4. Render / image quality
-| item | state |
-|---|---|
-| Colour-managed PBR, ACES, sRGB | done |
-| GTAO (N8AO, half-res) | done |
-| Player-following shadow cascade | done (single tight cascade) |
-| **Multi-cascade CSM** | not started — `three/examples/jsm/csm` is bundled |
-| **TAA** | not started — needs velocity buffers + reprojection; also unlocks temporal upsampling |
-| **LUT grade** | not started — needs an authored grading texture |
-| Dynamic resolution | done (`AdaptiveResolution`, 60-100% of tier ceiling) |
+## 3. Process rules, learned the hard way
 
-### 5. Terrain / world
-- Heightmap now sampled at 2.5m quads with exact road-corridor carving and
-  slope-driven rock/sand blending.
-- **Next:** triplanar detail maps + a second detail normal near the camera;
-  currently one tiled sand set does all the work.
+1. **One change, one measurement.** Stacked batches are how 102fps became
+   14fps with no way to tell which change did it.
+2. **The QA sweep is a correctness tool.** It runs on SwiftShader. A clean
+   sweep is not a performance result and never was.
+3. **Verify by probe, not by eye.** In this session alone: mesh winding was
+   inverted while the comment claimed otherwise; a texture silently never
+   attached and the scene still looked fine. Both were caught by numbers
+   disagreeing with the code, and neither would have been caught by looking.
+4. **A count that moves the wrong way is a bug.** Adding a texture must raise
+   the texture count.
+5. **Estimates are not evidence.** The terrain fBm layer was estimated at 1–3%
+   and shipped without profiling. It is now disabled pending a real number.
 
-## Recommended order
-1. **Lightmap bake** — biggest visual delta, and prerender is on the table.
-2. **Multi-cascade CSM** — the most visible remaining real-time gap.
-3. **TAA** — quality *and* perf (temporal upsampling).
-4. KTX2 once an encoder is available; Draco encode is free to do now.
-5. Terrain detail maps, then occlusion culling when draws justify it.
+---
 
-_Not safe as originally written:_ `shadowMap.autoUpdate = false` — vehicles move,
-so freezing the map freezes their shadows. Needs split static/dynamic lights.
+## 4. Done (kept for provenance)
 
-
-Audit of the live source across Visual / Performance / Feel / Audio.
-`[x]` = applied, `[ ]` = pending. Batches are verified with `npx tsc --noEmit` once deps are installed.
-
-## Batch 1 — Lighting foundation (APPLIED, pure value/composition, no build risk)
-- [x] **V** Raise HDRI `environmentIntensity` (0.75/0.55/0.4 → 1.1/0.85/0.6) — `environment.tsx`
-- [x] **V** Soft shadows + bigger maps on high (PCFSoft, 2048; medium 1024) — `quality.ts`
-- [x] **V** Kill emissive "fake fill" wash on terrain + fix silent AO (missing `uv1`) — `HeightmapTerrain.tsx`
-- [x] **V** Kill emissive wash on race ground plane + showcase floor — `GameScene.tsx`
-- [x] **V** Add HDRI reflections to garage/showcase hero shot (was missing) — `GameScene.tsx`
-
-## Batch 2 — Post-processing + AA (APPLIED, typecheck clean)
-- [x] **V (HIGH)** Ungate PostFX from `high`-only → `tier !== "low"` so bloom/vignette/grade actually show — `GameScene.tsx` PostFxLive
-- [x] **V (HIGH)** Add SMAA (or `multisampling={4}`) to EffectComposer — `PostFX.tsx`
-- [ ] **V (MED)** Add ambient occlusion (N8AO/GTAO) + contact shadows under hero — `PostFX.tsx`, `GameScene.tsx`
-- [x] **V (MED)** Color grade pass (HueSaturation/BrightnessContrast or LUT) for desert-dusk identity — `PostFX.tsx`
-- [ ] **V (MED)** Hero paint: base color back to ~1.0, clearcoat 0.18→0.6 / roughness→0.1 — `GltfCar.tsx`
-- [ ] **V (MED)** Let AI cars cast shadows within distance cap — `GltfCar.tsx`, `quality.ts`
-
-## Batch 2.5 — Set dressing / assets (IN PROGRESS)
-- [x] **V (HIGH)** Cache Poly Haven load failures + per-key URL fallbacks — `polyHavenAssets.ts`
-  Every one of the 14 `PH_MODELS` paths 404s (the `03-polyhaven` / `04-amara` tarballs
-  were never restored), and `SceneryDecor` re-requests each key for all 48–72 decor
-  slots on every tier change → ~78 failed requests per load **and a world with zero
-  scenery props**. Failures are now cached per key, and `barrel` / `barrelAlt` /
-  `tyre` / `rim` / `coveredCar` fall back to equivalents already on disk.
-- [ ] **V (HIGH)** Restore the real Poly Haven 1k pack (~45MB, CC0) so the other 9
-  keys (crate, box, jerrycan, barrier, trash, hydrant, boulder, fence, pipes) populate
-- [ ] **V (MED)** Regenerate the 3 AmaraSpatial props (`AMARA_MESH`: jersey barrier,
-  water-filled barrier, traffic cone) — not on disk, not in the tarballs
-- [x] **QA** Fix `qa-visual.mjs` blank captures (`toDataURL` returns an empty buffer
-  under SwiftShader) → composite `page.screenshot` + flat-frame detection + real
-  failed-request URLs; default to a single tier so the sweep can't saturate the CPU
-
-## Batch 3 — Gameplay feel (PENDING)
-- [ ] **F (HIGH)** Ramp raw keyboard steer before yaw (kills twitch) — `physics.ts`/`input.ts`
-- [ ] **F (HIGH)** Render interpolation between fixed sim steps (fix 120/144Hz microstutter) — `sim.ts`, `GameScene.tsx`
-- [ ] **F (MED)** Combat impact feedback: hitstop + shooter shake + damage numbers + haptic — `combat.ts`, `GameHUD.tsx`
-- [ ] **F (MED)** Firmer collisions (restitution ~0.5, higher jCap) for combat weight — `physics.ts`
-- [ ] **F (MED)** Make drift boost earned (threshold 0.16→0.4, minSpeed 2.5→12) — `balance.ts`
-- [ ] **F (MED)** Symmetric, gentler rubberbanding (catchUpMax 0.28→~0.15) — `ai.ts`, `physics.ts`
-- [ ] **F (LOW)** Power-slide + counter-steer reward; slower lateral decay — `physics.ts`
-- [ ] **F (LOW)** Mobile auto-cruise 0.78→~0.95 (touch can't reach Vmax) — `input.ts`
-
-## Batch 4 — Audio + ElevenLabs (PARTIAL)
-- [x] **A (HIGH)** Master DynamicsCompressor/limiter before destination (stops clipping) — `AudioEngine.ts`
-- [ ] **A (HIGH)** Spatialize opponents/weapons/impacts (PannerNode + listener); emit AI-fire audio — `AudioEngine.ts`, `AudioDriver.tsx`, `combat.ts`
-- [x] **A (HIGH)** Real music crossfade (per-track gain ramps, not hard cut) — `AudioEngine.ts`
-- [x] **A (MED)** VO system: `voBus` + `playVoice()` + manifest; **ElevenLabs announcer** from `story.ts` — `AudioEngine.ts`, `SampleBank.ts`
-- [x] **A (MED)** Music ducking under impacts/VO/victory — `AudioEngine.ts`
-- [ ] **A (MED)** Use real engine samples (idle/rev crossfade) over pure synth — `AudioEngine.ts`
-- [ ] **A (LOW)** Raise music mix; mute procedural bed when MP3 track active; smooth gear-shift RPM dip
-
-## Batch 5 — Performance (PENDING, larger)
-- [ ] **P (HIGH)** GLB pipeline: Draco/meshopt geometry + KTX2 textures via gltf-transform; wire DRACOLoader+KTX2Loader; decode off main thread — `GltfCar.tsx`
-- [ ] **P (HIGH)** LOD the GLTF car path (route through existing `meshLodForDistance`; drop clearcoat/normal/shadow at distance) — `GltfCar.tsx`
-- [ ] **P (HIGH)** Make `preserveDrawingBuffer` conditional (only for `?capture` QA runs) — `GameScene.tsx`
-- [ ] **P (MED)** Shadow map `autoUpdate=false`, refresh every N frames (static sun) — `configure.ts`
-- [ ] **P (MED)** Pose projectiles/FX via refs/instancing, not `setState` every 8 frames — `Effects.tsx`, `GameScene.tsx`
-- [ ] **P (MED)** Parallel + instanced SceneryDecor / Poly Haven props — `SceneryDecor.tsx`, `polyHavenAssets.ts`
-- [ ] **P (MED)** KTX2 the PBR/HDRI texture packs; cache PMREM — `textureLibrary.ts`, `environment.tsx`
-- [ ] **P (LOW)** Kill per-frame allocs in skid marks / worldVel / surface sampling — `Effects.tsx`, `physics.ts`
-
-_Legend: V=visual, F=feel, A=audio, P=perf._
+Asset pipeline: vehicle LODs, KTX2/Basis (−207MB VRAM), decoder wiring,
+concurrent preload behind a gate.
+Render: colour-managed PBR + ACES, GTAO, SMAA, ASC CDL grade, dynamic
+resolution, radial motion blur, player-following shadow cascade.
+World: heightmap terrain with exact road-corridor carving, instanced scenery
+and edge posts, grid culling, continuous ridged-multifractal mountain ranges
+with aerial perspective, camera-anchored backdrop.
+Physics: fixed-step sim with carried remainder, mass-scaled prop collisions,
+frangible verge posts, wall-sliding barriers, surface-aware drag, off-road dust.
+Placement: every prop, scenery and decor item rests on the real ground query
+(verified, worst float 0.0000m) and clear of the tarmac.
+Audio: voBus + ducking + limiter, music crossfade, ElevenLabs announcer.
+Tooling: QA harness, Vite polling watcher (WSL/`/mnt/c` fires no inotify events,
+so the dev server had been serving stale code for every edit without a restart).
