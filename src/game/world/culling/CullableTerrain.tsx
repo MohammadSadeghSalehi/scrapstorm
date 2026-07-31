@@ -274,12 +274,20 @@ const SCENERY_KITS: Record<SceneryKind, ScenerySlot[]> = {
    * 56-triangle rail girder on its legs, which still reads as a gantry. */
   crane: [
     { key: "gantry", node: /rails$/, assembled: true },
-    {
-      key: "gantry",
-      node: /^overhead_crane$/,
-      assembled: true,
-      minTier: "medium",
-    },
+    /*
+     * Beam DROPPED.
+     *
+     * 49.6k triangles and deliberately not instanced at any tier, so every
+     * visible crane was a separate 49.6k draw. It also spans ~30m, which put it
+     * across the road at the landmark anchors near the start line — visible as
+     * a girder hanging over the racing line with nothing to collide against,
+     * since the scenery collider is a ground-level circle and the beam is
+     * overhead.
+     *
+     * The 56-triangle rail girder below still reads as a gantry silhouette for
+     * ~0.1% of the cost. Restore the beam only if it is instanced AND kept
+     * clear of the track.
+     */
     { key: "pipeRig", node: /pipe02$/, len: 2.9, thick: 2.6, pos: [-7.5, 0, 1.5] },
     { key: "pipeRig", node: /pipe02$/, len: 2.9, thick: 2.6, pos: [7.5, 0, 1.5] },
   ],

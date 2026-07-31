@@ -75,12 +75,18 @@ const PRESETS: Record<QualityTier, Omit<QualitySettings, "tier">> = {
     hdriEnv: true,
   },
   high: {
-    // Render at the display's native pixel density (up to 2x). The previous
-    // 1.35 cap meant a 2x-DPI screen rendered at ~46% of its pixel count and
-    // was upscaled — the single biggest reason a strong GPU still looked soft.
-    // setPixelRatio() takes min(devicePixelRatio, dprMax), so 1x displays are
-    // unaffected and the adaptive tier drop remains the safety net.
-    dprMax: 2,
+    /*
+     * 1.5, not 2.
+     *
+     * dprMax multiplies EVERY full-screen pass, and the post chain has grown a
+     * lot since 2 was set: N8AO, motion blur taps, bloom, grade. At 2 on a
+     * large window that is ~4x the fragments of 1.0 through all of them, and on
+     * a LAPTOP 5080 (roughly half the memory bandwidth of the desktop part)
+     * the stack measured 14fps / 73.1ms / max 226ms.
+     *
+     * The adaptive scaler can still take it lower; this only caps the ceiling.
+     */
+    dprMax: 1.5,
     antialias: true,
     shadowEnabled: true,
     // 2048 over the 55m cascade is ~19 texels/m. 4096 was tried and measured

@@ -249,7 +249,57 @@ function buildSceneryFrom(samples: TrackSample[]): SceneryItem[] {
       { x: s0.x - 40, z: s0.z + 30, kind: "tower", scale: 1.15, rot: 0.9 },
     );
   }
-  return items;
+  return clearOfTrack(items, samples);
+}
+
+/*
+ * Push every scenery item clear of the tarmac.
+ *
+ * The ring placement above derives its position from a track sample, so it is
+ * clear of THAT sample by construction - but a circuit doubles back, and the
+ * landmark anchors are raw world offsets from the start point that consult the
+ * track not at all. Either can land on a part of the loop they never looked at.
+ * That is how a crane ended up straddling the road with nothing to hit: the
+ * scenery collider is a ground-level circle, so a gantry overhead has no
+ * collision by design and the only real fix is not to put it there.
+ *
+ * Brute force over samples - a few hundred points against ~22 items, once per
+ * track build.
+ */
+function clearOfTrack(
+  items: SceneryItem[],
+  samples: TrackSample[],
+): SceneryItem[] {
+  if (!samples.length) return items;
+  return items.map((it) => {
+    let best = Infinity;
+    let bs: TrackSample = samples[0]!;
+    for (const s of samples) {
+      const dx = it.x - s.x;
+      const dz = it.z - s.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best) {
+        best = d2;
+        bs = s;
+      }
+    }
+    // Footprint grows with scale; these kits run 6-10m across at scale 1.
+    const need = bs.width * 0.5 + 26 + it.scale * 8;
+    const d = Math.sqrt(best);
+    if (d >= need) return it;
+    // Push out along the away-from-centreline direction. Degenerate case (item
+    // sitting exactly on a sample) falls back to the sample's right normal.
+    let nx = it.x - bs.x;
+    let nz = it.z - bs.z;
+    if (d < 1e-3) {
+      nx = Math.cos(bs.yaw);
+      nz = -Math.sin(bs.yaw);
+    } else {
+      nx /= d;
+      nz /= d;
+    }
+    return { ...it, x: bs.x + nx * need, z: bs.z + nz * need };
+  });
 }
 
 /* ── mutable active track state ───────────────────────────────────── */

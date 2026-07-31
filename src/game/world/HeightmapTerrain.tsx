@@ -295,7 +295,17 @@ export function HeightmapTerrain() {
      * skipped entirely past lodFar — so the 700m dune field beyond the near
      * band pays only a compare. Low tier runs gpuDetail at 0 and is skipped.
      */
-    if (q.gpuDetail > 0.15) {
+    /*
+     * DISABLED pending a measurement on real hardware.
+     *
+     * This was the one item in the surface pass with a real per-fragment cost
+     * (estimated 1-3%), and the terrain plane covers most of the frame. It went
+     * in as part of a batch that measured 102fps -> 14fps on a laptop 5080, and
+     * an estimate made without profiling is not evidence. Re-enable only with a
+     * before/after fps number on the target machine.
+     */
+    const TERRAIN_DETAIL = false;
+    if (TERRAIN_DETAIL && q.gpuDetail > 0.15) {
       attachGpuDetail(mat, { kind: "sand", detailScale: 16, quality: q });
     }
 
