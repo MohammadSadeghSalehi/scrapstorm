@@ -287,6 +287,8 @@ const PROP_NUDGE_SPEED = 2.2;
 const PROP_LAUNCH_SPEED = 11;
 /** Closing speed above which a barrel ruptures rather than tumbling. */
 const BARREL_RUPTURE_SPEED = 19;
+/** Closing speed above which a static barrier breaks apart instead of holding. */
+const BARRIER_BREAK_SPEED = 12;
 /** Reference prop mass (a light barrel) that reaction is scaled against. */
 const PROP_REF_MASS = 9;
 
@@ -334,6 +336,42 @@ export function collideVehiclesWithProps(
       const nz = dz / dist;
       const pen = obbR - dist;
 
+      // Closing speed is needed before the positional resolve, so a barrier
+      // taken hard enough can break instead of being pushed against.
+      const rvx = va.vx - p.vx;
+      const rvz = va.vz - p.vz;
+      const velN = rvx * nx + rvz * nz;
+
+      // Barriers were dynamic:false with hp:999 — indestructible walls lining
+      // the track that simply stopped the car dead. Hit one above the break
+      // speed and it becomes debris: the car ploughs through with a speed
+      // penalty rather than being pinned.
+      // The barrier gives way rather than being deleted: its post is drawn by
+      // CulledEdgePosts, which has no notion of prop death, so removing the
+      // collider would leave a solid-looking post you drive straight through.
+      // Yielding keeps visuals and collision honest while removing the dead
+      // stop — you plough past at a cost instead of being pinned.
+      if (!p.dynamic && velN > BARRIER_BREAK_SPEED) {
+        const drive = Math.min(2.0, velN / BARRIER_BREAK_SPEED);
+        // Partial push-out only, so the car keeps its line through the impact.
+        v.x -= nx * pen * 0.35;
+        v.z -= nz * pen * 0.35;
+        applyWorldVel(v, va.vx * 0.86, va.vz * 0.86);
+        va.vx *= 0.86;
+        va.vz *= 0.86;
+        v.hitStun = Math.max(v.hitStun, 0.07);
+        v.impactFlash = Math.max(v.impactFlash, 0.35);
+        v.health = Math.max(0, v.health - 3.5 * drive);
+        v.damageVisual = Math.min(
+          1,
+          Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
+        );
+        p.dent = Math.min(1, p.dent + 0.4);
+        maxImpact = Math.max(maxImpact, velN);
+        spawnPropFx(particles, p.x, p.y + 0.3, p.z, "#d6d3d1");
+        continue;
+      }
+
       if (p.dynamic) {
         const total = massV + p.mass;
         v.x -= nx * pen * (p.mass / total) * 0.9;
@@ -346,10 +384,6 @@ export function collideVehiclesWithProps(
         v.z -= nz * pen * 1.15;
         v.yaw += (nx * Math.cos(v.yaw) + nz * -Math.sin(v.yaw)) * pen * 0.08;
       }
-
-      const rvx = va.vx - p.vx;
-      const rvz = va.vz - p.vz;
-      const velN = rvx * nx + rvz * nz;
       // Still apply soft push when nested even if not approaching
       if (velN < -0.5 && pen < 0.05) continue;
 

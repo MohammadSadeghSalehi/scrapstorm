@@ -7,6 +7,7 @@ import * as THREE from "three";
 import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
 import { ridgeGeometry } from "./ridgeGeometry";
+import { TRACK_SAMPLES } from "../track";
 import {
   softCircleTexture,
   softCloudTexture,
@@ -145,6 +146,27 @@ export function Atmosphere() {
    * (cheap aerial perspective) instead of one flat band of identical cones.
    */
   const ridges = useMemo(() => {
+    // Ring radii were fixed at 160+ from the WORLD ORIGIN while the circuit
+    // itself reaches ~240 out, so mesas were being planted straight onto the
+    // track. Derive the rings from the actual track bounds instead, and keep a
+    // clear margin outside the furthest piece of road.
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const s of TRACK_SAMPLES) {
+      if (s.x < minX) minX = s.x;
+      if (s.x > maxX) maxX = s.x;
+      if (s.z < minZ) minZ = s.z;
+      if (s.z > maxZ) maxZ = s.z;
+    }
+    const hasTrack = Number.isFinite(minX);
+    const tcx = hasTrack ? (minX + maxX) * 0.5 : 0;
+    const tcz = hasTrack ? (minZ + maxZ) * 0.5 : 0;
+    // Radius that encloses the whole circuit from its own centre.
+    const trackR = hasTrack
+      ? Math.hypot(maxX - minX, maxZ - minZ) * 0.5
+      : 200;
+    const nearR = trackR + 90;
+    const farR = trackR + 320;
+
     const near = q.tier === "low" ? 10 : 16;
     const far = q.tier === "low" ? 5 : 9;
     const out: {
@@ -159,10 +181,10 @@ export function Atmosphere() {
     }[] = [];
     for (let i = 0; i < near; i++) {
       const a = (i / near) * Math.PI * 2 + 0.1;
-      const r = 160 + (i % 5) * 28;
+      const r = nearR + (i % 5) * 34;
       out.push({
-        x: Math.cos(a) * r,
-        z: Math.sin(a) * r,
+        x: tcx + Math.cos(a) * r,
+        z: tcz + Math.sin(a) * r,
         s: 32 + (i % 4) * 14,
         h: 12 + (i % 5) * 6,
         rot: a + Math.PI / 2,
@@ -173,10 +195,10 @@ export function Atmosphere() {
     }
     for (let i = 0; i < far; i++) {
       const a = (i / far) * Math.PI * 2 + 0.55;
-      const r = 400 + (i % 4) * 70;
+      const r = farR + (i % 4) * 90;
       out.push({
-        x: Math.cos(a) * r,
-        z: Math.sin(a) * r,
+        x: tcx + Math.cos(a) * r,
+        z: tcz + Math.sin(a) * r,
         s: 90 + (i % 3) * 40,
         h: 46 + (i % 4) * 20,
         rot: a + Math.PI / 2,
