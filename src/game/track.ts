@@ -1,29 +1,141 @@
 import type { CheckpointGate, SurfaceInfo, SurfaceKind, TrackSample } from "./types";
 import { sampleDuneField, sampleRockMask } from "./world/terrainHeight";
 
-export type TrackId = "ash_spire" | "cinder_bowl";
+/**
+ * The two launch circuits — and deliberately ONLY those.
+ *
+ * `src/game/types.ts` declares its own structurally identical `TrackId` that
+ * `SimState.selectedTrack` is typed with, and this module does not own that
+ * file. Widening the union HERE therefore breaks the build in files this module
+ * cannot touch: sim.setTrack() assigns a track-module id into a types-module
+ * field, and Menus passes a track-module id into a types-module callback (which
+ * strictFunctionTypes checks contravariantly). So the narrow name stays narrow
+ * and the catalogue gets its own wider one.
+ *
+ * The one-line fix, when someone owns both files: replace the declaration in
+ * types.ts with `export type { AnyTrackId as TrackId } from "./track";` and
+ * every `TrackId` below collapses back into one union.
+ */
+export type CoreTrackId = "ash_spire" | "cinder_bowl";
+
+/** Legacy narrow alias. Kept for source compatibility — see CoreTrackId. */
+export type TrackId = CoreTrackId;
+
+/** Every circuit in the catalogue. What new code should be written against. */
+export type AnyTrackId =
+  | CoreTrackId
+  | "rustline"
+  | "sable_run"
+  | "foundry_pit"
+  | "dead_mile";
+
+/**
+ * What the circuit is FOR, in one word.
+ *
+ * Read by the mission catalogue: an elimination brawl wants "arena", a time
+ * attack wants "speed". Missions pick tracks by character rather than by id so
+ * that adding a circuit does not mean re-authoring the ladder.
+ */
+export type TrackCharacter =
+  | "stadium"
+  | "technical"
+  | "speed"
+  | "arena"
+  | "endurance";
 
 export interface TrackDef {
-  id: TrackId;
+  id: AnyTrackId;
   name: string;
   tagline: string;
   description: string;
+  character: TrackCharacter;
+  /**
+   * Default lap count for a free-play heat. RACE.laps is a single global three,
+   * which is a 90s race on the Foundry Pit and a six-minute one on the Dead
+   * Mile. Missions override this; nothing else reads it yet (see report).
+   */
+  laps: number;
 }
 
-export const TRACK_DEFS: TrackDef[] = [
+/** A catalogue entry whose id is one of the two legacy ids. */
+export type CoreTrackDef = TrackDef & { id: CoreTrackId };
+
+/**
+ * Every circuit. Ordered as a difficulty ramp — the ladder in
+ * missions/rivals.ts walks it roughly in this order.
+ */
+export const TRACK_CATALOG: TrackDef[] = [
   {
     id: "ash_spire",
     name: "Ash Spire Circuit",
     tagline: "Stadium loop · combat arena",
     description: "Wide desert stadium with a jump bank and scrapyard hazard.",
+    character: "stadium",
+    laps: 3,
   },
   {
     id: "cinder_bowl",
     name: "Cinder Bowl",
     tagline: "Tight kidney · hairpin scrap",
     description: "Narrower technical bowl with a choke hazard and high banked turn.",
+    character: "technical",
+    laps: 3,
+  },
+  {
+    id: "foundry_pit",
+    name: "Foundry Pit",
+    tagline: "Short lap · two bowls · chokes",
+    description:
+      "Half-kilometre brawl loop. Two open bowls joined by 20m chokes and a slag run — nowhere to hide, nowhere to disengage.",
+    character: "arena",
+    laps: 5,
+  },
+  {
+    id: "rustline",
+    name: "Rustline Gauntlet",
+    tagline: "Narrow · chicane · conveyor ramp",
+    description:
+      "The tightest road in the league. Two squeezes, a scrap chicane taken at walking pace, and a collapsed conveyor that launches whatever survives.",
+    character: "technical",
+    laps: 4,
+  },
+  {
+    id: "sable_run",
+    name: "Sable Mile",
+    tagline: "Wide sweepers · flat-out crest",
+    description:
+      "A mile and a half of fourth-gear geometry. Nothing here is tight; everything here is committed.",
+    character: "speed",
+    laps: 3,
+  },
+  {
+    id: "dead_mile",
+    name: "The Dead Mile",
+    tagline: "Long haul · climb · far turn",
+    description:
+      "Out along the pipeline, up six metres of dead grade, around the far tanks and all the way back. Fuel, hull and patience all run out on the same lap.",
+    character: "endurance",
+    laps: 2,
   },
 ];
+
+/**
+ * The subset the existing garage UI can select.
+ *
+ * Derived rather than duplicated so the two lists cannot drift. Widening
+ * types.ts (see CoreTrackId) makes this alias the whole catalogue.
+ */
+export const TRACK_DEFS: CoreTrackDef[] = TRACK_CATALOG.filter(
+  (d): d is CoreTrackDef => d.id === "ash_spire" || d.id === "cinder_bowl",
+);
+
+export function getTrackDef(id: AnyTrackId): TrackDef {
+  return TRACK_CATALOG.find((d) => d.id === id) ?? TRACK_CATALOG[0]!;
+}
+
+export function isTrackId(value: string): value is AnyTrackId {
+  return TRACK_CATALOG.some((d) => d.id === value);
+}
 
 type Ctrl = {
   x: number;
@@ -32,6 +144,55 @@ type Ctrl = {
   w?: number;
   zone?: TrackSample["zone"];
 };
+
+/*
+ * ── authoring a circuit ───────────────────────────────────────────────
+ *
+ * A zone tag is a gameplay decision, not a label. Each one is read by three
+ * unrelated systems:
+ *
+ *   "arena"   wide combat space. Beacons are placed on it (CulledBeacons), the
+ *             road reads lighter (roadSegments.zoneColor) and the audio bus
+ *             switches to the stadium reverb. Use it where you WANT the field
+ *             to bunch up and trade paint.
+ *   "hazard"  getSurfaceAt floors the offroad factor at 0.08 even on tarmac, so
+ *             grip is permanently slightly wrong. Beacons + scrapyard reverb.
+ *             This is a real speed penalty — a lap's worth of it is a lap you
+ *             lose.
+ *   "narrow"  no beacons, no colour change, tight/dry reverb. Pair it with a
+ *             small `w`: width is what actually makes a section narrow, the tag
+ *             only makes it SOUND narrow.
+ *   "jump"    applyJumpLift raises the whole contiguous run as one arc. See
+ *             JUMP_SHAPE.
+ *   "race"    default.
+ *
+ * Zones flip at the midpoint of a control span (see buildSamples), so a tag on
+ * a single control produces a section CENTRED on that control, running half a
+ * span either side of it. Two adjacent tags produce half + full + half. That is
+ * the only lever on section length, and for "jump" the section length L is the
+ * whole design:
+ *
+ *     max grade    = 8.41 / L          (must stay under check-track-profile's 0.30)
+ *     launch speed = 0.317 * L  m/s    (below this the crest is a hump you drive over)
+ *
+ * So L ≈ 55m is a violent pop off a slow corner, L ≈ 120m is the proven Ash
+ * Spire ramp at ~40 m/s, and anything past ~250m stops being a jump at all
+ * because nothing in the game goes that fast. Tag one control between short
+ * spans for the former, two controls for the latter.
+ *
+ * Geometry rules, all of them learned the hard way:
+ *  - Keep control spans within ~1.4x of their neighbours. Uniform Catmull-Rom
+ *    takes its tangent as (P2-P0)/2 with no regard for spacing, so a short span
+ *    next to a long one overshoots outward and can cusp.
+ *  - Legs that run past each other must stay ~95m+ apart. settleScenery pushes
+ *    props to width/2 + 26 + scale*8 (up to ~55m) from the NEAREST sample only,
+ *    so two legs closer than that hand each other their scenery; and
+ *    nearestTrackIndex can latch onto the wrong leg, which corrupts surface,
+ *    zone and race progress at once.
+ *  - The first ~35m past sample 0 is the grid (sim.makeVehicle staggers four
+ *    cars over samples 2..11 at +-5.4m lateral). Keep it wide and reasonably
+ *    straight.
+ */
 
 /**
  * Ash Spire Circuit — open desert stadium loop.
@@ -72,6 +233,150 @@ const CINDER_BOWL: Ctrl[] = [
   { x: -35, z: -20, w: 22, zone: "race" },
 ];
 
+/**
+ * Foundry Pit — arena brawl.
+ *
+ * The shortest lap in the league (~640m) and the only one built around fighting
+ * rather than driving. Two 36-40m bowls, which is nearly three times the width
+ * of a Rustline squeeze, joined by 20m chokes. The point is the transition: the
+ * field spreads out in the bowl, then has to funnel through a gap two cars wide
+ * with everyone's weapons up. Nobody gets to disengage — the lap is too short to
+ * ever be more than a corner away from the pack.
+ *
+ * No jump zone. A ramp would launch cars over the very chokes the layout exists
+ * to force them through.
+ */
+const FOUNDRY_PIT: Ctrl[] = [
+  { x: 0, z: 0, w: 30, zone: "race" },
+  { x: 54, z: -6, w: 28, zone: "race" },
+  { x: 106, z: 14, w: 20, zone: "narrow" },
+  { x: 146, z: 62, w: 36, zone: "arena" },
+  { x: 150, z: 128, w: 40, zone: "arena" },
+  { x: 110, z: 178, w: 34, zone: "arena" },
+  { x: 52, z: 190, w: 20, zone: "narrow" },
+  { x: -4, z: 174, w: 22, zone: "hazard" },
+  { x: -46, z: 132, w: 24, zone: "hazard" },
+  { x: -62, z: 76, w: 34, zone: "arena" },
+  { x: -48, z: 20, w: 32, zone: "arena" },
+];
+
+/**
+ * Rustline Gauntlet — tight technical.
+ *
+ * 18-24m road, corner radii around 45-70m against Ash Spire's 90-120, and a
+ * three-point scrap chicane at the top of the loop that has to be taken at
+ * something like walking pace. Top speed is almost irrelevant here; the whole
+ * lap is brake, rotate, get back on the throttle.
+ *
+ * The scrap slalom at the top is three ~60° direction changes on ~59m spans,
+ * with the apexes only 16m off the base line. That looks gentle written down —
+ * the control polygon implies a 55m radius — and it is not: at a REVERSAL the
+ * Catmull-Rom tangent (P2-P0)/2 points along the base line while the chords
+ * either side point 30° off it, so the spline has to absorb the whole direction
+ * change inside the control and the delivered radius is ~18m, a third of the
+ * polygon's. Straight-line intuition about control points does not survive a
+ * zigzag; measure it.
+ *
+ * 18m at w=22 leaves a 6m inner edge, still wider than Cinder Bowl's shipped
+ * 14m at w=24. Do not add amplitude — halving it only bought 1m of radius, so
+ * the lever here is very short and entirely in the wrong direction.
+ *
+ * The conveyor ramp is a single tagged control, but its two spans are stretched
+ * to ~69m against the loop's ~55m so that L lands near 69 rather than near 47.
+ * That reads low against Ash Spire's 40 m/s threshold, and it should: a ramp
+ * wants to launch at the speed its circuit is actually driven at. At 47m it was
+ * a 21m crest — nearly 4g at 28 m/s and considerably worse for anyone arriving
+ * quicker — which on an 20m road is not a jump, it is a disqualification. At
+ * 69m it is ~2g, which is the shipped Ash Spire feel.
+ */
+const RUSTLINE: Ctrl[] = [
+  { x: 0, z: 0, w: 24, zone: "race" },
+  { x: 58, z: 2, w: 24, zone: "race" },
+  { x: 116, z: 16, w: 22, zone: "race" },
+  { x: 166, z: 52, w: 20, zone: "narrow" },
+  { x: 182, z: 108, w: 18, zone: "narrow" },
+  { x: 166, z: 164, w: 20, zone: "narrow" },
+  { x: 121, z: 183, w: 22, zone: "hazard" },
+  { x: 69, z: 154, w: 22, zone: "hazard" },
+  { x: 21, z: 188, w: 22, zone: "hazard" },
+  { x: -46, z: 174, w: 20, zone: "jump" },
+  { x: -88, z: 118, w: 22, zone: "race" },
+  { x: -92, z: 58, w: 22, zone: "race" },
+  { x: -66, z: 6, w: 24, zone: "race" },
+];
+
+/**
+ * Sable Mile — high-speed sweeper.
+ *
+ * ~1.45km of nothing tighter than a 200m radius, on 26-34m road. Spans are
+ * 100-130m, twice Rustline's, which is what actually makes it fast: the sample
+ * curvature that the AI reads as "corner" and the physics reads as bank never
+ * gets steep enough to make lifting worthwhile.
+ *
+ * The crest sits on the back straight rather than the pit straight, so the grid
+ * is not airborne eight seconds after the flag. One tagged control between two
+ * ~119m spans gives L ≈ 119m and a ~38 m/s launch — reachable everywhere on
+ * this circuit, which is the point.
+ *
+ * The far side climbs 3.5m and comes back down. On a track with no corners to
+ * speak of, elevation is the only thing left to hide the exit of a turn behind.
+ */
+const SABLE_RUN: Ctrl[] = [
+  { x: 0, z: 0, w: 32, zone: "race" },
+  { x: 128, z: -12, w: 32, zone: "race" },
+  { x: 258, z: -6, w: 30, zone: "race" },
+  { x: 366, z: 58, w: 28, zone: "race", y: 1.4 },
+  { x: 418, z: 164, w: 28, zone: "race", y: 3.2 },
+  { x: 398, z: 278, w: 30, zone: "arena", y: 3.5 },
+  { x: 308, z: 358, w: 34, zone: "arena", y: 2.4 },
+  { x: 188, z: 382, w: 32, zone: "race", y: 1.2 },
+  { x: 72, z: 356, w: 30, zone: "jump" },
+  { x: -32, z: 296, w: 28, zone: "hazard" },
+  { x: -98, z: 198, w: 26, zone: "hazard" },
+  { x: -86, z: 88, w: 30, zone: "race" },
+];
+
+/**
+ * The Dead Mile — endurance.
+ *
+ * ~1.7km, the length of the other five put together minus one. Structurally it
+ * is still a loop, because lap counting, checkpoint sectors and race progress
+ * all assume the circuit closes — but it is authored to be DRIVEN as a
+ * point-to-point: a 500m outbound run along the pipeline, a six-metre climb, a
+ * far turn around the tanks, and a completely different road home. The outbound
+ * and return legs are ~340m apart and share no scenery, so at no point does it
+ * read as a lap of anything.
+ *
+ * The one cost, and it is a real one: HeightmapTerrain sizes its plane to the
+ * track's bounding box but keeps a fixed 256x256 grid, so this circuit's 884m
+ * span is 3.45m per quad against Ash Spire's 2.25m. The dunes are softer here.
+ * That is the trade for scale; going much bigger is not free.
+ *
+ * Elevation is real rather than decorative: y climbs to 5.8m at the far turn, so
+ * the run home is downhill and the hazard section at the bottom of it arrives
+ * faster than anyone wants. The ramp at the top of the climb sits on a brow the
+ * base profile is already making convex, which tightens the crest slightly
+ * beyond what the lift alone would give.
+ */
+const DEAD_MILE: Ctrl[] = [
+  { x: 0, z: 0, w: 28, zone: "race" },
+  { x: 114, z: -8, w: 28, zone: "race" },
+  { x: 230, z: -4, w: 26, zone: "race", y: 1.2 },
+  { x: 342, z: 26, w: 26, zone: "race", y: 2.6 },
+  { x: 438, z: 92, w: 24, zone: "jump", y: 4.2 },
+  { x: 494, z: 190, w: 24, zone: "race", y: 5.4 },
+  { x: 498, z: 300, w: 28, zone: "arena", y: 5.8 },
+  { x: 446, z: 384, w: 32, zone: "arena", y: 5.0 },
+  { x: 350, z: 420, w: 28, zone: "race", y: 4.0 },
+  { x: 236, z: 414, w: 26, zone: "race", y: 3.0 },
+  { x: 124, z: 392, w: 24, zone: "hazard", y: 2.0 },
+  { x: 16, z: 356, w: 24, zone: "hazard", y: 1.0 },
+  { x: -70, z: 288, w: 26, zone: "race", y: 0.4 },
+  { x: -118, z: 194, w: 28, zone: "race" },
+  { x: -110, z: 96, w: 28, zone: "race" },
+  { x: -64, z: 40, w: 28, zone: "race" },
+];
+
 function catmullRom(
   p0: number,
   p1: number,
@@ -95,8 +400,25 @@ function ctrlAt(ctrls: Ctrl[], i: number): Ctrl {
   return ctrls[((i % n) + n) % n]!;
 }
 
+/**
+ * Metres between adjacent samples, targeted per span.
+ *
+ * This used to be a flat 20 subdivisions per control span, which is only a
+ * constant density if every span is the same length. It is not: Sable Mile runs
+ * 130m spans and the Rustline chicane runs 40m, so a fixed count would have put
+ * 6.5m between samples on one and 2m on the other. Sample spacing is not an
+ * internal detail — it is the resolution of the road ribbon in roadSegments,
+ * the spacing of the starting grid (sim staggers cars three SAMPLES apart), and
+ * the accuracy of buildCheckpointsFrom, which places gates by index and
+ * silently assumes index is proportional to distance.
+ *
+ * 3.1m reproduces Ash Spire's existing density almost exactly, so the two
+ * launch circuits are unchanged in all but the last decimal.
+ */
+const TARGET_SAMPLE_SPACING = 3.1;
+
 /** Dense Catmull-Rom resampling with arc-length, yaw, bank. */
-function buildSamples(ctrls: Ctrl[], segsPer = 20): TrackSample[] {
+function buildSamples(ctrls: Ctrl[]): TrackSample[] {
   const n = ctrls.length;
   const raw: {
     x: number;
@@ -111,6 +433,13 @@ function buildSamples(ctrls: Ctrl[], segsPer = 20): TrackSample[] {
     const c1 = ctrlAt(ctrls, i);
     const c2 = ctrlAt(ctrls, i + 1);
     const c3 = ctrlAt(ctrls, i + 2);
+    // Chord underestimates the spline slightly on a curve; a few percent of
+    // extra density on the tight stuff is the harmless direction to be wrong in.
+    const chord = Math.hypot(c2.x - c1.x, c2.z - c1.z);
+    const segsPer = Math.max(
+      8,
+      Math.min(44, Math.round(chord / TARGET_SAMPLE_SPACING)),
+    );
     for (let s = 0; s < segsPer; s++) {
       const t = s / segsPer;
       const x = catmullRom(c0.x, c1.x, c2.x, c3.x, t);
@@ -423,16 +752,35 @@ function settleScenery(
 
 /* ── mutable active track state ───────────────────────────────────── */
 
-let activeId: TrackId = "ash_spire";
+let activeId: AnyTrackId = "ash_spire";
 let trackEpoch = 1;
 
-function ctrlsFor(id: TrackId): Ctrl[] {
-  return id === "cinder_bowl" ? CINDER_BOWL : ASH_SPIRE;
+/**
+ * Control lists only — nothing here is built until it is asked for.
+ *
+ * Six circuits is six arrays of a dozen literals. The samples, checkpoints,
+ * edge markers and scenery for a track are derived in rebuild() and only ever
+ * for the ACTIVE one, so the catalogue growing costs the running race nothing.
+ * Resist the urge to memoise the built packs: the cost of a rebuild is a few
+ * hundred spline evaluations, and holding six of everything alive would cost
+ * more in resident memory than it ever saves on a track change.
+ */
+const CTRLS: Record<AnyTrackId, Ctrl[]> = {
+  ash_spire: ASH_SPIRE,
+  cinder_bowl: CINDER_BOWL,
+  foundry_pit: FOUNDRY_PIT,
+  rustline: RUSTLINE,
+  sable_run: SABLE_RUN,
+  dead_mile: DEAD_MILE,
+};
+
+function ctrlsFor(id: AnyTrackId): Ctrl[] {
+  return CTRLS[id] ?? ASH_SPIRE;
 }
 
-function rebuild(id: TrackId) {
+function rebuild(id: AnyTrackId) {
   const ctrls = ctrlsFor(id);
-  const samples = buildSamples(ctrls, 20);
+  const samples = buildSamples(ctrls);
   const length = samples[samples.length - 1]?.s
     ? samples[samples.length - 1]!.s +
       Math.hypot(
@@ -479,7 +827,7 @@ export function getTrackEpoch() {
   return trackEpoch;
 }
 
-export function setActiveTrack(id: TrackId) {
+export function setActiveTrack(id: AnyTrackId) {
   if (id === activeId && TRACK_SAMPLES.length > 0) return;
   activeId = id;
   pack = rebuild(id);
@@ -512,11 +860,24 @@ export function getEdgeMarkers() {
   return EDGE_MARKERS;
 }
 
+/**
+ * Centreline length of the ACTIVE circuit, in metres.
+ *
+ * Missions state pace targets as metres per second and resolve them against
+ * this at arm time rather than storing lap times. A lap time is not portable
+ * data: 32s is a strong lap on Cinder Bowl and an abandoned one on the Dead
+ * Mile, so a hardcoded target silently becomes a different difficulty on every
+ * circuit it is copied to.
+ */
+export function getTrackLength(): number {
+  return TRACK_LENGTH;
+}
+
 export function getScenery(): SceneryItem[] {
   return SCENERY;
 }
 
-export function getActiveTrackId(): TrackId {
+export function getActiveTrackId(): AnyTrackId {
   return activeId;
 }
 

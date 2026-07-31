@@ -22,7 +22,19 @@ const MAX_GRADE = arg > -1 ? Number(process.argv[arg + 1]) : 0.3;
 
 let failed = false;
 
-for (const id of ["ash_spire", "cinder_bowl"]) {
+/*
+ * Ids come from the catalogue, not from a list written down here.
+ *
+ * This was a hardcoded pair, which meant that adding a circuit silently added
+ * an UNCHECKED circuit — the one situation this script exists to prevent. A
+ * `--track <id>` filter narrows it when you are iterating on one layout.
+ */
+const only = process.argv.indexOf("--track");
+const ALL_IDS = (track.TRACK_CATALOG ?? []).map((d) => d.id);
+const IDS =
+  only > -1 ? [process.argv[only + 1]] : ALL_IDS.length ? ALL_IDS : ["ash_spire"];
+
+for (const id of IDS) {
   track.setActiveTrack(id);
   /*
    * getTrackSamples(), NOT track.TRACK_SAMPLES.
