@@ -75,8 +75,11 @@ function StartGantry({
   yaw: number;
   width: number;
 }) {
-  const half = Math.min(width * 0.42, 11);
-  const bannerW = 5.5;
+  // Poles must stand OUTSIDE the tarmac. At width*0.42 against a half-width of
+  // width*0.5 they were planted ~2m inside the road edge — a solid column in
+  // the driving line that you had to swerve around.
+  const half = width * 0.5 + 1.6;
+  const bannerW = Math.min(7.5, width * 0.42);
   return (
     <group position={[x, y + 0.02, z]} rotation={[0, yaw, 0]}>
       <mesh position={[-half, 4.3, 0]} castShadow>

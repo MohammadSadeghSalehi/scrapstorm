@@ -838,8 +838,15 @@ function ShaderWarmup() {
   return null;
 }
 
-/** Half-extent of the sun's shadow frustum, in world units. */
-const SHADOW_EXTENT = 42;
+/**
+ * Half-extent of the sun's shadow frustum, in world units.
+ *
+ * Widened alongside the 4096 high-tier map: 55m of coverage at 4096 is ~37
+ * texels/m, better density AND more of the world shadowed than 42m at 2048.
+ * Beyond this radius nothing casts, which is the remaining argument for a real
+ * multi-cascade setup.
+ */
+const SHADOW_EXTENT = 55;
 
 /**
  * Key light whose shadow frustum tracks the player.

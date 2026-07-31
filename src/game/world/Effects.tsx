@@ -45,8 +45,7 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
               <meshStandardMaterial
                 color={col}
                 emissive={em}
-                emissiveIntensity={2.4}
-                toneMapped={false}
+                emissiveIntensity={1.1}
                 roughness={0.25}
                 metalness={0.4}
               />
@@ -56,9 +55,8 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
               <meshBasicMaterial
                 color={em}
                 transparent
-                opacity={0.5}
+                opacity={0.32}
                 depthWrite={false}
-                toneMapped={false}
               />
             </mesh>
           </group>
@@ -142,11 +140,14 @@ export function ParticlesView({ particles }: { particles: Particle[] }) {
   const smokeMap = useMemo(() => softSmokeTexture(128), []);
   const sparkMap = useMemo(
     () =>
+      // Warm ember, not pure white. A white core at full alpha combined with
+      // additive blending and toneMapped:false pushed every spark far past the
+      // bloom threshold, so a damaged car sat inside a big white halo.
       softCircleTexture(
         64,
-        "rgba(255,255,255,1)",
-        "rgba(255,255,255,0.45)",
-        "rgba(255,255,255,0)",
+        "rgba(255,236,196,0.95)",
+        "rgba(255,186,116,0.4)",
+        "rgba(255,140,70,0)",
       ),
     [],
   );
@@ -237,9 +238,8 @@ export function ParticlesView({ particles }: { particles: Particle[] }) {
         <meshBasicMaterial
           map={smokeMap}
           transparent
-          opacity={0.38}
+          opacity={0.34}
           depthWrite={false}
-          toneMapped={false}
           vertexColors
           blending={THREE.NormalBlending}
           side={THREE.DoubleSide}
@@ -256,9 +256,8 @@ export function ParticlesView({ particles }: { particles: Particle[] }) {
         <meshBasicMaterial
           map={sparkMap}
           transparent
-          opacity={0.62}
+          opacity={0.4}
           depthWrite={false}
-          toneMapped={false}
           vertexColors
           blending={THREE.AdditiveBlending}
           side={THREE.DoubleSide}
