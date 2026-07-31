@@ -34,11 +34,27 @@ function surfaceMods(factor: number, classPenalty: number) {
   };
 }
 
+/**
+ * Rolling resistance per surface, as an exponential decay rate (see the
+ * `v.speed *= 1 - drag * dt` below).
+ *
+ * These were 0.4 / 0.85 / 1.2 against asphalt's 0.016 — a 25x jump the instant
+ * a wheel touched the apron, and 53x on sand. At 60Hz that bleeds 33% of your
+ * speed per second on the apron and 58% on sand, which reads as driving into
+ * treacle rather than onto soft ground.
+ *
+ * The real problem was double-penalising: surfaceMods already applies
+ * OFFROAD.maxSpeedLoss (0.38) and accelLoss (0.4), so terrain ALREADY caps what
+ * you can achieve off the tarmac. The drag then punished you a second time for
+ * the same mistake. Softened so the cap does the limiting and the drag only
+ * gives soft ground its weight; the handling penalty now comes mostly from
+ * grip and steering, which is where an offroad excursion should actually hurt.
+ */
 function dragForSurface(kind: VehicleState["surface"], factor: number, coasting: boolean): number {
   if (kind === "asphalt") return HANDLING.roadDrag + factor * 0.06 + (coasting ? HANDLING.coastDrag : 0);
-  if (kind === "apron") return 0.4 + factor * 0.15 + (coasting ? 0.12 : 0);
-  if (kind === "sand") return 0.85 + factor * 0.22 + (coasting ? 0.15 : 0);
-  return 1.2 + factor * 0.2 + (coasting ? 0.18 : 0);
+  if (kind === "apron") return 0.09 + factor * 0.05 + (coasting ? 0.1 : 0);
+  if (kind === "sand") return 0.2 + factor * 0.1 + (coasting ? 0.13 : 0);
+  return 0.38 + factor * 0.14 + (coasting ? 0.16 : 0);
 }
 
 function worldVel(v: VehicleState) {
@@ -625,21 +641,34 @@ export function spawnOffroadDust(
   factor: number,
   dt: number,
 ) {
-  if (Math.random() > Math.min(0.7, factor * 0.9) * Math.min(1, dt * 55)) return;
+  // Rate and size scale with SPEED as well as softness. Previously only the
+  // surface factor mattered, so crawling across sand threw the same cloud as a
+  // full-speed slide — the dust carried no information about how hard you were
+  // driving. A rooster tail is the main visual payoff of going off-road.
+  const sp = Math.abs(v.speed);
+  const spN = Math.min(1, sp / 40);
+  const rate = Math.min(0.95, factor * (0.5 + spN * 1.1));
+  if (Math.random() > rate * Math.min(1, dt * 55)) return;
   const fx = -Math.sin(v.yaw);
   const fz = -Math.cos(v.yaw);
+  const rx = Math.cos(v.yaw);
+  const rz = -Math.sin(v.yaw);
+  // Thrown from behind whichever rear wheel, alternating, rather than one
+  // point on the centreline — two plumes read as wheels digging in.
+  const side = Math.random() < 0.5 ? -1 : 1;
   particles.push({
     id: pid(),
-    x: v.x - fx * 0.6 + (Math.random() - 0.5) * 1.2,
-    y: v.y + 0.15,
-    z: v.z - fz * 0.6 + (Math.random() - 0.5) * 1.2,
-    vx: (Math.random() - 0.5) * 2 - fx * 1.5,
-    vy: 0.4 + Math.random() * 1.2,
-    vz: (Math.random() - 0.5) * 2 - fz * 1.5,
-    life: 0.55 + Math.random() * 0.45,
-    maxLife: 1.0,
+    x: v.x - fx * 0.9 + rx * side * 0.8 + (Math.random() - 0.5) * 0.5,
+    y: v.y + 0.12,
+    z: v.z - fz * 0.9 + rz * side * 0.8 + (Math.random() - 0.5) * 0.5,
+    // Kicked backwards along travel: faster car, longer plume.
+    vx: (Math.random() - 0.5) * 2 - fx * (1.2 + spN * 6),
+    vy: 0.5 + Math.random() * 1.1 + spN * 1.4,
+    vz: (Math.random() - 0.5) * 2 - fz * (1.2 + spN * 6),
+    life: 0.6 + Math.random() * 0.5 + spN * 0.35,
+    maxLife: 1.35,
     color: "#d4b48c",
-    size: 0.7 + factor * 0.85 + Math.random() * 0.4,
+    size: 0.6 + factor * 0.7 + spN * 0.9 + Math.random() * 0.4,
     kind: "dust",
   });
 }

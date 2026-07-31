@@ -30,19 +30,41 @@ export function CulledBeacons() {
   const hazard = useMemo(() => hazardMap(), []);
   const pack = useMemo(() => {
     if (tier === "low") return null;
+    /*
+     * Hazard-zone markers, moved to the verge.
+     *
+     * These were spheres sitting at `s.y + 2.4` on the track CENTRELINE —
+     * glowing amber orbs floating at head height directly over the racing
+     * line. Reported repeatedly as "yellow balls in the middle of the road",
+     * and rightly: nothing in a desert circuit floats.
+     *
+     * They still mark the same samples, but as lamps on the verge, one per
+     * side, low enough to read as track furniture. The signal is preserved;
+     * the orb is not.
+     */
     const pts: { x: number; y: number; z: number }[] = [];
     for (let i = 0; i < TRACK_SAMPLES.length; i += 12) {
       const s = TRACK_SAMPLES[i];
-      if (s.zone === "hazard" || s.zone === "arena") {
-        pts.push({ x: s.x, y: s.y + 2.4, z: s.z });
+      if (s.zone !== "hazard" && s.zone !== "arena") continue;
+      const rx = Math.cos(s.yaw);
+      const rz = -Math.sin(s.yaw);
+      const off = s.width * 0.5 + 1.1;
+      for (const side of [-1, 1] as const) {
+        pts.push({
+          x: s.x + rx * side * off,
+          y: s.y + 0.75,
+          z: s.z + rz * side * off,
+        });
       }
     }
-    const geo = new THREE.SphereGeometry(0.35, 8, 8);
+    const geo = new THREE.SphereGeometry(0.22, 8, 6);
     const mat = new THREE.MeshStandardMaterial({
       map: hazard,
       emissive: "#f59e0b",
-      emissiveIntensity: 0.55,
-      toneMapped: false,
+      // Tone-mapped now: an untonemapped emissive bypasses ACES entirely and
+      // blows straight through the bloom threshold, which is what made these
+      // read as hot glowing balls rather than lit markers.
+      emissiveIntensity: 0.7,
       roughness: 0.4,
       metalness: 0.2,
     });
