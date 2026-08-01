@@ -30,9 +30,10 @@ import { loadWeaponGeometry } from "./weaponMeshes";
  * projectile's hitbox and its silhouette have no reason to be the same size.
  * (That decoupling is why these are not the ~1m glowing orbs they once were.)
  *
- * COST: 3 draw calls, 16 instances each. Bolt 36 tris, shell 48, disc 48 —
- * 2112 triangles if every slot in every kind were somehow full at once, and
- * realistically under 300.
+ * COST: 4 draw calls, 16 instances each. Bolt 36 tris, shell 48, authored saw
+ * 838, authored rocket 1038 — 30,720 triangles if all 64 slots were somehow
+ * full of the two authored bodies at once, and realistically under 4,000 (a
+ * four-rocket salvo plus a couple of discs in the air).
  */
 const PROJ_CAP = 16;
 
@@ -98,8 +99,10 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
    *
    * Kept as STATE rather than resolved before first render so a slow or missing
    * asset delays nothing: combat starts on the primitives and upgrades in place.
-   * Only the shell and disc have authored equivalents — the bolt is an energy
-   * weapon and its lance reads better than any physical object would.
+   * Only the DISC and the MISSILE have authored equivalents — the bolt is an
+   * energy weapon whose lance reads better than any physical object would, and
+   * the shell keeps its blunt primitive so it stays distinguishable from the
+   * rocket at a glance.
    *
    * These went from unusable to usable purely through the asset pipeline: the
    * rocket was 95,770 triangles as generated and floored at 11,652 through
@@ -188,7 +191,18 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
     dummy.quaternion.identity();
     dummy.scale.setScalar(0.0001);
     dummy.updateMatrix();
-    for (let k = 0; k < 3; k++) {
+    /*
+     * PROJ_ORDER.length, not 3.
+     *
+     * This loop is what flips `visible` on (the meshes are authored
+     * `visible={false}`) and what flags instanceMatrix for upload. When the
+     * missile kind was appended as a fourth entry the bound stayed at 3, so
+     * slot 3 was never made visible and its matrices were never uploaded: the
+     * bruiser salvo has been firing four fully-simulated, fully-damaging,
+     * completely invisible rockets. Deriving the bound from the array is the
+     * only version of this that cannot rot again.
+     */
+    for (let k = 0; k < PROJ_ORDER.length; k++) {
       const mesh = refs.current[k];
       if (!mesh) continue;
       for (let i = counts[k]!; i < PROJ_CAP; i++) mesh.setMatrixAt(i, dummy.matrix);
@@ -212,12 +226,29 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
           renderOrder={3}
         >
           <primitive object={active[i]!} attach="geometry" />
-          {/*
-            Self-lit, not shaded: a tracer that takes the sun's shading reads as
-            a thrown pebble. Tone mapped, though — leaving it unmapped put these
-            past the bloom threshold and haloed the whole road.
-          */}
-          <meshBasicMaterial vertexColors toneMapped={true} />
+          {kind === "missile" ? (
+            /*
+              The one projectile that is a physical object rather than a tracer.
+              A rocket drawn self-lit is a white blob: it has no silhouette, so a
+              salvo arriving at you is unreadable. Shaded, with a warm emissive
+              floor standing in for the motor, it reads as ordnance in the air.
+            */
+            <meshStandardMaterial
+              vertexColors
+              color="#b8b0a6"
+              roughness={0.62}
+              metalness={0.4}
+              emissive="#ff7a2a"
+              emissiveIntensity={0.55}
+            />
+          ) : (
+            /*
+              Self-lit, not shaded: a tracer that takes the sun's shading reads as
+              a thrown pebble. Tone mapped, though — leaving it unmapped put these
+              past the bloom threshold and haloed the whole road.
+            */
+            <meshBasicMaterial vertexColors toneMapped={true} />
+          )}
         </instancedMesh>
       ))}
     </group>

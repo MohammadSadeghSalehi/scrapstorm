@@ -446,7 +446,7 @@ const TAU = Math.PI * 2;
  * fire to soot to sparks to ground dust, which is what makes a barrel rupture
  * read differently from a mine going off rather than just bigger.
  */
-export type BlastKind = "barrel" | "mine" | "shell" | "wreck" | "small";
+export type BlastKind = "barrel" | "mine" | "shell" | "wreck" | "small" | "missile";
 
 interface BlastProfile {
   /** Multiplies every particle count. */
@@ -461,6 +461,14 @@ interface BlastProfile {
   sootLife: number;
   /** Radial launch speed of the fireball, m/s. */
   burst: number;
+  /**
+   * Slow, long-lived flame left burning after the fireball has gone.
+   *
+   * The fireball is 0.3-0.7s; anything that reads as "something is ON FIRE"
+   * rather than "something flashed" has to outlast it. 0 on every kind that
+   * predates this, so their timing is unchanged.
+   */
+  linger?: number;
 }
 
 const BLAST: Record<BlastKind, BlastProfile> = {
@@ -520,6 +528,33 @@ const BLAST: Record<BlastKind, BlastProfile> = {
     temper: 0.6,
     sootLife: 1.6,
     burst: 5,
+  },
+  /*
+   * High-explosive warhead against a car — the heaviest thing in the game.
+   *
+   * Deliberately NOT the mine profile it used to borrow. A mine is a shaped
+   * charge going off under a floorpan: a white flash, a lot of fast metal, over
+   * in a quarter of a second. A rocket is a filled warhead going off against
+   * bodywork, and it has to read as three separate stages the eye can follow —
+   * a hard flash, a big rolling fireball that cools from yellow through orange
+   * to deep red, and then FIRE STILL BURNING plus a soot plume that hangs long
+   * enough for the car to drive out of it. `linger` is that third stage; it is
+   * the difference between an explosion and a detonation.
+   *
+   * temper sits mid-range rather than high because HE against a painted panel
+   * is sooty. A clean white blast would read as energy, which is the
+   * interceptor's vocabulary, not this one.
+   */
+  missile: {
+    density: 1.05,
+    fire: 8,
+    soot: 11,
+    sparks: 15,
+    groundDust: 5,
+    temper: 0.5,
+    sootLife: 3.8,
+    burst: 13,
+    linger: 5,
   },
 };
 
@@ -639,6 +674,43 @@ export function vfxExplosion(
         1.6,
         0.35,
         rndSym() * 2.4,
+        0,
+        0,
+        groundY,
+      ) >= 0
+        ? 1
+        : 0;
+  }
+
+  // --- 2b. Residual burn. Slow, buoyant, an order of magnitude longer lived
+  //         than the fireball, and it starts already deep orange rather than
+  //         white — this is fuel still burning, not the detonation.
+  const lingerN = Math.round((prof.linger ?? 0) * dens);
+  for (let i = 0; i < lingerN; i++) {
+    const a = rnd() * TAU;
+    written +=
+      emit(
+        VFX_LAYER.FIRE,
+        x + Math.cos(a) * scale * rndIn(0.1, 0.5),
+        y + rndIn(-0.1, 0.4) * scale,
+        z + Math.sin(a) * scale * rndIn(0.1, 0.5),
+        Math.cos(a) * rndIn(0.3, 1.4) + dirX * 0.8,
+        rndIn(1.1, 2.8),
+        Math.sin(a) * rndIn(0.3, 1.4) + dirZ * 0.8,
+        rndIn(0.9, 1.9) + energy * 0.5,
+        scale * rndIn(0.2, 0.42),
+        scale * rndIn(0.55, 0.95),
+        1,
+        rndIn(0.6, 0.78),
+        rndIn(0.16, 0.3),
+        rndIn(0.55, 0.8),
+        rndIn(0.08, 0.16),
+        0.02,
+        rndIn(0.55, 0.8),
+        rndIn(1.1, 1.8),
+        1.5,
+        0.75,
+        rndSym() * 1.6,
         0,
         0,
         groundY,
@@ -769,11 +841,12 @@ export function vfxExplosion(
 /**
  * Muzzle flash, per weapon type.
  *
- * The three weapons are three different physical devices and should not share
- * a flash: the interceptor's twin bolts are an energy discharge (tiny, teal, no
- * smoke), the bruiser's cannon is a chemical propellant gun (big warm bloom
- * plus a forward smoke jet), and the trickster's disc launcher is an EM rail
- * (cold ring plus arcs, no combustion at all).
+ * The weapons are different physical devices and should not share a flash: the
+ * interceptor's twin bolts are an energy discharge (tiny, teal, no smoke), the
+ * bruiser's cannon is a chemical propellant gun (big warm bloom plus a forward
+ * smoke jet), the trickster's disc launcher is an EM rail (cold ring plus arcs,
+ * no combustion at all), and a rocket is the only one of the four that throws
+ * most of its signature BACKWARDS.
  */
 export function vfxMuzzleFlash(
   x: number,
@@ -781,12 +854,110 @@ export function vfxMuzzleFlash(
   z: number,
   dx: number,
   dz: number,
-  weapon: "bolt" | "cannon" | "disc",
+  weapon: "bolt" | "cannon" | "disc" | "rocket",
   charge: number,
   seed: number,
 ): void {
   rngSeed(seed);
   const ch = 0.7 + Math.max(0, Math.min(1, charge)) * 0.6;
+
+  if (weapon === "rocket") {
+    /*
+     * Back-blast, which is the whole tell that a rocket left a tube rather than
+     * a gun firing a shell. A gun's propellant goes forward with the projectile;
+     * a launcher's exhaust goes out of the BACK, hangs, and rolls outward — so
+     * everything here is emitted along -d and given almost no forward carry.
+     */
+    for (let i = 0; i < 6; i++) {
+      const sp = rndIn(3, 9);
+      emit(
+        VFX_LAYER.SMOKE,
+        x - dx * rndIn(0.1, 1.1),
+        y + rndSym() * 0.2,
+        z - dz * rndIn(0.1, 1.1),
+        -dx * sp + rndSym() * 2.2,
+        rndIn(0.4, 1.8),
+        -dz * sp + rndSym() * 2.2,
+        rndIn(0.8, 1.6),
+        rndIn(0.24, 0.45) * ch,
+        rndIn(1.3, 2.2) * ch,
+        0.5,
+        0.47,
+        0.44,
+        0.66,
+        0.63,
+        0.6,
+        rndIn(0.26, 0.42),
+        rndIn(2.4, 3.6),
+        0.5,
+        0.6,
+        rndSym() * 1.5,
+        0,
+        0,
+        y - 1,
+      );
+    }
+    // Motor ignition: a short bright plume at the tube mouth, the one part that
+    // does point forward, because that is where the nozzle is once it clears.
+    for (let i = 0; i < 2; i++) {
+      emit(
+        VFX_LAYER.FIRE,
+        x + dx * rndIn(0, 0.5),
+        y,
+        z + dz * rndIn(0, 0.5),
+        -dx * rndIn(1, 4),
+        rndIn(0.2, 1),
+        -dz * rndIn(1, 4),
+        rndIn(0.09, 0.17),
+        rndIn(0.4, 0.7) * ch,
+        rndIn(0.95, 1.5) * ch,
+        1,
+        0.9,
+        0.62,
+        1,
+        0.38,
+        0.08,
+        0.9,
+        4,
+        0.7,
+        0,
+        rndSym() * 3,
+        0,
+        0,
+        y - 1,
+      );
+    }
+    for (let i = 0; i < 5; i++) {
+      const sp = rndIn(6, 16);
+      emit(
+        VFX_LAYER.SPARK,
+        x,
+        y,
+        z,
+        -dx * sp + rndSym() * 3,
+        rndIn(-1, 2.5),
+        -dz * sp + rndSym() * 3,
+        rndIn(0.14, 0.4),
+        rndIn(0.035, 0.07),
+        0.014,
+        1,
+        rndIn(0.8, 0.94),
+        0.5,
+        0.8,
+        0.18,
+        0.03,
+        0.75,
+        rndIn(1.6, 2.8),
+        -12,
+        0,
+        0,
+        rndIn(3, 6),
+        VFX_FLAG.ALIGN,
+        y - 1,
+      );
+    }
+    return;
+  }
 
   if (weapon === "bolt") {
     for (let i = 0; i < 2; i++) {
@@ -978,7 +1149,7 @@ export function vfxMuzzleFlash(
  * only ever writes one or two particles.
  */
 export function vfxProjectileTrail(
-  kind: "bolt" | "cannon" | "disc",
+  kind: "bolt" | "cannon" | "disc" | "missile",
   x: number,
   y: number,
   z: number,
@@ -989,6 +1160,80 @@ export function vfxProjectileTrail(
 ): void {
   rngSeed(seed);
   const inv = 1 / (Math.hypot(vx, vy, vz) || 1);
+
+  if (kind === "missile") {
+    /*
+     * A motor that is still burning, which is what separates a rocket's wake
+     * from a shell's. Two parts, and the ratio is the effect:
+     *
+     *  - a short, hot, thin exhaust that sits just behind the nozzle and dies in
+     *    a tenth of a second, so it stays welded to the missile and reads as
+     *    thrust rather than as a comet tail;
+     *  - a thick pale smoke trail that takes almost none of the missile's
+     *    velocity and therefore hangs in the air. That hanging line is what lets
+     *    you see a salvo's arc, and see it curving toward you.
+     *
+     * The missile borrowed the cannon trail before this, which is propellant
+     * smoke with no fire at all — a guided rocket that looks like a lobbed shell
+     * is unreadable as a threat.
+     */
+    emit(
+      VFX_LAYER.FIRE,
+      x - vx * inv * 0.42,
+      y - vy * inv * 0.42,
+      z - vz * inv * 0.42,
+      -vx * 0.12,
+      -vy * 0.12 + 0.3,
+      -vz * 0.12,
+      rndIn(0.07, 0.13),
+      rndIn(0.14, 0.24),
+      rndIn(0.3, 0.5),
+      1,
+      rndIn(0.86, 0.98),
+      rndIn(0.5, 0.72),
+      1,
+      0.4,
+      0.1,
+      rndIn(0.7, 0.95),
+      rndIn(3, 4.5),
+      0.6,
+      0,
+      rndSym() * 4,
+      0,
+      0,
+      y - 20,
+    );
+    emit(
+      VFX_LAYER.SMOKE,
+      x - vx * inv * 0.85,
+      y - vy * inv * 0.85,
+      z - vz * inv * 0.85,
+      rndSym() * 0.7,
+      rndIn(0.2, 0.9),
+      rndSym() * 0.7,
+      rndIn(1.1, 2.1),
+      rndIn(0.12, 0.22),
+      rndIn(0.9, 1.7),
+      // Pale, not grey: a solid rocket motor's exhaust is close to white and
+      // stays bright as it expands, which is what makes the line readable
+      // against the desert rather than dissolving into it.
+      0.78,
+      0.76,
+      0.73,
+      0.62,
+      0.6,
+      0.58,
+      rndIn(0.2, 0.34),
+      rndIn(0.9, 1.5),
+      0.5,
+      0.55,
+      rndSym() * 1,
+      0,
+      0,
+      y - 20,
+    );
+    return;
+  }
 
   if (kind === "bolt") {
     emit(

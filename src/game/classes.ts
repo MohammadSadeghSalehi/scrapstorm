@@ -4,6 +4,11 @@ import type { VehicleClassDef, VehicleClassId } from "./types";
  * Three mechanically distinct classes for televised Ash Spire heats.
  * Tuned for a real 0→100 pull (~10–11s pure throttle) and long top-end crawl.
  * HUD speed = gameSpeed * 4 → 100 mph ≈ 25 u/s.
+ *
+ * Every class's primary has a LOADED form: let the weapon charge meter fill and
+ * the next shot with a lock on it comes out as ordnance instead (combat.ts,
+ * LOADED_AT). That is the one mechanic the labels below have to teach, because
+ * it is the only weapon in the game the player has to choose to wait for.
  */
 export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
   interceptor: {
@@ -26,10 +31,10 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     ultimateCost: 1,
     offroadPenalty: 1.15,
     description:
-      "Wasteland custom — long-nose thruster skiff. Soft-locks prey and shreds with pulse bolts.",
-    primaryLabel: "Pulse Bolts",
+      "Wasteland custom — long-nose thruster skiff. Soft-locks prey and shreds with pulse bolts. Charged, the deck rails put two guided micro-missiles into whatever it is holding.",
+    primaryLabel: "Pulse Bolts · charged: Micro-Missiles",
     defenseLabel: "Phase Slip",
-    ultimateLabel: "Overdrive Lock",
+    ultimateLabel: "Overdrive Lock + Salvo",
   },
   bruiser: {
     id: "bruiser",
@@ -51,10 +56,10 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     ultimateCost: 1,
     offroadPenalty: 0.4,
     description:
-      "Desert combat hauler. Scrap cannon and unstoppable charge. Owns the dunes.",
-    primaryLabel: "Scrap Cannon",
+      "Desert combat hauler. Scrap cannon, roof rack, unstoppable charge. Owns the dunes. Charged, the cannon loads a guided rocket.",
+    primaryLabel: "Scrap Cannon · charged: Rocket",
     defenseLabel: "Frontal Plate",
-    ultimateLabel: "Iron Charge",
+    ultimateLabel: "Rocket Salvo",
   },
   trickster: {
     id: "trickster",
@@ -76,8 +81,8 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     ultimateCost: 1,
     offroadPenalty: 0.88,
     description:
-      "Widebody hatch built for slide. Best mini-turbos, ricochet discs, decoys, mines.",
-    primaryLabel: "Ricochet Discs",
+      "Widebody hatch built for slide. Best mini-turbos, ricochet discs, decoys, and a tail rack of mines. Charged, the launcher throws a three-disc fan.",
+    primaryLabel: "Ricochet Discs · charged: Fan",
     defenseLabel: "Holo Decoy",
     ultimateLabel: "False Road Mines",
   },

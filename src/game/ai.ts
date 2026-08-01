@@ -3,7 +3,7 @@ import { VEHICLE_CLASSES } from "./classes";
 import { getSurfaceAt, getTrackSamples, nearestTrackIndex } from "./track";
 import type { PlayerInput, VehicleState } from "./types";
 import { createEmptyInput } from "./input";
-import { findLockTarget } from "./combat";
+import { findLockTarget, LOADED_AT } from "./combat";
 
 function wrapAngle(a: number) {
   while (a > Math.PI) a -= Math.PI * 2;
@@ -562,7 +562,16 @@ export function aiInput(
         const fireRate =
           ((v.classId === "interceptor" ? 0.45 : v.classId === "bruiser" ? 0.3 : 0.34) +
             heat * 0.2) *
-          (0.55 + prof.aggression * 0.9);
+          (0.55 + prof.aggression * 0.9) *
+          /*
+           * A full charge meter is a loaded warhead (combat.tryPrimary), and a
+           * bot that trickles ordinary shots out at 30% per step while sitting
+           * on one is a bot the player never sees fire a rocket. Doubling the
+           * cadence while loaded costs nothing — the primary cooldown still
+           * caps the actual rate — and turns "the AI could fire ordnance" into
+           * "the AI does, in every engagement, at you."
+           */
+          (v.weaponCharge >= LOADED_AT ? 2 : 1);
         input.firePrimary = Math.random() < fireRate;
       }
       // Bruiser ram charge. Ramming is not a weapon and survives weaponsFree:
@@ -617,15 +626,42 @@ export function aiInput(
     mark.alive &&
     markDist < def.primaryRange * 1.8 &&
     mark.health > mark.maxHealth * 0.55;
+  const lockedCar = lock ? all.find((x) => x.id === lock) : undefined;
+  const lockDist = lockedCar
+    ? Math.hypot(lockedCar.x - v.x, lockedCar.z - v.z)
+    : Infinity;
   if (
     v.ultimateCharge >= 1 &&
     directive.weaponsFree &&
     !ultHeld &&
-    (v.position > 1 || v.health < v.maxHealth * 0.55 || lastLap || directive.heat > 0.5)
+    /*
+     * The leader clause. Without the last term a bot that is winning and
+     * undamaged before the final lap NEVER spends its ultimate, which is most
+     * of a race for whoever is quick — so the two ultimates that are actually
+     * weapons stayed in the magazine. Having a target in weapons range is a
+     * perfectly good reason to fire one regardless of the standings.
+     */
+    (v.position > 1 ||
+      v.health < v.maxHealth * 0.55 ||
+      lastLap ||
+      directive.heat > 0.5 ||
+      lockDist < def.primaryRange)
   ) {
-    if (v.classId === "bruiser" && lock) {
-      const t = all.find((x) => x.id === lock);
-      if (t && Math.hypot(t.x - v.x, t.z - v.z) < 12) input.useUltimate = true;
+    if ((v.classId === "bruiser" || v.classId === "interceptor") && lockedCar) {
+      /*
+       * Both of these are now SALVOS — four rockets for the bruiser, a guided
+       * pair for the interceptor — so the release condition is the salvo's own
+       * envelope, not the ram range.
+       *
+       * The old bound was 12 metres, which is a bruiser deciding to launch
+       * homing rockets only once it is already close enough to simply drive
+       * into the target. It is the single reason a player could finish a
+       * session having never seen the salvo: the one AI that could fire it
+       * would not do so until it was on top of somebody, at which point the
+       * ram lands first.
+       */
+      const reach = def.primaryRange * (v.classId === "bruiser" ? 1.4 : 1.1);
+      if (lockDist < reach && lockDist > 4) input.useUltimate = true;
     } else if (v.classId === "trickster" && Math.abs(dyaw) < 0.35) {
       input.useUltimate = Math.sin(time * 1.7 + v.id.length) > ultThreshold - 0.05;
     } else if (Math.sin(time * 2.1 + v.id.length) > ultThreshold) {
