@@ -77,13 +77,12 @@ function variantFor(classId: VehicleClassId, vehicleId?: string): string {
  * and holds the same bounding box, so the geometric facing rules resolve
  * identically.
  *
- * The generated cars have NO usable LOD. They are surface reconstructions made
- * of thousands of disconnected shells, and meshoptimizer preserves component
- * count — measured, they floor at ~30k triangles no matter what ratio or error
- * is requested, so lod1 and lod2 came out within 20 triangles of each other.
- * They ship as a single ~34k level, which is already a third of an original
- * hero mesh, and they are mapped to themselves here so the AI path does not
- * 404 looking for a level that cannot exist.
+ * The generated cars now have real ones too. They did not at first: as surface
+ * reconstructions made of thousands of disconnected shells they floored at ~30k
+ * triangles no matter what ratio was requested, and lod1 and lod2 came out
+ * within 20 triangles of each other. Spatially welding before simplification
+ * (scripts/spatial-weld.mjs) fused the shells and the levels separated
+ * properly — lod1 ~9k, lod2 ~2.6k.
  */
 const AI_URL: Record<string, string> = {
   "/assets/meshes/custom/SM_MeshGen_WastelandCustomCar.glb":
@@ -92,6 +91,12 @@ const AI_URL: Record<string, string> = {
     "/assets/meshes/custom/lod/SM_MeshGen_CustomWidebodyHatchback.lod1.glb",
   "/assets/meshes/custom/SM_MeshGen_DesertCombatVehicle.glb":
     "/assets/meshes/custom/lod/SM_MeshGen_DesertCombatVehicle.lod1.glb",
+  "/assets/meshes/custom/SM_MeshGen_WastelandBattleCar.glb":
+    "/assets/meshes/custom/lod/SM_MeshGen_WastelandBattleCar.lod1.glb",
+  "/assets/meshes/custom/SM_MeshGen_ArmoredBattleCar.glb":
+    "/assets/meshes/custom/lod/SM_MeshGen_ArmoredBattleCar.lod1.glb",
+  "/assets/meshes/custom/SM_MeshGen_ArmoredTankTruck.glb":
+    "/assets/meshes/custom/lod/SM_MeshGen_ArmoredTankTruck.lod1.glb",
 };
 
 /** Pilot mesh for garage showcase */

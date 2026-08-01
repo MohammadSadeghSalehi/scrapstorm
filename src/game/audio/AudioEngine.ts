@@ -316,7 +316,18 @@ class AudioEngine {
   private musicPulseGain: GainNode | null = null;
 
   private muted = false;
-  private volumes = { master: 0.88, music: 0.3, sfx: 0.78, ui: 0.58, vo: 0.95 };
+  /*
+   * Gains are applied SQUARED (see the assignments below) to give the volume
+   * sliders a roughly perceptual taper. That makes the raw numbers here
+   * misleading to read: music at 0.3 is not 30% of sfx at 0.78, it is
+   * 0.09 against 0.61 — about 17dB down, which is why the soundtrack was
+   * inaudible under an engine and a gravel bed rather than merely quiet.
+   *
+   * 0.6 squares to 0.36, which sits just under the sfx bed instead of beneath
+   * it. Anything that needs music out of the way during play — impacts, VO —
+   * already has a duck stage of its own and does not need the bed pre-buried.
+   */
+  private volumes = { master: 0.88, music: 0.6, sfx: 0.78, ui: 0.58, vo: 0.95 };
 
   private lastEventAt = 0;
   private lastEventMsg = "";

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Mine, Particle, Projectile, VehicleState } from "../types";
@@ -6,6 +6,7 @@ import { qualityManager } from "./quality";
 import { FRAME } from "./framePriority";
 import { softCircleTexture, softSmokeTexture } from "./softSprite";
 import { hash01, hashString } from "./vfx/rng";
+import { loadWeaponGeometry } from "./weaponMeshes";
 
 /**
  * Per-weapon projectile bodies, instanced.
@@ -60,6 +61,11 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
   const color = useMemo(() => new THREE.Color(), []);
   const t = useRef(0);
 
+  /*
+   * Placeholder bodies. These are what draws until the authored meshes resolve,
+   * and what keeps drawing if they never do — a projectile that fails to render
+   * is a weapon the player cannot see coming, so the fallback is not optional.
+   */
   const geos = useMemo(
     () => [
       // Bolt: a thin lance, tapered to a point, long axis on +Z.
@@ -79,7 +85,50 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
     [],
   );
 
+  /*
+   * Authored bodies, swapped in when they load.
+   *
+   * Kept as STATE rather than resolved before first render so a slow or missing
+   * asset delays nothing: combat starts on the primitives and upgrades in place.
+   * Only the shell and disc have authored equivalents — the bolt is an energy
+   * weapon and its lance reads better than any physical object would.
+   *
+   * These went from unusable to usable purely through the asset pipeline: the
+   * rocket was 95,770 triangles as generated and floored at 11,652 through
+   * simplification alone, which is far too heavy for something that spawns in
+   * volleys. Spatial welding first brought it to 1,038 and the saw blade to 838,
+   * which is the same order as the cylinders they replace.
+   */
+  const [authored, setAuthored] = useState<(THREE.BufferGeometry | null)[]>([
+    null,
+    null,
+    null,
+  ]);
+
   useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const [shell, disc] = await Promise.all([
+        loadWeaponGeometry("rocket"),
+        loadWeaponGeometry("saw"),
+      ]);
+      if (!alive) return;
+      if (shell || disc) setAuthored([null, shell, disc]);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const active = useMemo(
+    () => geos.map((g, i) => authored[i] ?? g),
+    [geos, authored],
+  );
+
+  useEffect(() => {
+    // Only the primitives are ours to dispose. The authored geometry is shared
+    // and cached in weaponMeshes, and disposing it here would break the next
+    // race that mounts this view.
     const owned = geos;
     return () => {
       for (const g of owned) g.dispose();
@@ -148,7 +197,7 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
           visible={false}
           renderOrder={3}
         >
-          <primitive object={geos[i]!} attach="geometry" />
+          <primitive object={active[i]!} attach="geometry" />
           {/*
             Self-lit, not shaded: a tracer that takes the sun's shading reads as
             a thrown pebble. Tone mapped, though — leaving it unmapped put these

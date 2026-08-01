@@ -5,7 +5,6 @@ import { PAINTS, type MetaState } from "@/game/meta";
 import {
   currentRank,
   nextRival,
-  trackUnlocked,
   TRACK_UNLOCKS,
   type CareerState,
 } from "@/game/missions";
@@ -236,15 +235,25 @@ function GaragePanel({
           </div>
 
           {/*
-            A quick heat can only be run on a circuit the career has opened.
-            Free play used to reach every road in the catalogue, which quietly
-            handed away the ladder's only pacing device — there is nothing left
-            to unlock if you have already driven all of it.
+            FREE PLAY REACHES EVERY CIRCUIT; the career still gates the ladder.
+            
+            Gating the quick heat too was a defensible call — unlocking roads is
+            the ladder's only pacing device — but it had a consequence nobody
+            weighed: four of the six circuits, and therefore four of the six
+            ENVIRONMENTS, were unreachable without grinding the board. A furnace
+            pit at night and a dust-storm gauntlet that a player cannot get to
+            are not content.
+            
+            The split is the genre standard for a reason: quick race opens the
+            roads, career owns the missions, rivals, payouts and story. What the
+            board gates is still everything that carries progression — it just
+            no longer gates looking at the game.
           */}
           <div className="mt-2.5 grid grid-cols-2 gap-1.5">
             {TRACK_DEFS.map((tr) => {
               const on = trackId === tr.id;
-              const open = trackUnlocked(career, tr.id);
+              // Career screens still consult trackUnlocked(career, tr.id).
+              const open = true;
               return (
                 <button
                   key={tr.id}

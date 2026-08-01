@@ -196,13 +196,23 @@ for (const [cat, cfg] of Object.entries(CATEGORIES)) {
       const b = join(TMP, `b-${outName}`);
       try {
         /*
-         * weld first — though MEASURED, it does almost nothing on these: on the
-         * rocket it merged 12 vertices out of 75,118, because image-to-3D output
-         * arrives already indexed. Kept because it is nearly free and it is a
-         * real prerequisite for hand-authored or OBJ-derived sources, but do not
-         * expect it to unlock simplification here. It does not.
+         * SPATIAL weld, not gltf-transform's.
+         *
+         * Its `weld` merges only bitwise-identical vertices, and these arrive
+         * already indexed — measured, it merged 12 vertices out of 75,118. The
+         * shells were still disconnected, so meshoptimizer had no shared edges
+         * to collapse and floored at 11,652 triangles no matter what was asked.
+         *
+         * Snapping to a grid at 0.4% of the bounding diagonal fuses them:
+         * 75,118 -> 33,769 vertices, and the same simplify call then reaches
+         * 1,038 triangles instead of 11,652. An 11x difference, entirely from
+         * making the topology connected first.
          */
-        gltf(["weld", src, a]);
+        execFileSync(
+          "node",
+          [join("scripts", "spatial-weld.mjs"), src, a, "--tol", "0.004"],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        );
         gltf([
           "simplify", a, b,
           "--ratio", String(lod.ratio),
