@@ -94,6 +94,7 @@ export function ScatterLayer({
   const frame = useRef(0);
   const lastActive = useRef(-1);
   const lastRange = useRef(-1);
+  const lastDamage = useRef(-1);
   const lastCam = useRef(new THREE.Vector3(1e9, 1e9, 1e9));
   const lastDir = useRef(new THREE.Vector3(0, 0, 0));
   const dir = useRef(new THREE.Vector3());
@@ -109,15 +110,22 @@ export function ScatterLayer({
     const range2 = rangeScale * rangeScale;
 
     camera.getWorldDirection(dir.current);
+    // A casualty has to defeat the settled check on its own. A rail smashed
+    // while the car is stationary against it moves the camera by less than the
+    // 0.6m² threshold, so without this the module you just destroyed stays on
+    // screen until you drive away from it.
+    const damageV = data.damage ? data.damage.version() : 0;
     const settled =
       n === lastActive.current &&
       rangeScale === lastRange.current &&
+      damageV === lastDamage.current &&
       camera.position.distanceToSquared(lastCam.current) < 0.6 &&
       dir.current.dot(lastDir.current) > 0.9995;
     if (settled) return;
 
     lastActive.current = n;
     lastRange.current = rangeScale;
+    lastDamage.current = damageV;
     lastCam.current.copy(camera.position);
     lastDir.current.copy(dir.current);
 
@@ -135,9 +143,14 @@ export function ScatterLayer({
     const srcC = data.colors;
     const dstC = (mesh.instanceColor?.array as Float32Array | undefined) ?? null;
     const sphere = { x: 0, y: 0, z: 0, r: 0 };
+    // Only consulted when the layer has a damage view at all, and the registry
+    // itself short-circuits on an empty set, so an undamaged circuit pays one
+    // null check per instance per repack.
+    const damage = data.damage;
 
     let k = 0;
     for (let i = 0; i < n; i++) {
+      if (damage && damage.isDown(i)) continue;
       const dx = data.cx[i]! - camX;
       const dy = data.cy[i]! - camY;
       const dz = data.cz[i]! - camZ;

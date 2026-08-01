@@ -24,6 +24,22 @@ export type ScatterItem = {
   color?: THREE.Color;
 };
 
+/**
+ * Per-instance visibility gate for layers whose instances can be destroyed.
+ *
+ * Structural rather than an import of the damage registry, so layerData stays a
+ * plain data module: a field of rocks has no notion of being smashed and must
+ * not acquire one just because the guard rail does.
+ *
+ * `version` exists because the cull skips its repack whenever nothing about the
+ * camera has changed. Without something to watch, a rail module destroyed while
+ * the player sat still would carry on being drawn.
+ */
+export type InstanceDamage = {
+  isDown(i: number): boolean;
+  version(): number;
+};
+
 export type ScatterLayerData = {
   geometry: THREE.BufferGeometry;
   material: THREE.Material;
@@ -37,6 +53,7 @@ export type ScatterLayerData = {
   total: number;
   castShadow: boolean;
   receiveShadow: boolean;
+  damage: InstanceDamage | null;
 };
 
 const WHITE = new THREE.Color(1, 1, 1);
@@ -55,6 +72,7 @@ export function packLayer(opts: {
   items: ScatterItem[];
   castShadow?: boolean;
   receiveShadow?: boolean;
+  damage?: InstanceDamage;
 }): ScatterLayerData {
   const n = opts.items.length;
   const matrices = new Float32Array(n * 16);
@@ -95,5 +113,6 @@ export function packLayer(opts: {
     total: n,
     castShadow: opts.castShadow ?? false,
     receiveShadow: opts.receiveShadow ?? false,
+    damage: opts.damage ?? null,
   };
 }

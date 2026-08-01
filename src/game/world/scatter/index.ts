@@ -21,7 +21,22 @@ export {
 export { buildScatterFields, footprintOf, type ScatterFields } from "./fields";
 export { buildDriftRibbon } from "./driftRibbon";
 export {
+  BOARD_CAPSULE_R,
+  BOARD_HALF_X,
+  RAIL_CAPSULE_R,
+  roadsideLayout,
+  type BoardSite,
+  type RailModule,
+  type RoadsideLayout,
+} from "./roadsideLayout";
+export {
+  isBoardDown,
+  isRailDown,
+  roadsideDamageVersion,
+} from "./roadsideDamage";
+export {
   packLayer,
+  type InstanceDamage,
   type ScatterItem,
   type ScatterLayerData,
   type TierScale,

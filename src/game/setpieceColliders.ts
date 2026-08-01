@@ -1,5 +1,6 @@
 /**
- * Physics colliders for the built structure in `world/setpieces`.
+ * Physics colliders for the built structure in `world/setpieces`, and for the
+ * roadside furniture in `world/scatter`.
  *
  * The set-piece system draws a 6.2m slag wall down both verges of the Foundry
  * Pit, container stacks and wreck piles on Rustline, a pipeline on trestles on
@@ -35,13 +36,39 @@
  * XZ extent of each shape AT CAR HEIGHT, which is not the bounding box the
  * renderer culls with. See FOOTPRINT below.
  *
+ * ── the guard rail is here for a different reason ────────────────────
+ *
+ * Set pieces are immovable and their collider list is a mirror of the render
+ * list. The guard rail and the sponsor hoardings are neither: they break, and
+ * a broken one has to stop being drawn. That makes INDEX AGREEMENT between the
+ * two lists load-bearing rather than merely tidy, so unlike the set pieces they
+ * are not mirrored — both sides read one shared list, `roadsideLayout()`.
+ *
+ * They land in this registry rather than `sim.state.props` for the same reason
+ * the walls do (a prop is drawn as a barrel, and there are ~200 of these), and
+ * because a rail run is a polyline: a circle collider on a 4m beam span either
+ * leaves gaps you drive through or bulges into the road.
+ *
  * Deliberately imports `./world/setpieces/placement` and `presets` DIRECTLY
  * rather than the package index, because the index re-exports build.ts and
- * build.ts imports three. The sim must stay renderer-free — that is what lets
- * mission-smoke drive it headlessly.
+ * build.ts imports three. Same for `world/scatter/roadsideLayout`, whose package
+ * index pulls in the React components. The sim must stay renderer-free — that
+ * is what lets mission-smoke drive it headlessly.
  */
 import { getActiveTrackId, getTrackEpoch } from "./track";
+import { spawnDebrisBurst } from "./world/debris";
 import { linkedRuns, meanSpacing } from "./world/scatter/placement";
+import {
+  downBoard,
+  downRailModule,
+  resetRoadsideDamage,
+} from "./world/scatter/roadsideDamage";
+import {
+  BOARD_CAPSULE_R,
+  BOARD_HALF_X,
+  RAIL_CAPSULE_R,
+  roadsideLayout,
+} from "./world/scatter/roadsideLayout";
 import { corridorAnchors, fieldAnchors, type Anchor } from "./world/setpieces/placement";
 import { DEFAULT_SETPIECES, SETPIECES } from "./world/setpieces/presets";
 import type { SetpieceFamily, SetpieceShape } from "./world/setpieces/types";
@@ -49,9 +76,11 @@ import type { SetpieceFamily, SetpieceShape } from "./world/setpieces/types";
 /**
  * A capsule in XZ: the segment (x0,z0)-(x1,z1) inflated by `r`.
  *
- * Immovable by construction — there is no mass, no velocity and no hp. A slag
- * wall is not something you knock over, and giving it those fields would invite
- * somebody to try.
+ * Immovable while it stands — there is no mass and no velocity. A slag wall is
+ * not something you knock over, and giving it those fields would invite
+ * somebody to try. The only state a capsule has is whether it is still there,
+ * and that is reserved for the two roadside families: `breakAt` is 0 on every
+ * set piece, which is what stops a 9 m/s nudge deleting a crane.
  */
 export interface StaticCollider {
   x0: number;
@@ -63,6 +92,35 @@ export interface StaticCollider {
   family: string;
   /** Query stamp, so a capsule spanning four cells is returned once. */
   stamp: number;
+  /**
+   * Closing speed along the contact normal, in m/s, above which this module
+   * fails. 0 means it never does.
+   */
+  breakAt: number;
+  /** Index into the matching `roadsideLayout()` list. -1 for set pieces. */
+  module: number;
+  /**
+   * Linked-run id for rail, so a failure cannot cascade into a different
+   * stretch of rail that happens to pass close by where the circuit doubles
+   * back. -1 for anything that fails alone.
+   */
+  run: number;
+  /**
+   * Whether the module still resists for the single frame it fails on.
+   *
+   * Armco does. It is a structure, and the frame of resistance IS the price of
+   * demolishing it — measured at 32% of your speed on a 30-degree excursion and
+   * 92% on a square hit, all of it out of the shared deflection routine.
+   *
+   * A sponsor hoarding does not. It is plywood on scaffold, and charging a car
+   * 92% of its speed for one would be the same complaint this pass exists to
+   * answer, only inverted: a thing that is obviously not solid behaving like a
+   * wall. It goes straight through, and the burst is the feedback.
+   */
+  resistOnBreak: boolean;
+  /** Ground height, for the debris burst. Unused unless `breakAt` > 0. */
+  y: number;
+  destroyed: boolean;
 }
 
 /**
@@ -187,7 +245,21 @@ function push(
   r: number,
   family: string,
 ) {
-  out.push({ x0, z0, x1, z1, r, family, stamp: 0 });
+  out.push({
+    x0,
+    z0,
+    x1,
+    z1,
+    r,
+    family,
+    stamp: 0,
+    breakAt: 0,
+    module: -1,
+    run: -1,
+    resistOnBreak: true,
+    y: 0,
+    destroyed: false,
+  });
 }
 
 function familyColliders(family: SetpieceFamily, out: StaticCollider[]): void {
@@ -251,6 +323,238 @@ function familyColliders(family: SetpieceFamily, out: StaticCollider[]): void {
   }
 }
 
+/* ── roadside furniture ───────────────────────────────────────────────
+ *
+ * WHAT BREAKS, AND WHY THESE NUMBERS.
+ *
+ * The verge marker posts already break, at 2.5 m/s, and their tuning is the
+ * argument for these: worldProps' own note records that 9 m/s "meant a 4-inch
+ * stick held firm up to 32 km/h and deflected the car — it read as a bollard."
+ * That was the wrong reading for a stick. It is exactly the right one for a
+ * guard rail, which is a structure whose entire job is to hold a car that is
+ * leaving the road and point it back down the circuit. So the rail takes the
+ * number the post rejected.
+ *
+ * The threshold is on the NORMAL component, not on speed, which is what makes
+ * it behave like Armco rather than like a wall: arriving at 25 m/s with 15
+ * degrees of incidence is 6.5 m/s into the rail and it holds and redirects you;
+ * the same 25 m/s at 30 degrees is 12.5 m/s and the section goes.
+ *
+ * A hoarding takes the verge post's number instead, and for the verge post's
+ * reason: 2.5 m/s is walking pace, so in practice it always goes. The band
+ * below it exists only so a car creeping into a board cannot slide through an
+ * intact one unnoticed.
+ */
+const RAIL_BREAK_SPEED = 9;
+const BOARD_BREAK_SPEED = 2.5;
+
+/**
+ * Metres of rail either side of the impact that fail with it.
+ *
+ * NOT cosmetic. A car is tested against these capsules as a circle of its
+ * largest projected half-extent — 1.4m for a Trickster, 2.1m for a Bruiser at
+ * 45 degrees — so a hole narrower than about 4.4m is one the car cannot fit
+ * through, and it would be stopped dead by the stubs either side of the gap it
+ * had just made. A rail that breaks into an opening you cannot use is worse
+ * than one that never breaks, because it costs the speed AND keeps the wall.
+ *
+ * Measured from the CONTACT POINT rather than from the module, so where along
+ * its span you hit decides how much goes: 4m picks up one or two neighbours at
+ * every circuit's anchor spacing (3.5-4.3m), which is 7-13m of rail down and
+ * comfortably clear of the 4.4m the car needs.
+ */
+const RAIL_BREAK_SPAN = 4;
+
+/**
+ * Rail capsules in `roadsideLayout().rail` order.
+ *
+ * Kept as its own array purely so the failure cascade can walk neighbours by
+ * index instead of searching the grid for them. Entries alias the objects in
+ * `colliders`; nothing here owns them.
+ */
+let railColliders: StaticCollider[] = [];
+
+function roadsideColliders(out: StaticCollider[]): void {
+  const layout = roadsideLayout();
+  railColliders = [];
+
+  for (let i = 0; i < layout.rail.length; i++) {
+    const m = layout.rail[i]!;
+    const c: StaticCollider = {
+      x0: m.ax,
+      z0: m.az,
+      x1: m.bx,
+      z1: m.bz,
+      r: RAIL_CAPSULE_R,
+      family: "guardRail",
+      stamp: 0,
+      breakAt: RAIL_BREAK_SPEED,
+      module: i,
+      run: m.run,
+      resistOnBreak: true,
+      // The post foot, so debris bounces on the verge rather than on the road
+      // height the anchor was measured from.
+      y: m.ay,
+      destroyed: false,
+    };
+    railColliders.push(c);
+    out.push(c);
+  }
+
+  for (let i = 0; i < layout.boards.length; i++) {
+    const b = layout.boards[i]!;
+    out.push({
+      x0: b.x - b.ax * BOARD_HALF_X,
+      z0: b.z - b.az * BOARD_HALF_X,
+      x1: b.x + b.ax * BOARD_HALF_X,
+      z1: b.z + b.az * BOARD_HALF_X,
+      r: BOARD_CAPSULE_R,
+      family: "hoarding",
+      stamp: 0,
+      breakAt: BOARD_BREAK_SPEED,
+      module: i,
+      // Hoardings stand 22m apart; there is no run to cascade along.
+      run: -1,
+      resistOnBreak: false,
+      y: b.y,
+      destroyed: false,
+    });
+  }
+}
+
+/**
+ * Take a module out of the world.
+ *
+ * Two records, and both are needed: `destroyed` is what the solver reads, and
+ * the damage registry is what the InstancedMesh reads. Neither can be derived
+ * from the other — the collider list is rebuilt per circuit and the renderer's
+ * is rebuilt per epoch, and they are not the same lifetime.
+ */
+function fell(c: StaticCollider): void {
+  if (c.destroyed) return;
+  c.destroyed = true;
+  if (c.family === "guardRail") downRailModule(c.module);
+  else downBoard(c.module);
+}
+
+/**
+ * Fail a module and, for rail, the section around it.
+ *
+ * Returns the radius of the hole, for sizing the debris burst.
+ */
+function breakRoadside(c: StaticCollider, hitX: number, hitZ: number): number {
+  fell(c);
+  if (c.family !== "guardRail" || c.module < 0) return 2.2;
+
+  let reach = c.r;
+  // Walk outward along the run in both directions. Stops at the first module
+  // out of span rather than scanning the whole run: railColliders is in layout
+  // order, so the walk is monotonically further away.
+  for (const dir of [-1, 1]) {
+    for (let k = c.module + dir; k >= 0 && k < railColliders.length; k += dir) {
+      const n = railColliders[k]!;
+      if (n.run !== c.run) break;
+      const mx = (n.x0 + n.x1) * 0.5;
+      const mz = (n.z0 + n.z1) * 0.5;
+      const d = Math.hypot(mx - hitX, mz - hitZ);
+      if (d > RAIL_BREAK_SPAN) break;
+      fell(n);
+      if (d > reach) reach = d;
+    }
+  }
+  return reach + 1.5;
+}
+
+/* ── closing speed, and why it is measured rather than passed in ──────
+ *
+ * A module cannot decide whether it failed without knowing how fast the thing
+ * that hit it was going, and this file is never handed that. The contract with
+ * worldProps is `capsuleContact(collider, x, z, radius)` — a point, no vehicle,
+ * no velocity. The natural fix is a hook over there, which is how the debris
+ * pool gets the car's travel (`disturbDebris(x, z, vx, vz, r)`), and that is
+ * still the right long-term shape. It is not taken here because worldProps is
+ * being edited elsewhere and a second author in that file is how the barrier
+ * impulse got reintroduced last time.
+ *
+ * What is available turns out to be the real number rather than a model of it.
+ * `querySetpieceColliders` is called exactly once per vehicle per fixed step
+ * with that vehicle's position, and position is what the integrator produces —
+ * so the displacement of a query point between two steps IS its velocity over
+ * that step, including every collision the solver already resolved.
+ *
+ * Identity across steps is by nearest previous probe, which is sound rather
+ * than lucky: vehicle-vehicle collision never lets two car centres closer than
+ * ~2.7m (physics.ts, `ra + rb` at 0.88), while a car at 45 m/s covers 0.75m in
+ * a step. A probe is therefore always far nearer its own last position than any
+ * other car's. Anything beyond MATCH_R is a new probe with no velocity — which
+ * is also what a respawn teleport looks like, and a teleport must never be able
+ * to demolish a rail.
+ *
+ * Both failure modes point the safe way. A mis-association implies a jump of at
+ * least the car-to-car separation, which is larger than MAX_STEP, so it yields
+ * ZERO velocity rather than an invented one: the worst it can do is fail to
+ * break a rail for one frame. Nothing here can break a rail that was not hit.
+ */
+type Probe = { x: number; z: number; vx: number; vz: number; seen: number };
+
+/** Four racers plus headroom for showcase/replay cameras that also query. */
+const PROBE_MAX = 8;
+const MATCH_R2 = 1.2 * 1.2;
+/** sim.ts FIXED_DT. Collision only ever runs on that clock. */
+const STEP_RATE = 60;
+/** 45 m/s in one step. Beyond this the delta is a teleport, not motion. */
+const MAX_STEP2 = 0.75 * 0.75;
+
+const probes: Probe[] = [];
+let probeClock = 0;
+/** The probe the last `querySetpieceColliders` call belonged to. */
+let liveProbe: Probe | null = null;
+
+function trackProbe(x: number, z: number): Probe {
+  probeClock += 1;
+  let best: Probe | null = null;
+  let bestD2 = MATCH_R2;
+  let stalest: Probe | null = null;
+  for (const p of probes) {
+    const dx = p.x - x;
+    const dz = p.z - z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = p;
+    }
+    if (!stalest || p.seen < stalest.seen) stalest = p;
+  }
+
+  if (best) {
+    const dx = x - best.x;
+    const dz = z - best.z;
+    if (dx * dx + dz * dz > MAX_STEP2) {
+      best.vx = 0;
+      best.vz = 0;
+    } else {
+      best.vx = dx * STEP_RATE;
+      best.vz = dz * STEP_RATE;
+    }
+    best.x = x;
+    best.z = z;
+    best.seen = probeClock;
+    return best;
+  }
+
+  const p =
+    probes.length < PROBE_MAX
+      ? { x, z, vx: 0, vz: 0, seen: probeClock }
+      : stalest!;
+  if (probes.length < PROBE_MAX) probes.push(p);
+  p.x = x;
+  p.z = z;
+  p.vx = 0;
+  p.vz = 0;
+  p.seen = probeClock;
+  return p;
+}
+
 /**
  * Re-derive the active circuit's structure colliders.
  *
@@ -264,6 +568,19 @@ function familyColliders(family: SetpieceFamily, out: StaticCollider[]): void {
  * makes about the sample packs themselves.
  */
 export function rebuildSetpieceColliders(): void {
+  /*
+   * Damage is cleared BEFORE the cache check, not after it.
+   *
+   * Restarting a heat on the same circuit is the common case and takes the
+   * early-out below, but it is also exactly the case where the rail has to be
+   * standing again. Every path that builds a grid reaches here (spawnWorldProps
+   * calls it unconditionally, right beside resetEdgeDamage), so this is the
+   * same reset semantics the verge posts get, for free and without a second
+   * hook in worldProps.
+   */
+  resetRoadsideDamage();
+  for (const c of colliders) c.destroyed = false;
+
   const key = `${getActiveTrackId()}#${getTrackEpoch()}`;
   if (key === builtFor) return;
   builtFor = key;
@@ -271,6 +588,7 @@ export function rebuildSetpieceColliders(): void {
   const def = SETPIECES[getActiveTrackId()] ?? DEFAULT_SETPIECES;
   const out: StaticCollider[] = [];
   for (const family of def.families) familyColliders(family, out);
+  roadsideColliders(out);
 
   colliders = out;
   cells = new Map();
@@ -319,6 +637,10 @@ export function querySetpieceColliders(
   z: number,
   reach: number,
 ): readonly StaticCollider[] {
+  // Before the empty early-out: the probe has to stay warm across a circuit
+  // with no colliders, or the first step after a track change reports the
+  // distance between two circuits as a velocity.
+  liveProbe = trackProbe(x, z);
   scratch.length = 0;
   if (colliders.length === 0) return scratch;
   queryStamp += 1;
@@ -333,6 +655,10 @@ export function querySetpieceColliders(
       for (const c of list) {
         if (c.stamp === queryStamp) continue;
         c.stamp = queryStamp;
+        // A felled module stays in its cells rather than being spliced out.
+        // Rebuilding the grid mid-race to save one boolean test would cost more
+        // than every query it saves.
+        if (c.destroyed) continue;
         scratch.push(c);
       }
     }
@@ -364,6 +690,17 @@ export function capsuleContact(
   z: number,
   radius: number,
 ): Contact {
+  /*
+   * A module felled EARLIER IN THIS SAME STEP is still in the caller's
+   * candidate list — the query that built it ran before the impact. Without
+   * this, breaking a section would deflect the car once per module in it, and
+   * the second deflection would arrive with the car already stopped by the
+   * first, which reads as the hole you just made stopping you.
+   */
+  if (c.destroyed) {
+    contact.hit = false;
+    return contact;
+  }
   const sx = c.x1 - c.x0;
   const sz = c.z1 - c.z0;
   const len2 = sx * sx + sz * sz;
@@ -391,5 +728,57 @@ export function capsuleContact(
   contact.nx = dx / d;
   contact.nz = dz / d;
   contact.pen = sum - d;
+
+  /*
+   * Failure, and why a broken rail is still reported as a hit.
+   *
+   * The obvious alternative — report a miss so the car ploughs through
+   * untouched — makes a smashed rail free, and the whole complaint being
+   * answered here is that the rail was free. The one thing this file can spend
+   * is the contact itself: returning it hands the break frame to
+   * deflectOffStatic, which cancels the component INTO the rail and keeps the
+   * tangential one. On a glancing hit that is a redirect down the circuit; on a
+   * square one it is most of your speed. Both are what a guard rail section
+   * failing under you actually costs, and both come out of the one deflection
+   * routine every immovable thing in this game shares rather than a second
+   * impulse path — reinventing that impulse is what produced the barriers that
+   * threw the car backwards.
+   *
+   * It is exactly ONE frame. The section is gone by the next query, and the
+   * neighbours felled with it are skipped at the top of this function, so a
+   * break can never charge the same car twice for the same hole.
+   */
+  if (c.breakAt > 0 && liveProbe) {
+    const qdx = liveProbe.x - x;
+    const qdz = liveProbe.z - z;
+    // The probe must belong to the query that produced this candidate. 2m of
+    // slack covers deflectOffStatic having pushed the car out of an earlier
+    // contact in the same step; any other caller is nowhere near it and simply
+    // never breaks anything.
+    if (qdx * qdx + qdz * qdz < 4) {
+      const velN = liveProbe.vx * contact.nx + liveProbe.vz * contact.nz;
+      if (velN > c.breakAt) {
+        const rail = c.family === "guardRail";
+        const spread = breakRoadside(c, px, pz);
+        spawnDebrisBurst(
+          // Armco goes where the car was going (slabs, low spin, they stay put
+          // afterwards); a hoarding is sheet material that planes away.
+          rail ? "barrier" : "panel",
+          px,
+          c.y + (rail ? 0.9 : 2),
+          pz,
+          liveProbe.vx,
+          liveProbe.vz,
+          // 1.0 at the threshold, saturating at 2.2 inside the burst.
+          velN / c.breakAt,
+          c.y,
+          spread,
+        );
+        // Plywood. Reporting a miss is what makes the car pass through with its
+        // speed intact — see `resistOnBreak`.
+        if (!c.resistOnBreak) contact.hit = false;
+      }
+    }
+  }
   return contact;
 }

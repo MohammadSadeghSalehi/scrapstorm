@@ -9,29 +9,32 @@
  *
  * Two InstancedMeshes, two draw calls.
  *
- * Placement is BEHIND the gravel run-off, at half + 5.5 + offset, not on the
- * verge proper. None of this has a collider — scenery does not participate in
- * physics — so anything inside the run-off is something the player clips
- * through at the exact moment they are already having a bad time. Behind it,
- * the rail is furniture the way a real circuit's is: past the point you are
- * meant to be able to reach.
+ * ── this used to be scenery, and that was the bug ────────────────────
+ *
+ * The original note here said "None of this has a collider — scenery does not
+ * participate in physics", and reasoned that placing it behind the gravel
+ * run-off made that acceptable. It did not: the rail is the most obviously
+ * SOLID object on the circuit, so driving through it read as the world being
+ * broken rather than as the rail being decoration. Both layers are now capsules
+ * in the sim's static-collider grid, and both break.
+ *
+ * WHERE they stand is no longer decided here — see roadsideLayout.ts. This file
+ * owns what they look like, and nothing else. The two must agree instance for
+ * instance, by INDEX, because that index is how the sim says which module is
+ * lying in pieces.
  */
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { getTrackEpoch } from "../../track";
 import { boardGeometry, railModuleGeometry } from "./geometry";
 import {
-  curvatureThreshold,
-  linkedRuns,
-  meanSpacing,
-  vergePoints,
-} from "./placement";
-import {
   packLayer,
   type ScatterItem,
   type ScatterLayerData,
   type TierScale,
 } from "./layerData";
+import { isBoardDown, isRailDown, roadsideDamageVersion } from "./roadsideDamage";
+import { roadsideLayout } from "./roadsideLayout";
 import { ScatterLayer } from "./ScatterLayer";
 import { reportDensity, triCount } from "./stats";
 
@@ -54,24 +57,25 @@ const LIVERY = [
  */
 const RAIL_DENSITY: TierScale = { low: 1, medium: 1, high: 1 };
 const RAIL_RANGE: TierScale = { low: 0.45, medium: 0.75, high: 1 };
-const BOARD_DENSITY: TierScale = { low: 0.5, medium: 1, high: 1 };
+/**
+ * Boards are no longer thinned either, and for a harder reason than the rail's.
+ *
+ * Density is a prefix of the instance list; colliders are not tiered at all.
+ * At the old low-tier 0.5 the back half of the hoardings would have been solid
+ * and invisible — a quality setting that spawns invisible walls. 26 extra
+ * five-box instances at the bottom tier is the cheaper of the two problems.
+ */
+const BOARD_DENSITY: TierScale = { low: 1, medium: 1, high: 1 };
 const BOARD_RANGE: TierScale = { low: 0.5, medium: 0.8, high: 1 };
 
-function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
-  // Top ~40% of the circuit by curvature. Rail belongs where a car leaves the
-  // road, which is the outside of a bend, and nowhere else.
-  const minCurve = curvatureThreshold(0.4);
-  const points = vergePoints({
-    stride: 1,
-    offset: 1,
-    radius: 0.35,
-    minCurve,
-    outsideOnly: true,
-  });
-  if (points.length < 4) return null;
+/** Shared damage views. Index-keyed, matching roadsideLayout()'s two lists. */
+const RAIL_DAMAGE = { isDown: isRailDown, version: roadsideDamageVersion };
+const BOARD_DAMAGE = { isDown: isBoardDown, version: roadsideDamageVersion };
 
-  const spacing = meanSpacing(points);
-  const runs = linkedRuns(points, spacing * 2.4);
+function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
+  const { rail, spacing } = roadsideLayout();
+  if (!rail.length) return null;
+
   const geo = railModuleGeometry(spacing);
 
   const q = new THREE.Quaternion();
@@ -81,45 +85,34 @@ function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
   const zAxis = new THREE.Vector3(0, 0, 1);
   const yAxis = new THREE.Vector3(0, 1, 0);
 
-  const items: ScatterItem[] = [];
-  for (const run of runs) {
-    for (let i = 0; i < run.length - 1; i++) {
-      const a = run[i]!;
-      const b = run[i + 1]!;
-      const hx = b.x - a.x;
-      const hz = b.z - a.z;
-      const flat = Math.hypot(hx, hz);
-      if (flat < 0.4) continue;
-      const dy = b.y - a.y;
-      const len = Math.hypot(flat, dy);
+  const items: ScatterItem[] = rail.map((m) => {
+    const hx = m.bx - m.ax;
+    const hz = m.bz - m.az;
+    const dy = m.by - m.ay;
 
-      // Heading takes the beam's local +X onto the direction of the next post;
-      // pitch (about local Z, applied first) takes up the height difference so
-      // the rail follows the ground instead of hovering at one end.
-      q.setFromAxisAngle(yAxis, Math.atan2(-hz, hx));
-      qPitch.setFromAxisAngle(zAxis, Math.asin(Math.max(-1, Math.min(1, dy / len))));
-      q.multiply(qPitch);
-      pos.set(a.x, a.y, a.z);
-      // Only X stretches; a 10-20% variation on a 0.14m post is invisible, and
-      // it is the price of one geometry instead of a post mesh plus a beam mesh.
-      scl.set((len * 1.04) / spacing, 1, 1);
+    // Heading takes the beam's local +X onto the direction of the next post;
+    // pitch (about local Z, applied first) takes up the height difference so
+    // the rail follows the ground instead of hovering at one end.
+    q.setFromAxisAngle(yAxis, Math.atan2(-hz, hx));
+    qPitch.setFromAxisAngle(
+      zAxis,
+      Math.asin(Math.max(-1, Math.min(1, dy / m.len))),
+    );
+    q.multiply(qPitch);
+    pos.set(m.ax, m.ay, m.az);
+    // Only X stretches; a 10-20% variation on a 0.14m post is invisible, and
+    // it is the price of one geometry instead of a post mesh plus a beam mesh.
+    scl.set((m.len * 1.04) / spacing, 1, 1);
 
-      const midX = (a.x + b.x) * 0.5;
-      const midZ = (a.z + b.z) * 0.5;
-      items.push({
-        matrix: new THREE.Matrix4().compose(pos, q, scl),
-        x: midX,
-        y: a.y + 0.7,
-        z: midZ,
-        r: len * 0.6 + 0.8,
-        limit: 260,
-      });
-    }
-  }
-  if (!items.length) {
-    geo.dispose();
-    return null;
-  }
+    return {
+      matrix: new THREE.Matrix4().compose(pos, q, scl),
+      x: (m.ax + m.bx) * 0.5,
+      y: m.ay + 0.7,
+      z: (m.az + m.bz) * 0.5,
+      r: m.len * 0.6 + 0.8,
+      limit: 260,
+    };
+  });
 
   const mat = new THREE.MeshStandardMaterial({
     color: "#9d9a94",
@@ -134,7 +127,12 @@ function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
 
   reportDensity("rail", 1, items.length, items.length * triCount(geo));
   return {
-    data: packLayer({ geometry: geo, material: mat, items }),
+    data: packLayer({
+      geometry: geo,
+      material: mat,
+      items,
+      damage: RAIL_DAMAGE,
+    }),
     dispose: () => {
       geo.dispose();
       mat.dispose();
@@ -143,18 +141,8 @@ function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
 }
 
 function buildBoards(): { data: ScatterLayerData; dispose: () => void } | null {
-  // Flattest ~45% of the circuit: a hoarding wants to be read at speed on
-  // approach, which only works down a straight.
-  const maxCurve = curvatureThreshold(0.55);
-  const points = vergePoints({
-    stride: 7,
-    offset: 5.5,
-    radius: 3,
-    maxCurve,
-    phase: 3,
-    reach: 4,
-  });
-  if (!points.length) return null;
+  const { boards } = roadsideLayout();
+  if (!boards.length) return null;
 
   const geo = boardGeometry();
   const q = new THREE.Quaternion();
@@ -162,19 +150,17 @@ function buildBoards(): { data: ScatterLayerData; dispose: () => void } | null {
   const one = new THREE.Vector3(1, 1, 1);
   const yAxis = new THREE.Vector3(0, 1, 0);
 
-  const items: ScatterItem[] = points.map((p, i) => {
-    // Panel normal is local +Z; turn it to face the racing line. Sign flips
-    // with the verge, or half the boards would advertise to the desert.
-    q.setFromAxisAngle(yAxis, p.yaw - p.side * Math.PI * 0.5);
-    pos.set(p.x, p.y, p.z);
+  const items: ScatterItem[] = boards.map((b, i) => {
+    q.setFromAxisAngle(yAxis, b.yaw);
+    pos.set(b.x, b.y, b.z);
     return {
       matrix: new THREE.Matrix4().compose(pos, q, one),
-      x: p.x,
-      y: p.y + 2.2,
-      z: p.z,
+      x: b.x,
+      y: b.y + 2.2,
+      z: b.z,
       r: 3.4,
       limit: 320,
-      color: LIVERY[(i * 3 + p.index) % LIVERY.length]!,
+      color: LIVERY[(i * 3 + b.index) % LIVERY.length]!,
     };
   });
 
@@ -188,7 +174,12 @@ function buildBoards(): { data: ScatterLayerData; dispose: () => void } | null {
 
   reportDensity("boards", 1, items.length, items.length * triCount(geo));
   return {
-    data: packLayer({ geometry: geo, material: mat, items }),
+    data: packLayer({
+      geometry: geo,
+      material: mat,
+      items,
+      damage: BOARD_DAMAGE,
+    }),
     dispose: () => {
       geo.dispose();
       mat.dispose();
