@@ -24,6 +24,7 @@ import { qualityManager } from "../quality";
 import { getActiveEnvironment } from "../environments";
 import { clonePbrPack, isPbrLibraryReady } from "../webgl2/textureLibrary";
 import { getMaxAnisotropy } from "../webgl2/configure";
+import { registerRockColliders } from "../../setpieceColliders";
 import { buildScatterFields } from "./fields";
 import { packLayer, type ScatterLayerData, type TierScale } from "./layerData";
 import { ScatterLayer } from "./ScatterLayer";
@@ -96,6 +97,20 @@ const WIDE_RANGE: TierScale = { low: 0.55, medium: 0.8, high: 1 };
 function buildLayers(): { layers: ScatterLayerData[]; dispose: () => void } {
   const mats = makeMaterials();
   const fields = buildScatterFields();
+  /*
+   * Hand the boulders to the collision layer.
+   *
+   * Done from here rather than derived in setpieceColliders because that module
+   * is deliberately renderer-free — importing three there would pull the
+   * renderer into the sim graph that mission-smoke drives headlessly. Passing
+   * the instances that were actually drawn also means the solid thing and the
+   * visible thing cannot drift apart, which re-deriving from a shared seed
+   * eventually would.
+   *
+   * Reported as ghosts: a car-sized outcrop you drive straight through. Gravel
+   * stays decoration — see ROCK_MIN_RADIUS.
+   */
+  registerRockColliders(fields.rock);
   const layers = [
     packLayer({
       geometry: fields.geometries.rock,

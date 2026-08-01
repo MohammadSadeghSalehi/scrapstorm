@@ -590,7 +590,65 @@ export function rebuildSetpieceColliders(): void {
   for (const family of def.families) familyColliders(family, out);
   roadsideColliders(out);
 
-  colliders = out;
+  colliders = out.concat(rockColliders);
+  reindex();
+}
+
+/*
+ * Boulders, registered from the RENDER side.
+ *
+ * The scatter fields are built with three (geometry footprints decide the
+ * instance radius), and this module must stay renderer-free — that is what lets
+ * mission-smoke drive the whole sim headlessly. So rather than re-deriving the
+ * placement here from the same seeds and drifting the moment a footprint
+ * changes, the component that draws the rocks hands over the instances it
+ * actually drew. The collider and the thing you can see cannot disagree,
+ * because they are the same list.
+ *
+ * Only the metre-scale outcrops. Gravel is decoration — a few thousand pebble
+ * capsules would cost more broadphase than every wall on the circuit combined,
+ * and stopping a car on a stone the size of a football is not the complaint.
+ */
+let rockColliders: StaticCollider[] = [];
+
+export function registerRockColliders(
+  items: readonly { x: number; z: number; r: number }[],
+): void {
+  rockColliders = [];
+  for (const it of items) {
+    // A boulder is a circle, which a capsule expresses as a zero-length
+    // segment — no special case needed anywhere downstream.
+    if (it.r < ROCK_MIN_RADIUS) continue;
+    rockColliders.push({
+      x0: it.x,
+      z0: it.z,
+      x1: it.x,
+      z1: it.z,
+      // The drawn radius is the instance's bounding extent; a car should be
+      // stopped by the rock, not by its halo, so take the part that is
+      // actually solid at wheel height.
+      r: it.r * ROCK_SOLID_FRAC,
+      family: "boulder",
+      stamp: 0,
+      breakAt: Infinity,
+      module: -1,
+      run: -1,
+      resistOnBreak: true,
+      y: 0,
+      destroyed: false,
+    });
+  }
+  colliders = colliders.filter((c) => c.family !== "boulder").concat(rockColliders);
+  reindex();
+}
+
+/** Below this drawn radius a rock is scenery, not an obstacle. */
+const ROCK_MIN_RADIUS = 1.6;
+/** Fraction of the drawn extent that is solid at wheel height. */
+const ROCK_SOLID_FRAC = 0.62;
+
+function reindex(): void {
+  const out = colliders;
   cells = new Map();
   for (const c of out) {
     const minX = Math.min(c.x0, c.x1) - c.r;
