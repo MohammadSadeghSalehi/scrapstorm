@@ -30,6 +30,8 @@
  */
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 
 /*
@@ -88,6 +90,24 @@ const TIMEOUT_MS = Number(arg("timeout", "240")) * 1000;
 const OUT = "screenshots";
 mkdirSync(OUT, { recursive: true });
 
+/*
+ * Reuse ONE browser profile across runs, so the asset load is paid once.
+ *
+ * The dev server serves `public/` through the same libuv threadpool its file
+ * watcher is saturating, and a full GET of a 118-BYTE asset was measured at
+ * 1.1-10.4s. With ~370 assets behind a 6-connection HTTP/1.1 limit that is
+ * minutes per run, and the run before this one timed out with 250 of 370
+ * resources loaded and the composer still unmounted — i.e. it never measured
+ * anything at all.
+ *
+ * Vite sends `Cache-Control: no-cache`, which means "store it, but revalidate".
+ * A revalidating request for the same file was measured at 4ms / 304. So a
+ * warm profile turns minutes of loading into a few hundred ms, and it changes
+ * NOTHING about steady-state frame cost, which is what this samples after the
+ * warmup. `--fresh` opts back out for a genuine cold-load measurement.
+ */
+const PROFILE = has("fresh") ? null : join(tmpdir(), "scrapstorm-perf-profile");
+
 /* Hard watchdog. A hung page must not leave a pinned Chromium behind. */
 const watchdog = setTimeout(() => {
   console.log(`\n!! watchdog fired after ${TIMEOUT_MS / 1000}s — killing run`);
@@ -116,9 +136,29 @@ const launchArgs = {
  * headless-shell build has no GPU path at all, so a --headed run must use the
  * full chrome build or the system Chrome.
  */
+/*
+ * launchPersistentContext when a profile is in use — it is the only Playwright
+ * entry point that keeps the HTTP cache on disk between runs. It returns a
+ * CONTEXT rather than a browser, and a context has no newPage-with-viewport, so
+ * the viewport goes in the launch options and both shapes are normalised to
+ * { context, close } for the caller.
+ */
+async function open(opts) {
+  if (!PROFILE) {
+    const b = await chromium.launch(opts);
+    return { context: await b.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: DPR }), close: () => b.close() };
+  }
+  const c = await chromium.launchPersistentContext(PROFILE, {
+    ...opts,
+    viewport: { width: W, height: H },
+    deviceScaleFactor: DPR,
+  });
+  return { context: c, close: () => c.close() };
+}
+
 async function launch() {
   try {
-    return await chromium.launch(launchArgs);
+    return await open(launchArgs);
   } catch (e) {
     console.log(`  ! default chromium unavailable (${String(e.message).split("\n")[0]})`);
   }
@@ -137,19 +177,40 @@ async function launch() {
     if (!existsSync(exe)) continue;
     console.log(`  using ${d}`);
     try {
-      return await chromium.launch({ ...launchArgs, executablePath: exe });
+      return await open({ ...launchArgs, executablePath: exe });
     } catch {
       /* try the next revision */
     }
   }
   console.log("  falling back to system Chrome");
-  return await chromium.launch({ ...launchArgs, channel: "chrome" });
+  return await open({ ...launchArgs, channel: "chrome" });
 }
 const browser = await launch();
-const page = await browser.newPage({
-  viewport: { width: W, height: H },
-  deviceScaleFactor: DPR,
+const context = browser.context;
+/*
+ * Take the reload out of Vite's HMR client, but keep the client.
+ *
+ * Three other agents edit `src/` while this runs, and every save that crosses a
+ * component boundary makes the client call location.reload(). One run died on
+ * "Execution context was destroyed, most likely because of a navigation" after
+ * four minutes of asset loading, having measured nothing.
+ *
+ * Serving a hand-written stub instead does NOT work: the dev client is 209KB,
+ * not just HMR plumbing, and replacing it took the page down with
+ * "process is not defined". So the real module is fetched and only its three
+ * `location.reload()` call sites are neutered — the socket still connects and
+ * accepts updates, it just cannot navigate out from under the measurement.
+ */
+await context.route(/\/@vite\/client/, async (route) => {
+  try {
+    const res = await route.fetch();
+    const body = (await res.text()).split("location.reload()").join("void 0");
+    await route.fulfill({ response: res, body });
+  } catch {
+    await route.continue();
+  }
 });
+const page = await context.newPage();
 page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text().slice(0, 200));
 });
@@ -657,5 +718,6 @@ writeFileSync(
 );
 console.log(`\nWrote ${file}`);
 await browser.close();
+if (PROFILE) console.log(`(browser profile cached at ${PROFILE} — pass --fresh for a cold load)`);
 clearTimeout(watchdog);
 process.exit(0);

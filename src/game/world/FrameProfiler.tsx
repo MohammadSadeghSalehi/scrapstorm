@@ -82,6 +82,16 @@ export function FrameProfiler({
       },
       reset: () => gpuProfiler.resetStats(),
       isEnabled: () => gpuProfiler.enabled,
+      /*
+       * The live pass list. Per-pass GPU/CPU numbers say WHICH pass is
+       * expensive but give no way to test a hypothesis about WHY — that needs
+       * the pass object itself, to time its internals or to A/B two
+       * implementations inside one frame loop. Between-run variance here is
+       * larger than most changes worth making (0.95 / 0.86 / 1.60ms for the
+       * same build across three runs), so same-run comparison is the only
+       * measurement that resolves anything. A getter: nothing is retained.
+       */
+      passes: () => (composer.current as unknown as { passes?: Pass[] })?.passes ?? [],
     };
 
     return () => {

@@ -318,6 +318,8 @@ declare global {
       setEnabled: (on: boolean) => void;
       reset: () => void;
       isEnabled: () => boolean;
+      /** Live composer passes, for same-run A/B of a pass's internals. */
+      passes: () => unknown[];
     };
   }
 }

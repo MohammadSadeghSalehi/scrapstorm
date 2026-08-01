@@ -18,7 +18,7 @@
  * component are the quality tier and the circuit, which genuinely do need a new
  * chain. The visual formulas below are unchanged.
  */
-import { forwardRef, useMemo, useRef, type RefObject } from "react";
+import { forwardRef, useEffect, useMemo, useRef, type RefObject } from "react";
 import { EffectComposer, SMAA, N8AO } from "@react-three/postprocessing";
 import { useFrame } from "@react-three/fiber";
 import type { EffectComposer as EffectComposerImpl } from "postprocessing";
@@ -91,6 +91,97 @@ type Effects = {
   chroma: ChromaticAberrationEffect;
   noise: NoiseEffect;
 };
+
+/** The part of N8AOPostPass this file reaches into. The class is bundled and
+ *  its name is mangled, so there is no useful type to import. */
+type AoPass = {
+  scene: THREE.Scene;
+  renderTransparency?: (renderer: THREE.WebGLRenderer) => void;
+  __flatTraverse?: boolean;
+  /**
+   * Measurement escape hatch — set true to run the stock package path instead.
+   *
+   * This exists because run-to-run variance on this machine is larger than the
+   * change: three consecutive probe runs of the SAME build reported 0.95, 0.86
+   * and 1.60ms of AO main-thread time, and GPU time moved by 20% between runs
+   * that could not have differed. Comparing two builds across separate runs
+   * therefore cannot resolve this, but alternating both arms inside one frame
+   * loop can. One boolean read per frame is not a cost worth removing, and the
+   * project has a documented history of perf changes nobody could re-verify.
+   */
+  __flatTraverseOff?: boolean;
+};
+
+/**
+ * Stop N8AO walking the whole scene graph four times per frame.
+ *
+ * n8ao auto-enables `transparencyAware` the first time it sees ANY transparent
+ * material, and this scene is full of them (the VFX sprites), so it latches on
+ * during the first frame and never turns off. From then on `renderTransparency`
+ * runs every single frame and does FOUR full `scene.traverse` passes: snapshot
+ * every object's visibility, set it for the depth-write-off render, set it
+ * again for the depth-write-on render, then restore it.
+ *
+ * Measured by wrapping Object3D.prototype.traverse during a live race: 4
+ * traversals per frame over ~424 objects each, and they were the ONLY
+ * per-frame scene traversals in the whole engine — every one of them came from
+ * this pass. The profiler put N8AO at 0.64-1.73ms of main thread against
+ * 2.16-2.96ms of GPU, i.e. it is a CPU pass wearing a GPU pass's costume.
+ *
+ * The fix keeps the package's logic byte for byte and only makes the walking
+ * cheaper: take ONE real traversal at the top of the method to snapshot the
+ * graph, then shadow `scene.traverse` with a flat iteration over that snapshot
+ * for the duration of the call. Pre-order DFS order and the object set are
+ * identical, and nothing can add or remove an object mid-method — the only
+ * thing that changes between the sub-passes is `obj.visible`, which the method
+ * itself is setting. So the rendered result is unchanged by construction.
+ *
+ * Deliberately NOT done: caching the snapshot across frames. An object added
+ * between rebuilds would be missing from the list, so the depth-write-off pass
+ * would leave it visible and draw it into the transparency target — a one-frame
+ * flicker in the AO. Re-snapshotting every frame costs one traversal and
+ * removes three.
+ */
+function useFlatAoTraversal(passRef: RefObject<AoPass | null>) {
+  useEffect(() => {
+    const pass = passRef.current;
+    if (!pass || pass.__flatTraverse) return;
+    const original = pass.renderTransparency;
+    if (typeof original !== "function") return;
+    pass.__flatTraverse = true;
+
+    const snapshot: THREE.Object3D[] = [];
+    const collect = (o: THREE.Object3D) => {
+      snapshot.push(o);
+    };
+
+    pass.renderTransparency = function (renderer: THREE.WebGLRenderer) {
+      if (this.__flatTraverseOff) return original.call(this, renderer);
+      const scene = this.scene;
+      snapshot.length = 0;
+      /* The prototype method, not scene.traverse — this runs before the
+         shadowing property exists on the first frame but after it on every
+         later one, and calling the shadow here would snapshot from a stale
+         snapshot. */
+      THREE.Object3D.prototype.traverse.call(scene, collect);
+      const flat = (cb: (o: THREE.Object3D) => void) => {
+        for (let i = 0; i < snapshot.length; i++) cb(snapshot[i]!);
+      };
+      (scene as THREE.Scene & { traverse: unknown }).traverse = flat;
+      try {
+        return original.call(this, renderer);
+      } finally {
+        delete (scene as Partial<Pick<THREE.Scene, "traverse">>).traverse;
+        snapshot.length = 0;
+      }
+    };
+
+    return () => {
+      pass.renderTransparency = original;
+      pass.__flatTraverse = false;
+    };
+  });
+}
 
 /**
  * Writes the speed-reactive values onto the live effects.
@@ -255,6 +346,14 @@ export function PostFX({ inputs }: { inputs: RefObject<PostFxInputs> }) {
   }, [high, low]);
 
   const blur = useRef<MotionBlurEffect>(null);
+  /*
+   * Safe to attach, unlike the @react-three/postprocessing EFFECT wrappers
+   * warned about above: the N8AO wrapper memoises on [camera, scene], not on
+   * JSON.stringify(props), so a live instance in the ref cannot be stringified
+   * into a circular-structure crash.
+   */
+  const aoPass = useRef<AoPass | null>(null);
+  useFlatAoTraversal(aoPass);
 
   /*
    * The children element is memoised, and that is load-bearing.
@@ -292,6 +391,7 @@ export function PostFX({ inputs }: { inputs: RefObject<PostFxInputs> }) {
       */}
       {!low ? (
         <N8AO
+          ref={aoPass as unknown as RefObject<never>}
           aoRadius={high ? 2.2 : 1.8}
           distanceFalloff={1.0}
           intensity={high ? 2.0 : 1.5}

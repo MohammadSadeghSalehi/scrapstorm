@@ -141,11 +141,38 @@ export default defineConfig(({ command }) => ({
      * threshold where it feels stale and cheap enough on a src tree this size;
      * node_modules is excluded because walking it is what makes polling
      * expensive.
+     *
+     * WHAT THE IGNORE LIST IS ACTUALLY FOR. Every path here costs a `stat` per
+     * file per interval, and on drvfs a stat is ~0.2ms, so the list is a CPU
+     * budget rather than a correctness setting. Measured with this list at only
+     * node_modules/.git/public/assets: 514 polled files, and the dev server sat
+     * at 23-27% of a core with NO browser attached and no requests in flight.
+     * Those stats go through the same libuv threadpool that serves static
+     * files, so requests for `public/` queued behind the polling storm: a
+     * 118-byte /assets/LICENSE.txt took 1.1-10.4s while an in-memory
+     * /src/*.ts module transform took 26ms. With ~370 asset requests behind a
+     * 6-connection HTTP/1.1 limit that is the "first minute of every race
+     * renders nothing" symptom, and it is why the EffectComposer (a dynamic
+     * import sharing that queue) took minutes to mount.
+     *
+     * The four added entries are 280 of those 514 files and none of them are
+     * reachable from the app: `.claude` is agent config, `refs` is 74MB of
+     * source GLBs consumed offline, `.meshgen-tmp` is scratch, and
+     * `screenshots` is where perf-probe writes its own PNG+JSON — so a
+     * measurement run was restarting the watcher it was measuring through.
      */
     watch: {
       usePolling: true,
       interval: 400,
-      ignored: ["**/node_modules/**", "**/.git/**", "**/public/assets/**"],
+      ignored: [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/public/assets/**",
+        "**/.claude/**",
+        "**/.meshgen-tmp/**",
+        "**/refs/**",
+        "**/screenshots/**",
+      ],
     },
   },
   resolve: { tsconfigPaths: true },
