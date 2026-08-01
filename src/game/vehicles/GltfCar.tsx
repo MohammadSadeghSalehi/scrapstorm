@@ -127,14 +127,106 @@ function assetKeyFromUrl(url: string): string {
   return base.replace(/\.glb$/i, "");
 }
 
+/**
+ * Rotate a body so its length runs along Z.
+ *
+ * This used to compare the bounding box's X and Z extents and add a quarter
+ * turn if X won. A bounding box is the wrong instrument for the question, for
+ * two reasons that both showed up in the same asset:
+ *
+ *  - ONE WIDE FEATURE SETS IT. A turret, a ram plate or a pair of stacks makes
+ *    a long vehicle measure square while nearly all of its mass still lies
+ *    along its length.
+ *  - IT CANNOT SEE A DIAGONAL. The ArmoredTankTruck measures 6.80 x 6.78 — a
+ *    0.3% margin, so which axis "won" was arbitrary — and the reason it is
+ *    square is that the mesh is authored at a 44 degree yaw. Its principal
+ *    axis is (0.719, 0.695) with an eigenvalue ratio of 4.99, i.e. strongly
+ *    elongated, just not along either axis. Snapping to the nearest axis could
+ *    only ever be ~45 degrees wrong, and the result was a car that visibly
+ *    drove sideways.
+ *
+ * The principal axis of the horizontal vertex distribution answers the actual
+ * question — which way is this object extended — and yields a continuous angle
+ * rather than a two-way choice, so a diagonal asset lands correctly instead of
+ * being snapped to the nearer wrong answer.
+ *
+ * Falls back to the old extent test when the cloud is genuinely square
+ * (eigenvalue ratio under 1.15): at that point there is no length to find and a
+ * measured angle would be noise dressed as a decision.
+ */
 function alignLongAxisToZ(root: THREE.Group) {
   root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
-  const size = box.getSize(new THREE.Vector3());
-  if (size.x > size.z * 1.08) {
-    root.rotation.y += Math.PI / 2;
-    root.updateMatrixWorld(true);
+
+  let n = 0;
+  let cx = 0;
+  let cz = 0;
+  const v = new THREE.Vector3();
+  const gather = (fn: (x: number, z: number) => void) => {
+    root.traverse((o) => {
+      const m = o as THREE.Mesh;
+      const pos = m.isMesh
+        ? (m.geometry?.attributes?.position as THREE.BufferAttribute | undefined)
+        : undefined;
+      if (!pos) return;
+      // Stride large meshes: 2k samples describe a hull's second moment as well
+      // as 100k do, and this runs on every car at load.
+      const step = Math.max(1, Math.floor(pos.count / 2000));
+      for (let i = 0; i < pos.count; i += step) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+        fn(v.x, v.z);
+      }
+    });
+  };
+  gather((x, z) => {
+    cx += x;
+    cz += z;
+    n++;
+  });
+  if (n < 8) return;
+  cx /= n;
+  cz /= n;
+
+  let sxx = 0;
+  let szz = 0;
+  let sxz = 0;
+  gather((x, z) => {
+    const dx = x - cx;
+    const dz = z - cz;
+    sxx += dx * dx;
+    szz += dz * dz;
+    sxz += dx * dz;
+  });
+  sxx /= n;
+  szz /= n;
+  sxz /= n;
+
+  const tr = sxx + szz;
+  const det = sxx * szz - sxz * sxz;
+  const disc = Math.sqrt(Math.max(0, (tr * tr) / 4 - det));
+  const l1 = tr / 2 + disc;
+  const l2 = tr / 2 - disc;
+
+  if (!(l2 > 1e-12) || l1 / l2 < 1.15) {
+    // Genuinely square: keep the old behaviour rather than inventing an angle.
+    const size = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
+    if (size.x > size.z * 1.08) {
+      root.rotation.y += Math.PI / 2;
+      root.updateMatrixWorld(true);
+    }
+    return;
   }
+
+  let ax = sxz;
+  let az = l1 - sxx;
+  if (Math.abs(ax) < 1e-9 && Math.abs(az) < 1e-9) {
+    ax = 1;
+    az = 0;
+  }
+  // Rotate about Y so the principal axis lands on +Z. The nose/tail decision is
+  // orientRearTowardPosZ's job — this only fixes the LINE the car lies on, and
+  // is deliberately blind to which end leads.
+  root.rotation.y += Math.atan2(-ax, az);
+  root.updateMatrixWorld(true);
 }
 
 /**
