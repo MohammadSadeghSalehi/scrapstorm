@@ -48,6 +48,34 @@ export type PlayerHud = {
   color: string;
 };
 
+export type MissionObjectiveHud = {
+  label: string;
+  detail: string;
+  progress: number;
+  status: "pending" | "met" | "failed";
+  optional: boolean;
+};
+
+/**
+ * The mission's face in the HUD.
+ *
+ * Assembled by the shell rather than by snapshotHud, because the run lives
+ * outside SimState — the sim does not know missions exist and this is the seam
+ * that keeps it that way.
+ */
+export type MissionHud = {
+  name: string;
+  kind: string;
+  objectives: MissionObjectiveHud[];
+  /** 0..1 league heat this run is actually being driven at. */
+  heat: number;
+  /** The field is being paid to wreck you. */
+  bounty: boolean;
+  status: "running" | "complete" | "failed";
+  /** Radio lines still on screen, newest last. */
+  announcements: string[];
+};
+
 export type HudSlice = {
   phase: MatchPhase;
   raceTime: number;
@@ -57,9 +85,15 @@ export type HudSlice = {
   player: PlayerHud | null;
   rivals: RivalHud[];
   fieldSize: number;
+  /** Laps THIS race is run over. Missions and circuits both override RACE.laps. */
+  lapCount: number;
+  mission: MissionHud | null;
 };
 
-export function snapshotHud(state: SimState): HudSlice {
+export function snapshotHud(
+  state: SimState,
+  mission: MissionHud | null = null,
+): HudSlice {
   const player = state.vehicles.find((v) => v.isPlayer) ?? null;
   return {
     phase: state.phase,
@@ -71,6 +105,8 @@ export function snapshotHud(state: SimState): HudSlice {
       kind: e.kind,
     })),
     fieldSize: state.vehicles.length,
+    lapCount: state.lapCount || RACE.laps,
+    mission,
     player: player
       ? {
           id: player.id,
@@ -280,6 +316,101 @@ function Minimap({
   );
 }
 
+/** Five bars of League Heat. At five, nothing on the grid is racing you. */
+function HeatMeter({ heat, bounty }: { heat: number; bounty: boolean }) {
+  const bars = Math.round(Math.max(0, Math.min(1, heat)) * 5);
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[0.55rem] uppercase tracking-[0.14em] text-muted">
+        Heat
+      </span>
+      <span className="flex gap-0.5">
+        {[1, 2, 3, 4, 5].map((i) => (
+          <span
+            key={i}
+            className={`h-2.5 w-1 rounded-[1px] ${
+              i <= bars
+                ? bars >= 4
+                  ? "bg-rose-400"
+                  : bars >= 3
+                    ? "bg-amber-400"
+                    : "bg-fg/70"
+                : "bg-fg/15"
+            }`}
+          />
+        ))}
+      </span>
+      {bounty && (
+        <span className="rounded-sm bg-rose-500/20 px-1 text-[0.55rem] font-semibold uppercase tracking-wider text-rose-300">
+          Bounty
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The objective board.
+ *
+ * Deliberately the second thing on the screen after position: in a mission the
+ * question "am I winning" is not answered by the standings, and a player who
+ * has to pause to find out what a run wants from them has already lost it.
+ * Failed lines stay visible in red rather than disappearing — vanishing is how
+ * a player ends up finishing a race that was already over.
+ */
+function MissionPanel({ mission }: { mission: MissionHud }) {
+  return (
+    <div className="w-[13.5rem] rounded-xl border border-border/80 bg-surface/85 px-2.5 py-2 backdrop-blur-md sm:w-[15rem]">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="truncate text-[0.6rem] font-semibold uppercase tracking-[0.14em] text-fg/90">
+          {mission.name}
+        </p>
+        <span className="shrink-0 text-[0.55rem] uppercase tracking-[0.1em] text-muted">
+          {mission.kind.replace("_", " ")}
+        </span>
+      </div>
+      <div className="mt-1.5">
+        <HeatMeter heat={mission.heat} bounty={mission.bounty} />
+      </div>
+      <ul className="mt-2 space-y-1.5">
+        {mission.objectives.map((o, i) => {
+          const tone =
+            o.status === "failed"
+              ? "text-rose-300"
+              : o.status === "met"
+                ? "text-emerald-300"
+                : "text-fg/90";
+          const bar =
+            o.status === "failed"
+              ? "bg-rose-500/80"
+              : o.status === "met"
+                ? "bg-emerald-400/80"
+                : "bg-fg/60";
+          return (
+            <li key={i}>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className={`truncate text-[0.65rem] leading-tight ${tone}`}>
+                  {o.optional ? "◇ " : ""}
+                  {o.label}
+                </span>
+                <span className="shrink-0 font-mono text-[0.6rem] tabular-nums text-muted">
+                  {o.detail}
+                </span>
+              </div>
+              <div className="bar-track mt-0.5 h-[3px]">
+                <div
+                  className={`bar-fill ${bar}`}
+                  style={{ width: `${Math.round(o.progress * 100)}%` }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function HudInner({
   hud,
   onPause,
@@ -322,8 +453,8 @@ function HudInner({
               Lap
             </p>
             <p className="font-display text-2xl font-semibold leading-none">
-              {Math.min(RACE.laps, player.lap + 1)}
-              <span className="text-base text-muted">/{RACE.laps}</span>
+              {Math.min(hud.lapCount, player.lap + 1)}
+              <span className="text-base text-muted">/{hud.lapCount}</span>
             </p>
           </div>
           {hud.phase === "countdown" && (
@@ -357,6 +488,31 @@ function HudInner({
           </button>
         </div>
       </div>
+
+      {hud.mission && (
+        <div className="absolute left-3 top-[4.75rem] sm:left-4 sm:top-[5.25rem]">
+          <MissionPanel mission={hud.mission} />
+        </div>
+      )}
+
+      {/*
+        Radio.
+        Centred and above the car rather than tucked in a corner, because these
+        lines ARE the story and they are read while cornering. Newest last so
+        the eye lands on the bottom line and stays there.
+      */}
+      {hud.mission && hud.mission.announcements.length > 0 && hud.phase === "racing" && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 mt-16 flex w-[22rem] max-w-[80vw] -translate-x-1/2 flex-col items-center gap-1">
+          {hud.mission.announcements.map((line, i) => (
+            <div
+              key={`${line}-${i}`}
+              className="animate-rise rounded-full border border-white/10 bg-black/60 px-3 py-1 text-center text-[0.7rem] leading-tight text-fg/95 backdrop-blur-sm"
+            >
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
 
       {hud.phase === "countdown" && (
         <div className="absolute inset-0 flex items-center justify-center">

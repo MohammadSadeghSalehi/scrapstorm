@@ -132,6 +132,50 @@ export function applyRaceReward(
   return { meta: next, earned };
 }
 
+/**
+ * Fold a finished MISSION into the garage's stats.
+ *
+ * Deliberately does NOT compute a payout. A career run's scrap is decided by
+ * missions/career.ts from objectives, markers, takedowns and the stake; running
+ * applyRaceReward as well would pay the player twice for the same race and
+ * would do it with the free-play formula, which knows nothing about any of
+ * that. The caller hands the already-decided number in.
+ */
+export function applyMissionMeta(
+  meta: MetaState,
+  opts: {
+    scrap: number;
+    place: number;
+    raceTimeSec: number;
+    bestLap: number | null;
+    won: boolean;
+  },
+): MetaState {
+  const better =
+    opts.bestLap != null && (meta.bestLap == null || opts.bestLap < meta.bestLap);
+  return {
+    ...meta,
+    scrap: Math.max(0, meta.scrap + opts.scrap),
+    races: meta.races + 1,
+    wins: meta.wins + (opts.won ? 1 : 0),
+    totalPlaySec: meta.totalPlaySec + opts.raceTimeSec,
+    bestLap: better ? opts.bestLap : meta.bestLap,
+    selectedPaint: { ...meta.selectedPaint },
+    unlockedPaints: [...meta.unlockedPaints],
+  };
+}
+
+/** Take the stake at the grid. Clamped at zero — entry is gated before this. */
+export function spendScrap(meta: MetaState, amount: number): MetaState {
+  if (amount <= 0) return meta;
+  return {
+    ...meta,
+    scrap: Math.max(0, meta.scrap - Math.floor(amount)),
+    selectedPaint: { ...meta.selectedPaint },
+    unlockedPaints: [...meta.unlockedPaints],
+  };
+}
+
 export function tryUnlockPaint(meta: MetaState, paintId: string): MetaState | null {
   if (meta.unlockedPaints.includes(paintId)) return null;
   const p = PAINTS.find((x) => x.id === paintId);

@@ -6,6 +6,12 @@
  * the interpreter instead; the moment a mission needs a bespoke branch
  * somewhere, the next forty missions will need forty more.
  *
+ * On entry fees: they start at nothing and end at 180. The four events with no
+ * fee at all (`pro_debut`, `as_sprint`, `cb_squeeze`, `cb_clean`) are load
+ * bearing — they are what stops a run of bad luck from becoming a dead save,
+ * because they are always available, always free to enter, and still pay on a
+ * repeat clear. Do not put a fee on them.
+ *
  * On pace targets: these are metres per second averaged over the distance and
  * they are a FIRST PASS. They were chosen at roughly 35-45% of class top speed,
  * which is deliberately soft — a pace target that cannot be met turns a mission
@@ -71,6 +77,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "as_bounty",
+    entryFee: 40,
     name: "Feed Bounty",
     kind: "hunt",
     trackId: "ash_spire",
@@ -90,6 +97,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "as_gauntlet",
+    entryFee: 120,
     name: "The Gauntlet",
     kind: "survival",
     trackId: "ash_spire",
@@ -121,6 +129,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "cb_elim",
+    entryFee: 60,
+    beatBefore: "cull-open",
     name: "Cull",
     kind: "elimination",
     trackId: "cinder_bowl",
@@ -141,7 +151,12 @@ export const EVENT_MISSIONS: MissionDef[] = [
     laps: 3,
     brief: ["Weapons cold, clock hot.", "One clean lap is all this asks. It is not nothing."],
     objectives: [
-      { kind: "lap_pace", pace: 26 },
+      // 26 was authored blind and does not survive the stopwatch: a default
+      // profile round the Bowl averages 16-22 m/s of GROUND speed depending on
+      // how the hairpin goes, and centreline pace can never exceed that. 20 is
+      // set against the worst of those, because a target that is impossible on
+      // a scrappy night is a wall on every night that matters.
+      { kind: "lap_pace", pace: 20 },
       { kind: "no_wreck" },
     ],
     modifiers: { weaponsFree: false, catchUp: 0 },
@@ -151,6 +166,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   /* ── Foundry Pit ───────────────────────────────────────────────────── */
   mission({
     id: "fp_scrum",
+    entryFee: 60,
     name: "Scrum",
     kind: "elimination",
     trackId: "foundry_pit",
@@ -165,6 +181,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "fp_takedown",
+    entryFee: 70,
     name: "Piecework",
     kind: "hunt",
     trackId: "foundry_pit",
@@ -179,6 +196,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "fp_holdout",
+    entryFee: 110,
     name: "Holdout",
     kind: "survival",
     trackId: "foundry_pit",
@@ -196,6 +214,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "fp_kingpit",
+    entryFee: 80,
     name: "King of the Pit",
     kind: "race",
     trackId: "foundry_pit",
@@ -212,6 +231,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   /* ── Rustline ──────────────────────────────────────────────────────── */
   mission({
     id: "rl_scrapline",
+    entryFee: 50,
     name: "Scrapline",
     kind: "race",
     trackId: "rustline",
@@ -226,6 +246,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "rl_threadneedle",
+    entryFee: 70,
     name: "Threadneedle",
     kind: "time_attack",
     trackId: "rustline",
@@ -240,6 +261,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "rl_courier",
+    entryFee: 100,
+    beatBefore: "courier-open",
     name: "Courier",
     kind: "escort",
     trackId: "rustline",
@@ -266,6 +289,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   /* ── Sable Mile ────────────────────────────────────────────────────── */
   mission({
     id: "sm_bluebird",
+    entryFee: 50,
     name: "Bluebird",
     kind: "time_attack",
     trackId: "sable_run",
@@ -277,6 +301,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "sm_topend",
+    entryFee: 60,
     name: "Top End",
     kind: "race",
     trackId: "sable_run",
@@ -288,6 +313,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "sm_convoy",
+    entryFee: 100,
     name: "Convoy",
     kind: "escort",
     trackId: "sable_run",
@@ -310,6 +336,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "sm_flyover",
+    entryFee: 80,
     name: "Flyover",
     kind: "hunt",
     trackId: "sable_run",
@@ -326,6 +353,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   /* ── The Dead Mile ─────────────────────────────────────────────────── */
   mission({
     id: "dm_longhaul",
+    entryFee: 80,
     name: "Long Haul",
     kind: "race",
     trackId: "dead_mile",
@@ -337,6 +365,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "dm_ironlung",
+    entryFee: 110,
     name: "Iron Lung",
     kind: "race",
     trackId: "dead_mile",
@@ -352,6 +381,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "dm_pipeline",
+    entryFee: 140,
     name: "Pipeline Work",
     kind: "hunt",
     trackId: "dead_mile",
@@ -372,6 +402,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
   }),
   mission({
     id: "dm_lastcall",
+    entryFee: 180,
+    beatBefore: "lastcall-open",
     name: "Last Call",
     kind: "elimination",
     trackId: "dead_mile",

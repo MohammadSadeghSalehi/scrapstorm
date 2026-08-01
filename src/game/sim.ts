@@ -1,6 +1,6 @@
-import { BOT_NAMES, CLASS_ORDER, VEHICLE_CLASSES } from "./classes";
+import { BOT_NAMES, CLASS_ORDER, VEHICLE_CLASSES, getFieldRoster } from "./classes";
 import { RACE, COMBAT, FEEL } from "./balance";
-import { aiInput, catchUpFactor } from "./ai";
+import { aiInput, aiSkill, catchUpFactor } from "./ai";
 import {
   findLockTarget,
   stepMines,
@@ -25,8 +25,12 @@ import {
   stepWorldProps,
 } from "./worldProps";
 import {
-  CHECKPOINTS,
-  TRACK_SAMPLES,
+  // CHECKPOINTS has the same live-binding problem as TRACK_SAMPLES did and
+  // track.ts exports no accessor for it. See the report: one added
+  // `getCheckpoints()` there makes this file fully testable off a real circuit.
+  getCheckpoints,
+  getTrackDef,
+  getTrackSamples,
   nearestTrackIndex,
   trackProgress,
   setActiveTrack,
@@ -76,10 +80,23 @@ function rt(id: string, v: VehicleState): VehicleRuntime {
   return r;
 }
 
+/*
+ * getTrackSamples(), not the TRACK_SAMPLES binding.
+ *
+ * `export let TRACK_SAMPLES` is a live binding under real ESM and a SNAPSHOT
+ * under any CJS transpile — track.ts documents this at length and exports the
+ * accessor precisely for it. Reading the binding here meant that after
+ * setActiveTrack switched to a longer circuit, nearestTrackIndex (live, inside
+ * track.ts) could return an index past the end of the stale array this file was
+ * still holding, and the respawn path in updateWrecks would throw on it. It
+ * only reproduces where the module graph is transpiled — which is to say, in
+ * every headless test of this file that has ever been attempted.
+ */
 function trackYawAt(index: number, lookAhead = 6): number {
-  const n = TRACK_SAMPLES.length;
-  const a = TRACK_SAMPLES[index % n]!;
-  const b = TRACK_SAMPLES[(index + lookAhead) % n]!;
+  const S = getTrackSamples();
+  const n = S.length;
+  const a = S[index % n]!;
+  const b = S[(index + lookAhead) % n]!;
   return Math.atan2(-(b.x - a.x), -(b.z - a.z));
 }
 
@@ -105,9 +122,8 @@ function makeVehicle(
   const def = VEHICLE_CLASSES[classId];
   // Stagger rows so grid cars don't occupy the same sample
   const startIdx = 2 + gridIndex * 3;
-  const sample =
-    TRACK_SAMPLES[Math.min(startIdx, TRACK_SAMPLES.length - 1)] ??
-    TRACK_SAMPLES[0]!;
+  const S = getTrackSamples();
+  const sample = S[Math.min(startIdx, S.length - 1)] ?? S[0]!;
   // Wide lanes — half-widths ~1.0; 3.6 keeps bumpers clear on start
   const lane = (gridIndex - 1.5) * 3.6;
   const rx = Math.cos(sample.yaw);
@@ -174,6 +190,8 @@ function makeVehicle(
     uiAccel: 0,
     lapTimes: [],
     lastLapTime: 0,
+    lastHitBy: null,
+    lastHitAge: 0,
   };
 }
 
@@ -190,18 +208,24 @@ function buildField(
   const list: VehicleState[] = [];
   list.push(makeVehicle("player", guestName || "Racer", classId, true, 0, showcase));
   const others = CLASS_ORDER.filter((c) => c !== classId);
+  // A mission's roster owns the identity of each slot. Absent one (free play)
+  // this falls back to the old rotation, so nothing changes for a quick heat.
+  const roster = getFieldRoster();
   for (let i = 0; i < 3; i++) {
-    const botClass = others[i % others.length] ?? "bruiser";
-    list.push(
-      makeVehicle(
-        `bot-${i}`,
-        BOT_NAMES[i % BOT_NAMES.length]!,
-        botClass,
-        false,
-        i + 1,
-        false,
-      ),
+    const slot = roster[i];
+    const botClass = slot?.classId ?? others[i % others.length] ?? "bruiser";
+    const bot = makeVehicle(
+      `bot-${i}`,
+      BOT_NAMES[i % BOT_NAMES.length]!,
+      botClass,
+      false,
+      i + 1,
+      false,
     );
+    // Livery is how you tell the marked car from the traffic at 180mph. A
+    // mission that paints slot 0 red has said something the HUD cannot.
+    if (slot?.color) bot.color = slot.color;
+    list.push(bot);
   }
   return list;
 }
@@ -224,7 +248,10 @@ function createState(
     particles: [],
     props: spawnWorldProps(),
     events: [],
-    lapCount: RACE.laps,
+    // Per circuit, not a global three. RACE.laps is a 90-second race on the
+    // Foundry Pit and a six-minute one on the Dead Mile. Missions override this
+    // immediately after arming; free play now gets a sane default per road.
+    lapCount: getTrackDef(trackId).laps,
     seed: (Date.now() % 1e9) | 0,
     playerId: "player",
     guestName,
@@ -257,11 +284,16 @@ function updateCheckpoints(v: VehicleState, state: SimState, dt: number) {
 
   const r = rt(v.id, v);
   r.gateCool = Math.max(0, r.gateCool - dt);
-  const n = CHECKPOINTS.length;
+  // getCheckpoints(), not the CHECKPOINTS binding: `export let` is live under
+  // real ESM but a CJS transpile snapshots it at module init, so after a track
+  // switch this read returned the previous circuit's gates. Exactly the bug
+  // that made updateWrecks throw, and the reason TRACK_SAMPLES already moved.
+  const checkpoints = getCheckpoints();
+  const n = checkpoints.length;
   if (n <= 0) return;
 
   const gateIdx = ((v.checkpoint % n) + n) % n;
-  const gate = CHECKPOINTS[gateIdx];
+  const gate = checkpoints[gateIdx];
   if (!gate) return;
 
   const dx = v.x - gate.x;
@@ -387,7 +419,7 @@ function updateWrecks(state: SimState, dt: number) {
       v.wreckTimer = Math.max(0, v.wreckTimer - dt);
       if (v.wreckTimer <= 0) {
         const idx = nearestTrackIndex(v.x, v.z, v.yaw);
-        const s = TRACK_SAMPLES[idx]!;
+        const s = getTrackSamples()[idx]!;
         v.x = s.x;
         v.y = s.y + 0.55;
         v.z = s.z;
@@ -398,6 +430,10 @@ function updateWrecks(state: SimState, dt: number) {
         v.damageVisual = Math.min(0.55, v.damageVisual);
         v.invuln = COMBAT.wreckInvuln;
         v.alive = true;
+        // A new life is a new claim. Whoever put them into the last wall does
+        // not also own the next one.
+        v.lastHitBy = null;
+        v.lastHitAge = 0;
         if (v.isPlayer) {
           pushEvent(state, "respawn", "Respawned · armor patched");
         }
@@ -447,6 +483,9 @@ export class GameSimulation {
   setTrack(trackId: TrackId) {
     this.state.selectedTrack = trackId;
     setActiveTrack(trackId);
+    // Callers that arm a mission set lapCount again straight after this; the
+    // circuit default is what a quick heat gets.
+    this.state.lapCount = getTrackDef(trackId).laps;
     this.state.props = spawnWorldProps();
     this.activeGhost = this.ghostEnabled ? getGhost(trackId) : null;
     if (
@@ -653,9 +692,14 @@ export class GameSimulation {
 
       const input = v.isPlayer
         ? (playerInput ?? createEmptyInput())
-        : aiInput(v, state.vehicles, state.time);
+        : aiInput(v, state.vehicles, state.time, state.lapCount);
       const drifting = isDrifting(v, input);
-      const catchUp = v.isPlayer ? 0 : catchUpFactor(v, state.vehicles);
+      const catchUp = v.isPlayer
+        ? 0
+        : catchUpFactor(v, state.vehicles, state.lapCount);
+      // Read AFTER aiInput: that call is what advances this driver's mistake
+      // schedule, and the grip drop has to land on the same step as the moment.
+      const skill = v.isPlayer ? null : aiSkill(v);
 
       v.weaponCharge = Math.min(1, v.weaponCharge + COMBAT.weaponIdle * dt);
       v.shieldCharge = Math.min(1, v.shieldCharge + COMBAT.shieldIdle * dt);
@@ -672,8 +716,17 @@ export class GameSimulation {
         drifting,
         particles: state.particles,
         catchUp,
+        skill,
       });
       spawnDamageSmoke(v, state.particles, dt);
+
+      // Takedown credit expires. Six seconds is long enough to cover "shot,
+      // spun, hit the wall" and short enough that a rival who dies to the
+      // scenery a lap later is nobody's kill.
+      if (v.lastHitBy) {
+        v.lastHitAge = (v.lastHitAge ?? 0) + dt;
+        if (v.lastHitAge > 6) v.lastHitBy = null;
+      }
 
       const def = VEHICLE_CLASSES[v.classId];
       v.lockTargetId = findLockTarget(v, state.vehicles, def.primaryRange * 1.12);

@@ -205,6 +205,156 @@ export const STORY_BEATS: StoryBeat[] = [
     flavor: "The Feed did not cut to an advert this time.",
     act: 3,
   },
+
+  /*
+   * Consequence beats.
+   *
+   * Every pair below is the SAME moment reached two ways: you out-drove them, or
+   * you took them apart. career.applyMissionResult picks between them from what
+   * the run actually recorded, which is the only version of "your choices
+   * matter" this game can honestly offer — there is no dialogue wheel here, only
+   * a steering wheel, so the choice has to be read off the road.
+   */
+  {
+    id: "wrecked-kiln",
+    title: "Through the choke",
+    voice: "BEX",
+    body: "You didn't go round him. You went through him. The Feed ran it four times.",
+    flavor: "Marsh will not have forgotten by the time you meet again.",
+    act: 2,
+  },
+  {
+    id: "wrecked-sparrow",
+    title: "Clean hands, dirty race",
+    voice: "HALCYON",
+    body: "Ait has never put a mark on anyone in nine seasons. You put him in a wall.",
+    flavor: "Nobody on the board says anything. Everybody on the board noticed.",
+    act: 2,
+  },
+  {
+    id: "wrecked-vey",
+    title: "The witness, silenced",
+    voice: "QUIST",
+    body: "Vey was about to say something on air. Now she is in a garage instead. Convenient.",
+    flavor: "He is not accusing you. He is filing it.",
+    act: 3,
+  },
+  {
+    id: "outraced-vey",
+    title: "Fair, then",
+    voice: "HALCYON",
+    body: "You could have put me in the barrier at the chicane. You went round. Sit down — I'll tell you about the stack.",
+    act: 3,
+  },
+  {
+    id: "wrecked-kade",
+    title: "Even",
+    voice: "SUMP",
+    body: "Eighteen months and you finally did it back. Feel like anything? Thought not.",
+    flavor: "You are the only one of the two of you still driving.",
+    act: 3,
+  },
+  {
+    id: "outraced-kade",
+    title: "Worse than even",
+    voice: "SUMP",
+    body: "You beat me clean. On the Rustline. In front of him. He'll take that out of me, not you.",
+    act: 3,
+  },
+  {
+    id: "wrecked-marrow",
+    title: "Salvage",
+    voice: "BEX",
+    body: "Eighteen months ago the league called your wreck salvage. Tonight they'll have to call his.",
+    flavor: "Same corner. Same word. Different car in it.",
+    act: 3,
+  },
+
+  /* Heat — the pursuit escalating, fired by career.applyMissionResult. */
+  {
+    id: "heat-rising",
+    title: "Standing price",
+    voice: "BEX",
+    body: "Three crews were on the wire before you'd cooled down. They're not booking races. They're booking you.",
+    flavor: "League Heat 3. Every event now starts hot.",
+    act: 2,
+  },
+  {
+    id: "heat-max",
+    title: "Manhunt",
+    voice: "QUIST",
+    body: "Congratulations. You are the most valuable object on this circuit and every driver on it knows the number.",
+    flavor: "League Heat 5. Nothing you enter is a race any more.",
+    act: 3,
+  },
+  {
+    id: "first-blood",
+    title: "The first one",
+    voice: "BEX",
+    body: "That's your first car off the board. It gets easier. That's the part to watch.",
+    act: 1,
+  },
+  /*
+   * Openers. Fired by MissionDef.beatBefore, on the way to the grid.
+   *
+   * Kept to the handful of nights that are actually a turn in the story. A beat
+   * before every race is a loading screen with words on it, and the player
+   * learns to click through it — which then costs you the ones that matter.
+   */
+  {
+    id: "cull-open",
+    title: "The Cull",
+    voice: "QUIST",
+    body: "Every twenty seconds we cut the last car. The audience does not watch for the winner.",
+    flavor: "There is no finish line in a Cull. There is only being left.",
+    act: 1,
+  },
+  {
+    id: "courier-open",
+    title: "The load",
+    voice: "BEX",
+    body: "I am driving this one. You are keeping me alive. Do not get clever, do not get far away.",
+    flavor: "She has never asked you for anything before.",
+    act: 2,
+  },
+  {
+    id: "lastcall-open",
+    title: "Last Call",
+    body: "Three and a half kilometres of pipeline road, a live bounty, and a car cut every forty seconds.",
+    flavor: "Marrow's crew run this road. They know where the far turn is.",
+    act: 3,
+  },
+  {
+    id: "duel-kade",
+    title: "The outrider",
+    voice: "BEX",
+    body: "Kade was on your inside at the stack. He has been on the Rustline every night since, waiting to see if you'd come.",
+    act: 3,
+  },
+  {
+    id: "duel-rhee",
+    title: "Number two",
+    voice: "HALCYON",
+    body: "Rhee does not race you. She measures how long you last. Do not give her the long straight.",
+    flavor: "Nobody has passed her twice.",
+    act: 3,
+  },
+  {
+    id: "duel-marrow",
+    title: "Ash Spire, last lap",
+    voice: "BEX",
+    body: "Same circuit. Same corner. Same car — his side of it. Whatever happens out there, it happens on air.",
+    flavor: "Eighteen months of work is sitting on the grid beside you.",
+    act: 3,
+  },
+  {
+    id: "quist-refused",
+    title: "Declined",
+    voice: "QUIST",
+    body: "You didn't take the money. Nobody has ever not taken the money. I'll be honest — I don't have a segment for this.",
+    flavor: "The offer is not repeated.",
+    act: 3,
+  },
 ];
 
 export const BEATS_BY_ID: Record<string, StoryBeat> = [...LORE, ...STORY_BEATS].reduce<
@@ -290,7 +440,199 @@ export const EVENT_LINES = {
   objective_lost: ["That's gone.", "Objective's dead. Salvage the rest."],
   /** Boss duel opener. */
   duel: ["This is the one.", "No cameras cut away from this."],
+  /** Player reaches P1. */
+  took_lead: [
+    "You're the one being chased now.",
+    "P1. Everything behind you just changed its mind.",
+    "Front of the pack. Nowhere to hide up here.",
+  ],
+  /** Player loses a place to an unnamed car. */
+  lost_place: [
+    "House car just did that to you. Take it back.",
+    "That's a place gone to somebody with no name.",
+  ],
+  /** Player hull below 30%. */
+  player_hurt: [
+    "Hull's opening up. Stop taking hits.",
+    "Bex is going to see this. Bring something back.",
+    "You're running on frame. Pick your fights.",
+  ],
+  /** Final lap. */
+  last_lap: [
+    "Last lap. Whatever you were saving, spend it.",
+    "One more. This is the one they'll show.",
+  ],
 } as const;
+
+/* ── rival voices ─────────────────────────────────────────────────────
+ *
+ * Six situations per name, delivered over the radio DURING the race by
+ * missions/runtime.ts. This is where the board stops being a list.
+ *
+ * Every line is written against that rival's PROFILE rather than their bio, so
+ * what you hear matches what you are being made to do: the blockers talk about
+ * the road, the hunters talk about you, the pacers barely talk at all. If a
+ * profile is ever retuned, its lines want re-reading.
+ *
+ * Under ten words each. They are read at speed, through a HUD chip, while
+ * somebody is trying to put you into a wall.
+ */
+export type BarkKind =
+  /** Opening lap, once. */
+  | "open"
+  /** They just took a place off you. */
+  | "pass"
+  /** Their hull is under 35%. */
+  | "hurt"
+  /** You wrecked them. */
+  | "down"
+  /** The run resolved in their favour. */
+  | "won"
+  /** The run resolved in yours. */
+  | "lost";
+
+export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
+  wask: {
+    open: "GRIT: Door's shut. Try the handle.",
+    pass: "GRIT: Told you. Shut.",
+    hurt: "GRIT: Plate's cheap. I've got more.",
+    down: "GRIT: Fine. Fine.",
+    won: "GRIT: Come back when you can drive.",
+    lost: "GRIT: Board's yours to climb. Don't thank me.",
+  },
+  nim: {
+    open: "HALFPIPE: Watch the exit. Not the entry.",
+    pass: "HALFPIPE: You looked where I told you not to.",
+    hurt: "HALFPIPE: That's fine, that's fine, that's fine.",
+    down: "HALFPIPE: My own mine. My OWN mine.",
+    won: "HALFPIPE: Bowl's mine. Always was.",
+    lost: "HALFPIPE: Fine! You looked at the exit.",
+  },
+  vance: {
+    open: "TALLY: Number forty-one, coming up.",
+    pass: "TALLY: Line 'em up, knock 'em down.",
+    hurt: "TALLY: Doesn't count. Doesn't count.",
+    down: "TALLY: Off by one. I'll fix the tally.",
+    won: "TALLY: Forty-one. Say it on air.",
+    lost: "TALLY: You're not on the list. Yet.",
+  },
+  sook: {
+    open: "FERRITE: I don't lift. Ask the barrier.",
+    pass: "FERRITE: Brakes are for people with plans.",
+    hurt: "FERRITE: Panel's gone. Still don't lift.",
+    down: "FERRITE: Should've lifted.",
+    won: "FERRITE: Chicane ate you. Told you it would.",
+    lost: "FERRITE: Fine. You were there on the exit.",
+  },
+  ait: {
+    open: "SPARROW: I'll be where you were.",
+    pass: "SPARROW: —",
+    hurt: "SPARROW: That wasn't necessary.",
+    down: "SPARROW: Nine seasons. Not one mark.",
+    won: "SPARROW: No contact. No excuses. Check the sheet.",
+    lost: "SPARROW: You were quicker. That is all it was.",
+  },
+  marsh: {
+    open: "KILN: Gap's mine. Come take it.",
+    pass: "KILN: There's the gap. There it goes.",
+    hurt: "KILN: Still parked here.",
+    down: "KILN: Nobody's ever come through there.",
+    won: "KILN: West choke. Always the west choke.",
+    lost: "KILN: Through my own gap. Huh.",
+  },
+  novo: {
+    open: "GLASSJAW: One mistake each. I'm not making mine.",
+    pass: "GLASSJAW: There it is. That was yours.",
+    hurt: "GLASSJAW: No no no, not yet—",
+    down: "GLASSJAW: Glass. Told you.",
+    won: "GLASSJAW: Two corners. That's all I needed.",
+    lost: "GLASSJAW: You survived me. Nobody survives me.",
+  },
+  reyes: {
+    open: "CATHODE: You're already in frame.",
+    pass: "CATHODE: Lock's been on you since the grid.",
+    hurt: "CATHODE: Array's still up. That's what matters.",
+    down: "CATHODE: Lost the lock. Lost the rest.",
+    won: "CATHODE: Bounty's paid. Everyone got a cut.",
+    lost: "CATHODE: Nobody's broken that lock before.",
+  },
+  ogun: {
+    open: "BELLOWS: It's a long road. You'll see.",
+    pass: "BELLOWS: No hurry. Never is.",
+    hurt: "BELLOWS: Still running. That's the trick.",
+    down: "BELLOWS: First one. In eleven years.",
+    won: "BELLOWS: The road did it. It always does.",
+    lost: "BELLOWS: Long road. You lasted it.",
+  },
+  vey: {
+    open: "HALCYON: Not easy. Fair. There's a difference.",
+    pass: "HALCYON: Clean. Note that it was clean.",
+    hurt: "HALCYON: You didn't have to do that.",
+    down: "HALCYON: So you're his after all.",
+    won: "HALCYON: Fair, and you still lost it.",
+    lost: "HALCYON: Good. Now you're worth talking to.",
+  },
+  ptok: {
+    open: "SABLE: Business. You understand.",
+    pass: "SABLE: I sold your position. Twice.",
+    hurt: "SABLE: This is coming out of your cut.",
+    down: "SABLE: Costly. For me.",
+    won: "SABLE: The House always races too. People forget.",
+    lost: "SABLE: Unbought. Expensive word, that.",
+  },
+  ilo: {
+    open: "ORGAN GRINDER: In you go.",
+    pass: "ORGAN GRINDER: Processing.",
+    hurt: "ORGAN GRINDER: Doesn't hurt. Never has.",
+    down: "ORGAN GRINDER: Out again. Rare.",
+    won: "ORGAN GRINDER: The Pit keeps what it takes.",
+    lost: "ORGAN GRINDER: Unprocessed. Huh.",
+  },
+  kade: {
+    open: "SUMP: You remember the stack. I remember the stack.",
+    pass: "SUMP: Same side as last time. Notice?",
+    hurt: "SUMP: He'll just send the next one.",
+    down: "SUMP: There. Now we're even.",
+    won: "SUMP: Twice now. Tell Bex I said hello.",
+    lost: "SUMP: It was never Marrow's idea. Ask who sells the tape.",
+  },
+  rhee: {
+    open: "PALLBEARER: Nobody gets past me twice.",
+    pass: "PALLBEARER: That's the first time. There is no second.",
+    hurt: "PALLBEARER: Good. Now it's a long road for both of us.",
+    down: "PALLBEARER: Then go and take it back.",
+    won: "PALLBEARER: Told you. Long road.",
+    lost: "PALLBEARER: Marrow's expecting you. He always was.",
+  },
+  marrow: {
+    open: "MARROW: It runs better for me.",
+    pass: "MARROW: You never could hold this corner.",
+    hurt: "MARROW: Careful. It's still my car.",
+    down: "MARROW: Eighteen months. Eighteen months.",
+    won: "MARROW: Same corner. Same result. Same advert.",
+    lost: "MARROW: It was never mine. Take it.",
+  },
+};
+
+export function rivalBark(rivalId: string, kind: BarkKind): string {
+  const line = RIVAL_BARKS[rivalId]?.[kind] ?? "";
+  // A single em dash is Sparrow declining to say anything, which is character
+  // rather than content. Suppress it here so the HUD never shows a lone dash.
+  return line === "SPARROW: —" ? "" : line;
+}
+
+/**
+ * A line for the road itself, played once when a circuit first unlocks.
+ *
+ * A new track arriving as nothing but a new button on a grid is the cheapest
+ * moment in a progression system. This costs one string each.
+ */
+export const TRACK_BEATS: Record<string, string> = {
+  foundry_pit: "The Foundry Set will run you. That is what the Foundry is for.",
+  rustline: "Eighteen metres wide in places. The Rustline eats new numbers.",
+  sable_run: "The House owns the Sable Mile. You will be racing on Ptok's road.",
+  dead_mile: "Marrow's crew runs the Dead Mile. You are getting close now.",
+};
 
 export function pickLine(pool: readonly string[], seed = 0): string {
   if (!pool.length) return "";

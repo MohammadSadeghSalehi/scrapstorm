@@ -19,10 +19,13 @@ import {
 } from "../classes";
 import { resetAiDirective, setAiDirective, type RivalProfile } from "../ai";
 import { getTrackLength, setActiveTrack } from "../track";
+import { EVENT_LINES, pickLine, rivalBark } from "../story";
 import {
   DEFAULT_MODIFIERS,
   type MissionDef,
   type MissionEffect,
+  type MissionEventKind,
+  type MissionModifiers,
   type MissionMutableWorld,
   type MissionRunSummary,
   type MissionSnapshot,
@@ -60,10 +63,28 @@ interface Bookkeeping {
   eliminated: string[];
   nextElimAt: number;
   elimWarned: boolean;
+  /** Player's place last step, for detecting the moment a place changes hands. */
+  prevPlayerPos: number;
+  /** raceTime of the last radio line. The floor under how often anyone speaks. */
+  radioAt: number;
+  /** Radio keys already used this run. Every bark lands once or not at all. */
+  said: Record<string, boolean>;
+  /** Objective statuses last step, for edge-triggered announcements. */
+  prevStatus: ObjectiveStatus[];
 }
 
 export interface MissionRun {
   def: MissionDef;
+  /**
+   * The modifiers this run is ACTUALLY using.
+   *
+   * Not `def.modifiers`: armMission raises heat to the career floor without
+   * mutating the shared catalogue entry — which is correct, a MissionDef is
+   * module-level data and writing career state into it would leak between
+   * saves — but it left the HUD reading the authored number and telling the
+   * player the league was calmer than it was.
+   */
+  modifiers: MissionModifiers;
   status: "running" | "complete" | "failed";
   /** Resolved from pace + live track length at creation. */
   lapTarget: number | null;
@@ -75,6 +96,15 @@ export interface MissionRun {
   book: Bookkeeping;
   /** Lines produced this step; the caller drains them into the HUD. */
   announcements: string[];
+  /**
+   * raceTime at which the run stopped being winnable or losable, or null.
+   *
+   * The shell reads this to decide when to throw the flag. A survival mission
+   * is OVER the second its timer lands — leaving the player to drive the
+   * remaining four laps of a lap count chosen only to outlast the clock is how
+   * a two-minute objective becomes a six-minute race.
+   */
+  resolvedAt: number | null;
 }
 
 function findPlayer(s: MissionSnapshot): MissionVehicleView | undefined {
@@ -152,6 +182,7 @@ export function createMissionRun(def: MissionDef, raceTime = 0): MissionRun {
 
   return {
     def,
+    modifiers: { ...DEFAULT_MODIFIERS, ...def.modifiers },
     status: "running",
     lapTarget,
     raceTarget,
@@ -160,6 +191,7 @@ export function createMissionRun(def: MissionDef, raceTime = 0): MissionRun {
     elapsed: 0,
     objectives,
     announcements: [],
+    resolvedAt: null,
     book: {
       prevHealth: {},
       prevWrecked: {},
@@ -178,30 +210,80 @@ export function createMissionRun(def: MissionDef, raceTime = 0): MissionRun {
         ? def.modifiers.elimination.everySec
         : Infinity,
       elimWarned: false,
+      prevPlayerPos: 0,
+      // Negative so the very first line of the race is not blocked by the
+      // cooldown measuring against a raceTime of zero.
+      radioAt: -99,
+      said: {},
+      prevStatus: objectives.map((o) => o.status),
     },
   };
+}
+
+/* ── radio ────────────────────────────────────────────────────────────
+ *
+ * Most of this game's story is delivered here rather than on a briefing screen,
+ * for the reason Most Wanted's was: a beat between races is read once, a line
+ * over the radio at 180mph is heard every time it fires and is attached to
+ * something the player just did.
+ *
+ * Two rules keep it from becoming noise, and both are load-bearing:
+ *
+ *  - Every line has a KEY and fires at most once per run. "Nice hit" on every
+ *    hit is wallpaper; "That's the second time tonight" is a race.
+ *  - A five second floor between any two lines. Without it a first-corner
+ *    pile-up empties the entire script into one truncated HUD chip.
+ */
+const RADIO_GAP = 5;
+
+function radio(
+  run: MissionRun,
+  effects: MissionEffect[],
+  now: number,
+  key: string,
+  message: string,
+  event: MissionEventKind = "boost",
+): void {
+  const b = run.book;
+  if (!message || b.said[key]) return;
+  if (now - b.radioAt < RADIO_GAP) return;
+  b.said[key] = true;
+  b.radioAt = now;
+  run.announcements.push(message);
+  effects.push({ kind: "announce", message, event });
+}
+
+/** Grid slot for a vehicle id, or -1. Mirrors sim.buildField's naming. */
+function slotOf(id: string): number {
+  const m = /^bot-(\d+)$/.exec(id);
+  return m ? Number(m[1]) : -1;
+}
+
+/** The Blacklist name driving a given car this race, if any. */
+function rivalIdOf(run: MissionRun, vehicleId: string): string | undefined {
+  const slot = slotOf(vehicleId);
+  return slot < 0 ? undefined : run.def.grid?.[slot]?.rivalId;
 }
 
 /**
  * Credit for a rival's health loss.
  *
- * physics.applyDamage takes an ownerId and then throws it away (the parameter is
- * literally named `_ownerId`), and VehicleState has nowhere to record it, so
- * there is no ground truth for "who wrecked that car" without editing files
- * this module does not own. This is the honest approximation: a hit counts as
- * yours if you were close enough and pointed the right way when it landed, or
- * if you were in contact range at all.
+ * The victim now carries `lastHitBy`, written by physics.applyDamage and by the
+ * ram path in collideVehicles, so this is EXACT whenever it is present: the car
+ * that put the damage on is named, and nobody standing nearby gets paid for it.
  *
- * It over-credits a three-car pile-up and under-credits a disc that ricochets
- * back into someone. Both are acceptable for a mission counter; neither is
- * acceptable for a leaderboard, so do not reuse this for one. See the report for
- * the two-line fix that makes it exact.
+ * The proximity fallback survives for the case where it is genuinely absent —
+ * a display-only vehicle built outside the sim, or damage from a path that
+ * predates the field. It over-credits a three-car pile-up and under-credits a
+ * disc that ricochets back into someone; acceptable for a mission counter,
+ * never for a leaderboard.
  */
 function playerCreditFor(
   player: MissionVehicleView | undefined,
   victim: MissionVehicleView,
 ): number {
   if (!player || !player.alive || player.wreckTimer > 0) return 0;
+  if (victim.lastHitBy != null) return victim.lastHitBy === player.id ? 1 : 0;
   const dx = victim.x - player.x;
   const dz = victim.z - player.z;
   const dist = Math.hypot(dx, dz);
@@ -274,6 +356,19 @@ export function stepMission(
             message: `Takedown — ${v.name}`,
             event: "wreck",
           });
+          // The rival gets the next word. A named car going down in silence is
+          // the difference between a mission counter and a rivalry.
+          const rid = rivalIdOf(run, v.id);
+          if (rid) {
+            radio(
+              run,
+              effects,
+              snap.raceTime,
+              `down-${rid}`,
+              rivalBark(rid, "down"),
+              "wreck",
+            );
+          }
         }
       }
       // A fresh wreck resets attribution: the next life's damage is a new claim.
@@ -296,6 +391,49 @@ export function stepMission(
   if (racing && player) {
     if (player.alive && player.wreckTimer <= 0) b.aliveSeconds += dt;
     if (player.position === 1) b.leadSeconds += dt;
+  }
+
+  /* ── radio ─────────────────────────────────────────────────────────── */
+  if (racing && player) {
+    const now = snap.raceTime;
+    const others = snap.vehicles.filter((v) => !v.isPlayer);
+    const seed = Math.round(now);
+
+    // Who you are actually here for. Held back a couple of seconds so it does
+    // not land underneath the countdown.
+    const headliner = run.def.grid?.[0]?.rivalId;
+    if (headliner && now > 2) {
+      radio(run, effects, now, `open-${headliner}`, rivalBark(headliner, "open"));
+    }
+
+    if (b.prevPlayerPos > 0 && player.position !== b.prevPlayerPos) {
+      if (player.position === 1) {
+        radio(run, effects, now, "took-lead", pickLine(EVENT_LINES.took_lead, seed));
+      } else if (player.position > b.prevPlayerPos) {
+        // Whoever now holds the place you just lost is the car that took it.
+        const passer = others.find((r) => r.position === b.prevPlayerPos);
+        const rid = passer ? rivalIdOf(run, passer.id) : undefined;
+        if (rid) radio(run, effects, now, `pass-${rid}`, rivalBark(rid, "pass"), "hit");
+        else radio(run, effects, now, "lost-place", pickLine(EVENT_LINES.lost_place, seed), "hit");
+      }
+    }
+    b.prevPlayerPos = player.position;
+
+    if (player.health < player.maxHealth * 0.3) {
+      radio(run, effects, now, "player-hurt", pickLine(EVENT_LINES.player_hurt, seed), "hit");
+    }
+    for (const r of others) {
+      if (r.alive && r.wreckTimer <= 0 && r.health < r.maxHealth * 0.35) {
+        const rid = rivalIdOf(run, r.id);
+        if (rid) radio(run, effects, now, `hurt-${rid}`, rivalBark(rid, "hurt"), "hit");
+      }
+    }
+    if (run.def.laps > 1 && player.lap >= run.def.laps - 1) {
+      radio(run, effects, now, "last-lap", pickLine(EVENT_LINES.last_lap, seed), "lap");
+    }
+    if (run.def.modifiers.bountyOnPlayer && now > 6) {
+      radio(run, effects, now, "bounty", pickLine(EVENT_LINES.heat_up, seed), "hit");
+    }
   }
 
   /* ── elimination ───────────────────────────────────────────────────── */
@@ -500,17 +638,82 @@ export function stepMission(
     }
   });
 
+  /* ── objective transitions ─────────────────────────────────────────── */
+  /*
+   * Announced on the EDGE, not on the state. A hold objective is "met" on every
+   * one of the ten thousand steps it survives, and an interpreter that reported
+   * state rather than change would say so on every one of them.
+   *
+   * Failure is louder than success on purpose: an objective quietly going red
+   * behind the HUD, and the run being over without the player knowing why, is
+   * the single worst thing this layer can do to someone.
+   */
+  run.objectives.forEach((st, i) => {
+    const was = b.prevStatus[i];
+    if (was === st.status) return;
+    b.prevStatus[i] = st.status;
+    if (!racing) return;
+    if (st.status === "failed") {
+      const line = st.optional
+        ? `Bonus lost — ${st.label}`
+        : `${st.label.toUpperCase()} — FAILED`;
+      run.announcements.push(line);
+      effects.push({ kind: "announce", message: line, event: "wreck" });
+      b.radioAt = snap.raceTime;
+    } else if (st.status === "met" && was === "pending") {
+      const line = `Objective — ${st.label}`;
+      run.announcements.push(line);
+      effects.push({ kind: "announce", message: line, event: "pickup" });
+      b.radioAt = snap.raceTime;
+    }
+  });
+
   /* ── resolution ────────────────────────────────────────────────────── */
   const required = run.objectives.filter((s) => !s.optional);
+  /*
+   * A hold objective is "met" from the first step. A mission whose required
+   * objectives are ALL holds is therefore satisfied before the lights go out,
+   * and would have completed itself on step one — you cannot win "do not get
+   * wrecked" by existing for a frame.
+   *
+   * So completion needs either something that had to be ACHIEVED, or the flag.
+   * Nothing in the catalogue is currently hold-only, which is exactly why this
+   * had to be caught by a test rather than by playing it.
+   */
+  const hasAchieve = run.def.objectives.some(
+    (o, i) => !run.objectives[i]!.optional && !HOLD_KINDS.has(o.kind),
+  );
   if (required.some((s) => s.status === "failed")) {
     run.status = "failed";
-  } else if (required.length > 0 && required.every((s) => s.status === "met")) {
-    // Hold-only missions (survive N seconds without wrecking) are complete the
-    // moment the achieve objectives land; race-shaped ones need the flag, which
-    // finish_place/finish_race already gate on.
+  } else if (
+    required.length > 0 &&
+    required.every((s) => s.status === "met") &&
+    (hasAchieve || raceOver)
+  ) {
     run.status = "complete";
   } else if (raceOver && required.some((s) => s.status === "pending")) {
     run.status = "failed";
+  }
+
+  if (run.status !== "running" && run.resolvedAt === null) {
+    run.resolvedAt = snap.raceTime;
+    const line = run.status === "complete" ? "OBJECTIVES CLEAR" : "RUN LOST";
+    run.announcements.push(line);
+    effects.push({
+      kind: "announce",
+      message: line,
+      event: run.status === "complete" ? "finish" : "wreck",
+    });
+    // The rival gets the last word too, and it is a different word depending on
+    // which way it went.
+    const headliner = run.def.grid?.[0]?.rivalId;
+    if (headliner) {
+      const bark = rivalBark(headliner, run.status === "complete" ? "lost" : "won");
+      if (bark) {
+        run.announcements.push(bark);
+        effects.push({ kind: "announce", message: bark, event: "finish" });
+      }
+    }
   }
 
   return effects;
@@ -559,7 +762,7 @@ export function applyMissionEffects(
  */
 export function armMission(
   def: MissionDef,
-  opts: { heatFloor?: number } = {},
+  opts: { heatFloor?: number; fieldPace?: number } = {},
 ): MissionRun {
   setActiveTrack(def.trackId);
 
@@ -583,9 +786,15 @@ export function armMission(
     bountyOn: mods.bountyOnPlayer ? "player" : null,
     protect: mods.protectSlot !== null ? `bot-${mods.protectSlot}` : null,
     profiles,
+    // The standard of the whole grid, named or not. Anonymous house cars are
+    // the ones a returning player notices least and should notice most.
+    fieldPace: Math.max(0, Math.min(1, opts.fieldPace ?? 0)),
+    playerId: "player",
   });
 
-  return createMissionRun(def, 0);
+  const run = createMissionRun(def, 0);
+  run.modifiers = mods;
+  return run;
 }
 
 /** Hand the world back to free play. */
@@ -602,8 +811,16 @@ export function summarise(
   const place = player
     ? snap.finishedOrder.indexOf(player.id) + 1 || player.position
     : snap.vehicles.length;
+  // The rival is whichever grid slot carries their id — not assumed to be slot
+  // 0, even though duelMission always puts them there. An event mission that
+  // ever names a rival elsewhere should not silently report `false` forever.
+  const rivalSlot = run.def.rivalId
+    ? (run.def.grid?.findIndex((g) => g.rivalId === run.def.rivalId) ?? -1)
+    : -1;
   return {
     missionId: run.def.id,
+    rivalWrecked:
+      rivalSlot >= 0 && run.book.takenDown.includes(`bot-${rivalSlot}`),
     outcome:
       run.status === "complete"
         ? "complete"

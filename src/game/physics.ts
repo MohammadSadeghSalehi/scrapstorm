@@ -141,7 +141,27 @@ export function stepVehicle(
   v: VehicleState,
   input: PlayerInput,
   dt: number,
-  opts?: { drifting?: boolean; particles?: Particle[] | null; catchUp?: number },
+  opts?: {
+    drifting?: boolean;
+    particles?: Particle[] | null;
+    catchUp?: number;
+    /**
+     * Driver skill, as multipliers on what the CAR can do rather than on what
+     * it is asked to do.
+     *
+     * This is the difference between a hard rival and a fast one. Bolting
+     * difficulty onto top speed alone produces a car you cannot pass on the
+     * straight and can walk away from in every corner — the worst of both. A
+     * better driver here holds more grip and rotates a little quicker, so they
+     * are hard to shake through a sequence of corners and beatable on a
+     * mistake, which is where overtakes should come from.
+     *
+     * Kept deliberately narrow (roughly ±7% grip, ±4% power). These stack with
+     * catch-up and with class stats; wider and the field stops feeling like it
+     * is driving the same cars you are.
+     */
+    skill?: { grip: number; power: number; turn: number } | null,
+  },
 ): { driftCharge: number; ramSpeed: number } {
   v.impactFlash = Math.max(0, v.impactFlash - dt);
   v.hitStun = Math.max(0, v.hitStun - dt);
@@ -177,8 +197,26 @@ export function stepVehicle(
   maxSpeed *= 1 - dmg * COMBAT.dmgSpeedPenalty;
   accel *= 1 - dmg * COMBAT.dmgAccelPenalty;
 
-  const catchUp = Math.min(0.22, Math.max(0, opts?.catchUp ?? 0));
-  if (catchUp > 0) {
+  const skill = opts?.skill;
+  if (skill) {
+    grip *= skill.grip;
+    maxSpeed *= skill.power;
+    accel *= skill.power;
+    turnRate *= skill.turn;
+  }
+
+  /*
+   * Catch-up is allowed to go NEGATIVE.
+   *
+   * A boss who cannot be dropped is the point of a boss; a boss who vanishes
+   * over the horizon at half distance is a loading screen. ai.catchUpFactor
+   * returns a small negative trim for a duelling rival that is too far AHEAD,
+   * which reads as them waiting for you rather than as the physics towing you
+   * back. The negative side is clamped much tighter than the positive one so it
+   * can never turn into a car that is visibly parked.
+   */
+  const catchUp = Math.min(0.22, Math.max(-0.1, opts?.catchUp ?? 0));
+  if (catchUp !== 0) {
     maxSpeed *= 1 + catchUp;
     accel *= 1 + catchUp * 1.25;
   }
@@ -468,7 +506,7 @@ function integratePos(v: VehicleState, dt: number) {
 export function applyDamage(
   v: VehicleState,
   amount: number,
-  _ownerId?: string,
+  ownerId?: string,
   fromNx?: number,
   fromNz?: number,
 ) {
@@ -482,6 +520,13 @@ export function applyDamage(
     amount -= absorb;
   }
   if (amount <= 0) return;
+  // Credit is recorded only for damage that actually landed — after invuln,
+  // after the shield ate its share. A shot fully absorbed by a Phase Slip did
+  // not hurt anyone and must not claim the wreck that follows it.
+  if (ownerId && ownerId !== v.id) {
+    v.lastHitBy = ownerId;
+    v.lastHitAge = 0;
+  }
   v.health = Math.max(0, v.health - amount);
   v.damageVisual = Math.min(1, Math.max(v.damageVisual, 1 - v.health / v.maxHealth));
   v.impactFlash = Math.max(v.impactFlash, 0.22 + Math.min(0.4, amount * 0.02));
@@ -608,7 +653,16 @@ export function collideVehicles(
 
   if (closing >= COMBAT.impactDmgThreshold && soft > 0.55) {
     const force = (closing - COMBAT.impactDmgThreshold) * COMBAT.impactDmgScale;
+    /*
+     * Ramming is the other half of takedown credit, and it is the half a
+     * damage-owner id cannot express: nobody "fires" a collision. Each car
+     * names the other, because in a genuine hit both of them are responsible
+     * for the closing speed — the runtime decides whose fault it was by which
+     * one is still driving afterwards.
+     */
     if (a.invuln <= 0) {
+      a.lastHitBy = b.id;
+      a.lastHitAge = 0;
       const dmgA = force * 12 * (massB / total);
       a.health = Math.max(0, a.health - dmgA);
       a.damageVisual = Math.min(1, Math.max(a.damageVisual, 1 - a.health / a.maxHealth));
@@ -625,6 +679,8 @@ export function collideVehicles(
       }
     }
     if (b.invuln <= 0) {
+      b.lastHitBy = a.id;
+      b.lastHitAge = 0;
       const dmgB = force * 12 * (massA / total);
       b.health = Math.max(0, b.health - dmgB);
       b.damageVisual = Math.min(1, Math.max(b.damageVisual, 1 - b.health / b.maxHealth));

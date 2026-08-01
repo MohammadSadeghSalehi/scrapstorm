@@ -2,6 +2,13 @@ import type { ReactNode } from "react";
 import { CLASS_ORDER, VEHICLE_CLASSES } from "@/game/classes";
 import { WORLD, LORE, briefingFor } from "@/game/story";
 import { PAINTS, type MetaState } from "@/game/meta";
+import {
+  currentRank,
+  nextRival,
+  trackUnlocked,
+  TRACK_UNLOCKS,
+  type CareerState,
+} from "@/game/missions";
 import { TRACK_DEFS, type TrackId } from "@/game/track";
 import type { SimState, VehicleClassId } from "@/game/types";
 import { GhostDuelPanel } from "./GhostDuelPanel";
@@ -10,11 +17,13 @@ export function MenuOverlay({
   state,
   name,
   meta,
+  career,
   onName,
   onClass,
   onTrack,
   onStartGarage,
   onStartRace,
+  onCareer,
   onBackMenu,
   onReplay,
   onResume,
@@ -27,11 +36,13 @@ export function MenuOverlay({
   state: SimState;
   name: string;
   meta: MetaState;
+  career: CareerState;
   onName: (n: string) => void;
   onClass: (c: VehicleClassId) => void;
   onTrack: (t: TrackId) => void;
   onStartGarage: () => void;
   onStartRace: () => void;
+  onCareer: () => void;
   onBackMenu: () => void;
   onReplay: () => void;
   onResume: () => void;
@@ -78,6 +89,7 @@ export function MenuOverlay({
         state={state}
         name={name}
         meta={meta}
+        career={career}
         onName={onName}
         onClass={onClass}
         onTrack={onTrack}
@@ -90,6 +102,10 @@ export function MenuOverlay({
       />
     );
   }
+
+  const rank = currentRank(career);
+  const target = nextRival(career);
+  const careerTarget = target ? `#${target.rank} ${target.name}` : null;
 
   return (
     <div className="pointer-events-none absolute inset-0 z-40 flex flex-col justify-between p-5 sm:p-8">
@@ -112,12 +128,26 @@ export function MenuOverlay({
       </div>
 
       <div className="pointer-events-auto w-full max-w-[16rem] animate-rise sm:max-w-xs">
-        <button type="button" className="btn-primary w-full" onClick={onStartGarage}>
-          Enter garage
+        {/*
+          Career first and garage second, because the career is the game now.
+          The garage remains a one-click quick heat — a free-play race with no
+          objectives, no stake and no bearing on the board — and that is worth
+          keeping: it is where you learn a circuit before you wager on it.
+        */}
+        <button type="button" className="btn-primary w-full" onClick={onCareer}>
+          {careerTarget ? `Career · ${careerTarget}` : "Start career"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary mt-2 w-full"
+          onClick={onStartGarage}
+        >
+          Quick heat
         </button>
         <p className="mt-2.5 text-center text-[0.7rem] text-muted">
           {meta.scrap} scrap
-          {meta.wins > 0 ? ` · ${meta.wins}W` : ""}
+          {rank <= 15 ? ` · rank ${rank}` : ""}
+          {career.markers > 0 ? ` · ${career.markers}M` : ""}
         </p>
       </div>
     </div>
@@ -128,6 +158,7 @@ function GaragePanel({
   state,
   name,
   meta,
+  career,
   onName,
   onClass,
   onTrack,
@@ -141,6 +172,7 @@ function GaragePanel({
   state: SimState;
   name: string;
   meta: MetaState;
+  career: CareerState;
   onName: (n: string) => void;
   onClass: (c: VehicleClassId) => void;
   onTrack: (t: TrackId) => void;
@@ -203,22 +235,36 @@ function GaragePanel({
             />
           </div>
 
+          {/*
+            A quick heat can only be run on a circuit the career has opened.
+            Free play used to reach every road in the catalogue, which quietly
+            handed away the ladder's only pacing device — there is nothing left
+            to unlock if you have already driven all of it.
+          */}
           <div className="mt-2.5 grid grid-cols-2 gap-1.5">
             {TRACK_DEFS.map((tr) => {
               const on = trackId === tr.id;
+              const open = trackUnlocked(career, tr.id);
               return (
                 <button
                   key={tr.id}
                   type="button"
+                  disabled={!open}
                   onClick={() => onTrack(tr.id)}
                   className={`rounded-lg border px-2 py-1.5 text-left transition-colors ${
-                    on
-                      ? "border-fg/25 bg-bg-subtle"
-                      : "border-border/80 bg-bg/30 hover:bg-bg-subtle/60"
+                    !open
+                      ? "border-border/40 bg-bg/10 opacity-45"
+                      : on
+                        ? "border-fg/25 bg-bg-subtle"
+                        : "border-border/80 bg-bg/30 hover:bg-bg-subtle/60"
                   }`}
                 >
                   <span className="block text-sm font-semibold text-fg">{tr.name}</span>
-                  <span className="block text-[0.6rem] text-muted">{tr.tagline}</span>
+                  <span className="block text-[0.6rem] text-muted">
+                    {open
+                      ? tr.tagline
+                      : `Locked · ${TRACK_UNLOCKS[tr.id] - career.markers} markers`}
+                  </span>
                 </button>
               );
             })}

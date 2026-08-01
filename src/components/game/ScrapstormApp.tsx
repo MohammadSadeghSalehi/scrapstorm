@@ -11,17 +11,43 @@ import type {
 } from "@/game/types";
 import { VEHICLE_CLASSES } from "@/game/classes";
 import {
+  applyMissionMeta,
   applyRaceReward,
   loadMeta,
   paintHex,
   saveMeta,
   selectPaint,
+  spendScrap,
   tryUnlockPaint,
   type MetaState,
 } from "@/game/meta";
+import {
+  applyMissionEffects,
+  applyMissionResult,
+  armMission,
+  disarmMission,
+  drainScrap,
+  fieldPace,
+  heatNormalised,
+  loadCareer,
+  markBeatSeen,
+  missionById,
+  missionCost,
+  pendingIntroBeat,
+  resetCareer,
+  saveCareer,
+  stepMission,
+  summarise,
+  type CareerAward,
+  type CareerState,
+  type MissionDef,
+  type MissionRun,
+  type MissionRunSummary,
+} from "@/game/missions";
 import { haptic } from "@/game/haptics";
 import { MenuOverlay } from "./Menus";
-import type { HudSlice } from "./GameHUD";
+import { CareerBoard, MissionBrief, MissionResults, StoryCard } from "./CareerMenus";
+import type { HudSlice, MissionHud } from "./GameHUD";
 
 type GameSimulation = import("@/game/sim").GameSimulation;
 type InputController = import("@/game/input").InputController;
@@ -57,7 +83,7 @@ type EngineKit = {
     ) => void;
   };
   installAudioUnlock: () => () => void;
-  snapshotHud: (s: SimState) => HudSlice;
+  snapshotHud: (s: SimState, mission?: MissionHud | null) => HudSlice;
   GameHUD: ComponentType<{ hud: HudSlice; onPause: () => void }>;
   MobileControls: ComponentType<{
     input: InputController;
@@ -173,6 +199,8 @@ function makeShellState(
     uiAccel: 0,
     lapTimes: [],
     lastLapTime: 0,
+    lastHitBy: null,
+    lastHitAge: 0,
   };
   return {
     phase,
@@ -284,6 +312,42 @@ async function loadEngine(
   };
 }
 
+/** How long a radio line stays on screen, in RACE seconds. */
+const RADIO_HOLD = 4.5;
+/** Race seconds between a run resolving and the flag actually falling. */
+const RESOLVE_GRACE = 2.6;
+
+/**
+ * The mission's slice of the HUD.
+ *
+ * Built here rather than inside snapshotHud because the run is not part of
+ * SimState and must not become part of it — the sim is deliberately ignorant of
+ * missions, and this function is the entire cost of keeping it that way.
+ */
+function missionHudFrom(
+  run: MissionRun,
+  radio: { text: string; until: number }[],
+): MissionHud {
+  return {
+    name: run.def.name,
+    kind: run.def.kind,
+    // run.modifiers, not run.def.modifiers — the career's heat floor is applied
+    // at arm time and the player is entitled to see the number they are driving
+    // against, not the one that was authored.
+    heat: run.modifiers.heat,
+    bounty: run.modifiers.bountyOnPlayer,
+    status: run.status,
+    objectives: run.objectives.map((o) => ({
+      label: o.label,
+      detail: o.detail,
+      progress: o.progress,
+      status: o.status,
+      optional: o.optional,
+    })),
+    announcements: radio.map((r) => r.text),
+  };
+}
+
 export function ScrapstormApp() {
   const [enginePct, setEnginePct] = useState(0);
   const [engineMsg, setEngineMsg] = useState("Warming engines…");
@@ -316,6 +380,34 @@ export function ScrapstormApp() {
   );
   const shellPhaseRef = useRef<MatchPhase>("menu");
 
+  /* ── career ────────────────────────────────────────────────────────────
+   *
+   * The live career is held in a REF as well as in state. refreshHud is a
+   * useCallback wired into the render loop and would otherwise close over a
+   * stale snapshot for the whole session — which is exactly the sort of bug
+   * that shows up as "the last race paid nothing" three hours in.
+   */
+  const [career, setCareer] = useState<CareerState>(() => loadCareer());
+  const careerRef = useRef<CareerState>(career);
+  const commitCareer = useCallback((next: CareerState) => {
+    careerRef.current = next;
+    saveCareer(next);
+    setCareer(next);
+  }, []);
+  const [careerView, setCareerView] = useState<"board" | "brief" | null>(null);
+  const [briefId, setBriefId] = useState<string | null>(null);
+  const runRef = useRef<MissionRun | null>(null);
+  const missionDefRef = useRef<MissionDef | null>(null);
+  const radioRef = useRef<{ text: string; until: number }[]>([]);
+  const [missionResult, setMissionResult] = useState<{
+    def: MissionDef;
+    summary: MissionRunSummary;
+    award: CareerAward;
+  } | null>(null);
+  const [beatQueue, setBeatQueue] = useState<string[]>([]);
+  /** What to do once the current run of story beats has been read. */
+  const afterBeats = useRef<(() => void) | null>(null);
+
   const refreshHud = useCallback(() => {
     const sim = simRef.current;
     const k = kitRef.current;
@@ -327,9 +419,50 @@ export function ScrapstormApp() {
     const every = racing ? 3 : 6;
     if (hudTick.current % every !== 0) return;
 
+    /*
+     * Mission tick.
+     *
+     * Safe at this reduced rate — and safe at ANY rate — because stepMission
+     * takes its clock from sim.state.raceTime rather than from a dt we pass in.
+     * A dropped frame, a pause, hitstop and a 144Hz monitor all produce the same
+     * survival timer, and ticking twice in one frame cannot double-count.
+     */
+    const run = runRef.current;
+    if (run) {
+      applyMissionEffects(sim.state, stepMission(run, sim.state));
+      const now = sim.state.raceTime;
+      if (run.announcements.length > 0) {
+        for (const line of run.announcements) {
+          radioRef.current.push({ text: line, until: now + RADIO_HOLD });
+        }
+        run.announcements.length = 0;
+      }
+      radioRef.current = radioRef.current.filter((r) => r.until > now).slice(-3);
+      /*
+       * Throw the flag when the run is decided.
+       *
+       * A survival mission is authored with a lap count chosen only to outlast
+       * its own clock — The Gauntlet is six laps for a two-minute objective.
+       * Without this the player wins at 2:00 and then drives four more laps of
+       * a race that no longer has a result in it.
+       */
+      if (
+        run.resolvedAt !== null &&
+        sim.state.phase === "racing" &&
+        now >= run.resolvedAt + RESOLVE_GRACE
+      ) {
+        sim.state.phase = "finished";
+      }
+    }
+
+    const missionHud = run ? missionHudFrom(run, radioRef.current) : null;
+
     if (racing) {
-      const next = k.snapshotHud(sim.state);
-      const sig = `${next.phase}|${Math.round(next.raceTime * 10)}|${Math.round(next.player?.speed ?? 0)}|${Math.round(next.player?.health ?? 0)}|${Math.round((next.player?.uiAccel ?? 0) * 5)}|${next.player?.position}|${Math.ceil(next.countdown)}|${next.events[0]?.message ?? ""}`;
+      const next = k.snapshotHud(sim.state, missionHud);
+      const objSig = run
+        ? run.objectives.map((o) => `${o.status}${o.detail}`).join(",")
+        : "";
+      const sig = `${next.phase}|${Math.round(next.raceTime * 10)}|${Math.round(next.player?.speed ?? 0)}|${Math.round(next.player?.health ?? 0)}|${Math.round((next.player?.uiAccel ?? 0) * 5)}|${next.player?.position}|${Math.ceil(next.countdown)}|${next.events[0]?.message ?? ""}|${objSig}|${radioRef.current.length}`;
       if (sig !== lastHudSig.current) {
         lastHudSig.current = sig;
         setHud(next);
@@ -337,7 +470,7 @@ export function ScrapstormApp() {
       if (phase === "paused") setMenuState(snapshotMenu(sim.state));
     } else {
       setMenuState(snapshotMenu(sim.state));
-      setHud(k.snapshotHud(sim.state));
+      setHud(k.snapshotHud(sim.state, missionHud));
     }
 
     const player = sim.state.vehicles.find((v) => v.isPlayer);
@@ -349,24 +482,64 @@ export function ScrapstormApp() {
     }
     if (sim.state.phase === "finished" && !rewardApplied.current) {
       rewardApplied.current = true;
-      const place =
-        sim.state.finishedOrder.indexOf(sim.state.playerId) + 1 ||
-        sim.state.vehicles.length;
-      const before = loadMeta();
-      const { meta: next, earned } = applyRaceReward(
-        before,
-        place,
-        sim.state.vehicles.length,
-        sim.state.raceTime,
-        sim.state.bestLapThisRace,
-      );
-      saveMeta(next);
-      setMeta(next);
-      sim.state.scrapEarned = earned;
+      const def = missionDefRef.current;
+      if (run && def) {
+        /*
+         * One last step before summarising. The flag can fall on a frame the
+         * interpreter has not seen — sim.fixedStep sets phase to "finished"
+         * itself two seconds after the player crosses the line — and objectives
+         * that only resolve at raceOver would otherwise still read "pending"
+         * and fail a run the player actually won.
+         */
+        stepMission(run, sim.state);
+        const summary = summarise(run, sim.state);
+        const { career: nextCareer, award } = applyMissionResult(
+          careerRef.current,
+          def,
+          summary,
+        );
+        // Career owes the scrap; meta.ts holds it. Drain and pay in one place so
+        // the two can never disagree about what was earned.
+        const drained = drainScrap(nextCareer);
+        commitCareer(drained.career);
+        const paid = applyMissionMeta(loadMeta(), {
+          scrap: drained.scrap,
+          place: summary.place,
+          raceTimeSec: sim.state.raceTime,
+          bestLap: summary.bestLap,
+          won: summary.outcome === "complete",
+        });
+        saveMeta(paid);
+        setMeta(paid);
+        sim.state.scrapEarned = drained.scrap;
+        setMissionResult({ def, summary, award });
+        if (award.beats.length > 0) setBeatQueue(award.beats);
+        // The world goes back to free play immediately; the results screen is
+        // reading a snapshot, not a live directive.
+        disarmMission();
+        runRef.current = null;
+        radioRef.current = [];
+        haptic(summary.outcome === "complete" ? "boost" : "hit");
+      } else {
+        const place =
+          sim.state.finishedOrder.indexOf(sim.state.playerId) + 1 ||
+          sim.state.vehicles.length;
+        const before = loadMeta();
+        const { meta: next, earned } = applyRaceReward(
+          before,
+          place,
+          sim.state.vehicles.length,
+          sim.state.raceTime,
+          sim.state.bestLapThisRace,
+        );
+        saveMeta(next);
+        setMeta(next);
+        sim.state.scrapEarned = earned;
+      }
       setMenuState(snapshotMenu(sim.state));
     }
     if (sim.worldEpoch !== sceneEpoch) setSceneEpoch(sim.worldEpoch);
-  }, [sceneEpoch]);
+  }, [sceneEpoch, commitCareer]);
 
   useEffect(() => {
     const gen = ++bootGen.current;
@@ -453,6 +626,12 @@ export function ScrapstormApp() {
     const sim = simRef.current;
     kit.audioEngine.unlock();
     kit.audioEngine.playUi("confirm");
+    // This path only ever serves the free-play button pressed before the engine
+    // finished loading. It must still clear any armed mission, or a deferred
+    // quick heat inherits the last run's grid.
+    disarmMission();
+    runRef.current = null;
+    missionDefRef.current = null;
     sim.setGuest(prefs.current.name, prefs.current.classId);
     sim.setTrack(prefs.current.trackId);
     sim.setPhase("countdown");
@@ -558,38 +737,164 @@ export function ScrapstormApp() {
     }
   };
 
-  const onStartRace = () => {
-    haptic("boost");
-    if (!simRef.current || !kitRef.current) {
-      setPendingRace(true);
-      setEngineMsg("Spooling race…");
+  /**
+   * Put a race on the track. `def` null is a free-play heat.
+   *
+   * The ORDER inside the `.finally` is the load-bearing part and the reason the
+   * mission arming does not happen earlier: sim.buildField reads BOT_NAMES when
+   * the grid is constructed, which is inside startCountdown. Arm after the
+   * assets are ready and immediately before the countdown, or the grid is named
+   * after the previous race.
+   */
+  const beginRace = useCallback(
+    (def: MissionDef | null) => {
+      haptic("boost");
+      const sim = simRef.current;
+      const k = kitRef.current;
+      if (!sim || !k) {
+        setPendingRace(true);
+        setEngineMsg("Spooling race…");
+        return;
+      }
+      // The stake is taken once per ATTEMPT, at the grid. A mid-race restart is
+      // the same attempt continuing — you never banked a result — so it is not
+      // charged again; the retry button on the results screen comes back
+      // through here and is.
+      if (def) {
+        const cost = missionCost(def);
+        if (cost > 0) {
+          const m = loadMeta();
+          if (m.scrap < cost) return;
+          const spent = spendScrap(m, cost);
+          saveMeta(spent);
+          setMeta(spent);
+        }
+      }
+      setMissionResult(null);
+      setCareerView(null);
+      k.audioEngine.unlock();
+      k.audioEngine.playUi("confirm");
+      sim.setGuest(prefs.current.name, prefs.current.classId);
+      sim.setTrack(def ? def.trackId : prefs.current.trackId);
+
+      // Load everything the race needs BEFORE the countdown. These preloads used
+      // to run during the opening lap, so the first corner paid for texture
+      // decode and glTF parsing — props popping in and frame spikes exactly when
+      // the field is bunched. A few seconds of loading buys a clean start.
+      setRaceLoad({ pct: 0, label: "Surfaces" });
+      void k
+        .prepareRaceAssets((pct, label) => setRaceLoad({ pct, label }))
+        .finally(() => {
+          setRaceLoad(null);
+          if (simRef.current !== sim) return; // menu changed under us
+          if (def) {
+            const c = careerRef.current;
+            runRef.current = armMission(def, {
+              heatFloor: heatNormalised(c) * 0.75,
+              fieldPace: fieldPace(c),
+            });
+            // Missions own their distance. setTrack has just reset lapCount to
+            // the circuit default, so this must come after it.
+            sim.state.lapCount = def.laps;
+            missionDefRef.current = def;
+          } else {
+            disarmMission();
+            runRef.current = null;
+            missionDefRef.current = null;
+          }
+          radioRef.current = [];
+          sim.setPhase("countdown");
+          lastHit.current = 999;
+          rewardApplied.current = false;
+          lastHudSig.current = "";
+          setSceneEpoch(sim.worldEpoch);
+          setMenuState(snapshotMenu(sim.state));
+          setHud(
+            k.snapshotHud(
+              sim.state,
+              runRef.current ? missionHudFrom(runRef.current, []) : null,
+            ),
+          );
+        });
+    },
+    [],
+  );
+
+  const onStartRace = () => beginRace(null);
+
+  /* ── career navigation ─────────────────────────────────────────────── */
+
+  const onOpenCareer = () => {
+    audio()?.unlock();
+    audio()?.playUi("click");
+    setMissionResult(null);
+    setCareerView("board");
+  };
+
+  const onSelectMission = (id: string) => {
+    audio()?.playUi("click");
+    setBriefId(id);
+    setCareerView("brief");
+  };
+
+  /**
+   * Roll out, via the intro beat if there is one.
+   *
+   * The beat is queued rather than shown inline so that the same machinery
+   * handles the two-to-three beats an aftermath can produce. `afterBeats` is
+   * what turns "read this" back into "now drive".
+   */
+  const onRollOut = () => {
+    const def = briefId ? missionById(briefId) : null;
+    if (!def) return;
+    const intro = pendingIntroBeat(careerRef.current, def);
+    if (intro) {
+      commitCareer(markBeatSeen(careerRef.current, intro));
+      afterBeats.current = () => beginRace(def);
+      setBeatQueue([intro]);
       return;
     }
-    const sim = simRef.current;
-    const k = kitRef.current;
-    k.audioEngine.unlock();
-    k.audioEngine.playUi("confirm");
-    sim.setGuest(prefs.current.name, prefs.current.classId);
-    sim.setTrack(prefs.current.trackId);
+    beginRace(def);
+  };
 
-    // Load everything the race needs BEFORE the countdown. These preloads used
-    // to run during the opening lap, so the first corner paid for texture
-    // decode and glTF parsing — props popping in and frame spikes exactly when
-    // the field is bunched. A few seconds of loading buys a clean start.
-    setRaceLoad({ pct: 0, label: "Surfaces" });
-    void k
-      .prepareRaceAssets((pct, label) => setRaceLoad({ pct, label }))
-      .finally(() => {
-        setRaceLoad(null);
-        if (simRef.current !== sim) return; // menu changed under us
-        sim.setPhase("countdown");
-        lastHit.current = 999;
-        rewardApplied.current = false;
-        lastHudSig.current = "";
-        setSceneEpoch(sim.worldEpoch);
-        setMenuState(snapshotMenu(sim.state));
-        setHud(k.snapshotHud(sim.state));
-      });
+  const onDismissBeat = () => {
+    audio()?.playUi("click");
+    // The continuation runs OUTSIDE the state updater. React may invoke an
+    // updater twice (StrictMode does, deliberately), and a double-invoked
+    // `beginRace` starts two countdowns and charges the stake twice.
+    const rest = beatQueue.slice(1);
+    setBeatQueue(rest);
+    if (rest.length === 0) {
+      const done = afterBeats.current;
+      afterBeats.current = null;
+      done?.();
+    }
+  };
+
+  const onLeaveMission = () => {
+    disarmMission();
+    runRef.current = null;
+    missionDefRef.current = null;
+    radioRef.current = [];
+    setMissionResult(null);
+    setCareerView("board");
+    setShellPhase("menu");
+    shellPhaseRef.current = "menu";
+    simRef.current?.setPhase("menu");
+    if (simRef.current) setSceneEpoch(simRef.current.worldEpoch);
+    refreshHud();
+  };
+
+  const onResetCareer = () => {
+    if (typeof window !== "undefined" && !window.confirm("Wipe the career and start again?")) {
+      return;
+    }
+    disarmMission();
+    runRef.current = null;
+    missionDefRef.current = null;
+    commitCareer(resetCareer());
+    setMissionResult(null);
+    setCareerView("board");
   };
 
   const onGhostToggle = useCallback((on: boolean) => {
@@ -610,6 +915,16 @@ export function ScrapstormApp() {
   }, []);
 
   const onBackMenu = () => {
+    // Free play must never inherit the last mission's manhunt, its named grid or
+    // its lap count. Leaving by any door disarms.
+    if (runRef.current || missionDefRef.current) {
+      disarmMission();
+      runRef.current = null;
+      missionDefRef.current = null;
+      radioRef.current = [];
+      setCareerView("board");
+    }
+    setMissionResult(null);
     setShellPhase("menu");
     shellPhaseRef.current = "menu";
     audio()?.playUi("click");
@@ -623,7 +938,9 @@ export function ScrapstormApp() {
     }
   };
 
-  const onReplay = () => onStartRace();
+  // Free-play "race again" only. A mission run replays through the results
+  // screen, which goes back through beginRace so the stake is charged again.
+  const onReplay = () => beginRace(null);
 
   const onPause = useCallback(() => {
     simRef.current?.togglePause();
@@ -639,6 +956,20 @@ export function ScrapstormApp() {
     audio()?.playUi("confirm");
     rewardApplied.current = false;
     lastHudSig.current = "";
+    // Re-arm before the grid is rebuilt, not after: restartRace goes straight
+    // into startCountdown, which reads the roster while building the field. A
+    // fresh MissionRun is required too — the old one carries a whole race worth
+    // of bookkeeping, including who it has already credited you for wrecking.
+    const def = missionDefRef.current;
+    if (def && simRef.current) {
+      const c = careerRef.current;
+      runRef.current = armMission(def, {
+        heatFloor: heatNormalised(c) * 0.75,
+        fieldPace: fieldPace(c),
+      });
+      simRef.current.state.lapCount = def.laps;
+      radioRef.current = [];
+    }
     simRef.current?.restartRace();
     setSceneEpoch(simRef.current?.worldEpoch ?? 0);
     refreshHud();
@@ -671,6 +1002,16 @@ export function ScrapstormApp() {
           selectedTrack: shellTrack,
         };
 
+  const inRace =
+    livePhase === "racing" || livePhase === "countdown" || livePhase === "paused";
+  const briefDef = briefId ? (missionById(briefId) ?? null) : null;
+  // While any career panel owns the screen the ordinary menu must not also be
+  // mounted — two full-screen overlays means invisible buttons.
+  const careerOverlay =
+    !!missionResult ||
+    (careerView === "brief" && !!briefDef) ||
+    (careerView === "board" && !inRace);
+
   const GameCanvas = kit?.GameCanvas;
   const GameHUD = kit?.GameHUD;
   const MobileControls = kit?.MobileControls;
@@ -699,24 +1040,69 @@ export function ScrapstormApp() {
 
       <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(10,10,11,0.55)_100%)]" />
 
-      <MenuOverlay
-        state={displayState}
-        name={name}
-        meta={meta}
-        onName={onName}
-        onClass={onClass}
-        onTrack={onTrack}
-        onStartGarage={onStartGarage}
-        onStartRace={onStartRace}
-        onBackMenu={onBackMenu}
-        onReplay={onReplay}
-        onResume={onResume}
-        onRestart={onRestart}
-        onSelectPaint={onSelectPaint}
-        onUnlockPaint={onUnlockPaint}
-        ghostOn={ghostOn}
-        onGhostToggle={onGhostToggle}
-      />
+      {!careerOverlay && (
+        <MenuOverlay
+          state={displayState}
+          name={name}
+          meta={meta}
+          career={career}
+          onName={onName}
+          onClass={onClass}
+          onTrack={onTrack}
+          onStartGarage={onStartGarage}
+          onStartRace={onStartRace}
+          onCareer={onOpenCareer}
+          onBackMenu={onBackMenu}
+          onReplay={onReplay}
+          onResume={onResume}
+          onRestart={onRestart}
+          onSelectPaint={onSelectPaint}
+          onUnlockPaint={onUnlockPaint}
+          ghostOn={ghostOn}
+          onGhostToggle={onGhostToggle}
+        />
+      )}
+
+      {/*
+        Career screens sit above the menu overlay and replace it entirely while
+        open. Rendering both would leave the garage's pointer targets live
+        underneath a full-screen panel.
+      */}
+      {missionResult ? (
+        <MissionResults
+          def={missionResult.def}
+          summary={missionResult.summary}
+          award={missionResult.award}
+          onRetry={() => beginRace(missionResult.def)}
+          onBoard={onLeaveMission}
+        />
+      ) : careerView === "brief" && briefDef ? (
+        <MissionBrief
+          def={briefDef}
+          career={career}
+          meta={meta}
+          classId={shellClass}
+          onClass={onClass}
+          onStart={onRollOut}
+          onBack={() => setCareerView("board")}
+        />
+      ) : careerView === "board" && !inRace ? (
+        <CareerBoard
+          career={career}
+          meta={meta}
+          onSelect={onSelectMission}
+          onClose={() => setCareerView(null)}
+          onReset={onResetCareer}
+        />
+      ) : null}
+
+      {beatQueue.length > 0 && (
+        <StoryCard
+          beatId={beatQueue[0]!}
+          remaining={beatQueue.length}
+          onNext={onDismissBeat}
+        />
+      )}
 
       {raceLoad ? (
         <div className="pointer-events-auto absolute inset-0 z-[60] flex items-center justify-center bg-bg/80 backdrop-blur-sm">

@@ -12,6 +12,21 @@
  * profile is pushed into ai.ts by armMission, so "Ferrite brakes far too late"
  * is a thing you can feel rather than a line in a bio. Keep them distinct: two
  * rivals with the same numbers are one rival with two names.
+ *
+ * THE DIFFICULTY LADDER lives in those profiles, and it is deliberately not a
+ * straight line:
+ *
+ *  - `pace` rises with rank, but not monotonically. Sparrow at 11 is faster
+ *    than Kiln at 10 and Glassjaw at 9; she is also completely harmless. A
+ *    board where every step is strictly harder in every way is a slider with
+ *    names on it, and the player stops reading the bios by rank 12.
+ *  - `pattern` is introduced cheap and revisited expensive. Wask at 15 is a
+ *    blocker you can barely feel; Ilo at 4 is the same idea with a bruiser,
+ *    maximum aggression and the Foundry's chokes to do it in. By the time a
+ *    pattern is genuinely dangerous you have already been taught the answer.
+ *  - `mistake` falls as you climb, which is the real reason the top of the
+ *    board is hard: down here you win on their errors, up there you have to
+ *    manufacture your own openings.
  */
 import { DEFAULT_MODIFIERS, type MissionDef, type RivalDef } from "./types";
 
@@ -28,8 +43,14 @@ export const RIVALS: RivalDef[] = [
     realName: "Tanner Wask",
     crew: "Sump Rats",
     classId: "bruiser",
-    homeTrack: "foundry_pit",
-    profile: { aggression: 0.55, precision: 0.3, patience: 0.6, ultBias: 0.3, hunt: 0.2 },
+    // Ash Spire, not the Foundry: rank 15 unlocks at zero markers and the
+    // Foundry does not open until six. A duel on a circuit the board says you
+    // cannot reach yet is the ladder contradicting itself on its first rung.
+    homeTrack: "ash_spire",
+    profile: {
+      aggression: 0.55, precision: 0.3, patience: 0.6, ultBias: 0.3, hunt: 0.2,
+      pace: 0.16, mistake: 0.7, nerve: 0.45, pattern: "blocker",
+    },
     bio: "Runs the bottom of the board like a doorman. Everyone starts here.",
     taunt: "New paint. Won't last.",
     beaten: "Board's yours to climb. Don't thank me.",
@@ -52,7 +73,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Sump Rats",
     classId: "trickster",
     homeTrack: "cinder_bowl",
-    profile: { aggression: 0.4, precision: 0.6, patience: 0.35, ultBias: 0.7, hunt: 0.2 },
+    profile: {
+      aggression: 0.4, precision: 0.6, patience: 0.35, ultBias: 0.7, hunt: 0.2,
+      pace: 0.24, mistake: 0.62, nerve: 0.4, pattern: "racer",
+    },
     bio: "Drops mines into corners she has already left. Wins on other people's panic.",
     taunt: "Watch the exit. Not the entry. The exit.",
     beaten: "Fine. Fine! You looked where I told you not to.",
@@ -77,7 +101,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Feed Regulars",
     classId: "interceptor",
     homeTrack: "ash_spire",
-    profile: { aggression: 0.7, precision: 0.5, patience: 0.5, ultBias: 0.5, hunt: 0.6 },
+    profile: {
+      aggression: 0.7, precision: 0.5, patience: 0.5, ultBias: 0.5, hunt: 0.6,
+      pace: 0.3, mistake: 0.6, nerve: 0.55, pattern: "hunter",
+    },
     bio: "Counts his takedowns on air. Has never once counted his losses.",
     taunt: "Number forty-one, coming up.",
     beaten: "Off by one. I'll fix the tally.",
@@ -102,7 +129,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Rustline Local",
     classId: "bruiser",
     homeTrack: "rustline",
-    profile: { aggression: 0.75, precision: 0.35, patience: 0.15, ultBias: 0.4, hunt: 0.35 },
+    profile: {
+      aggression: 0.75, precision: 0.35, patience: 0.15, ultBias: 0.4, hunt: 0.35,
+      pace: 0.34, mistake: 0.78, nerve: 0.6, pattern: "racer",
+    },
     bio: "Brakes so late she has been through the chicane barrier twice this season.",
     taunt: "I don't lift. Ask the barrier.",
     beaten: "Should've lifted.",
@@ -124,7 +154,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Long Sable",
     classId: "interceptor",
     homeTrack: "sable_run",
-    profile: { aggression: 0.4, precision: 0.85, patience: 0.8, ultBias: 0.4, hunt: 0.2 },
+    profile: {
+      aggression: 0.4, precision: 0.85, patience: 0.8, ultBias: 0.4, hunt: 0.2,
+      pace: 0.55, mistake: 0.05, nerve: 0.6, pattern: "pacer",
+    },
     bio: "Never touches anyone. Never needs to. Cleanest line in the league.",
     taunt: "I'll be where you were.",
     beaten: "You were quicker. That is all it was.",
@@ -132,11 +165,12 @@ export const RIVALS: RivalDef[] = [
     duel: {
       laps: 3,
       kind: "time_attack",
-      objectives: [{ kind: "race_pace", pace: 34 }, { kind: "finish_place", place: 2 }],
+            objectives: [{ kind: "race_pace", pace: 34 }, { kind: "finish_place", place: 2 }],
       modifiers: { heat: heatForRank(11), catchUp: 0, weaponsFree: false },
       brief: ["Sparrow does not fight. Sparrow drives.", "Weapons cold. This one is on the clock."],
     },
     reward: { scrap: 340, markers: 4, title: "Clean Hands", pinkSlip: "his telemetry" },
+    beatAfterWrecked: "wrecked-sparrow",
   },
   {
     id: "marsh",
@@ -146,7 +180,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Foundry Set",
     classId: "bruiser",
     homeTrack: "foundry_pit",
-    profile: { aggression: 0.9, precision: 0.4, patience: 0.55, ultBias: 0.6, hunt: 0.7 },
+    profile: {
+      aggression: 0.9, precision: 0.4, patience: 0.55, ultBias: 0.6, hunt: 0.7,
+      pace: 0.36, mistake: 0.5, nerve: 0.7, pattern: "blocker",
+    },
     bio: "Parks in the choke and charges whatever arrives. It works more than it should.",
     taunt: "Gap's mine. Come take it.",
     beaten: "Nobody's ever come through there before.",
@@ -160,6 +197,7 @@ export const RIVALS: RivalDef[] = [
     },
     reward: { scrap: 380, markers: 5, title: "Pitbreaker", pinkSlip: "the Foundry gate code" },
     beatAfter: "beat-kiln",
+    beatAfterWrecked: "wrecked-kiln",
   },
   {
     id: "novo",
@@ -169,7 +207,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Feed Regulars",
     classId: "trickster",
     homeTrack: "cinder_bowl",
-    profile: { aggression: 0.6, precision: 0.75, patience: 0.4, ultBias: 0.8, hunt: 0.4 },
+    profile: {
+      aggression: 0.6, precision: 0.75, patience: 0.4, ultBias: 0.8, hunt: 0.4,
+      pace: 0.52, mistake: 0.35, nerve: 0.2, pattern: "racer",
+    },
     bio: "Fastest hands on the board, least hull. Decides races in one corner.",
     taunt: "One mistake each. I'm not making mine.",
     beaten: "Glass. Told you.",
@@ -191,7 +232,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Long Sable",
     classId: "interceptor",
     homeTrack: "sable_run",
-    profile: { aggression: 0.65, precision: 0.8, patience: 0.7, ultBias: 0.6, hunt: 0.5 },
+    profile: {
+      aggression: 0.65, precision: 0.8, patience: 0.7, ultBias: 0.6, hunt: 0.5,
+      pace: 0.5, mistake: 0.3, nerve: 0.6, pattern: "hunter",
+    },
     bio: "Holds a lock from further out than anyone thinks is legal. It is legal.",
     taunt: "You're already in frame.",
     beaten: "Lost the lock. Lost the rest.",
@@ -214,7 +258,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Pipeline Haulers",
     classId: "bruiser",
     homeTrack: "dead_mile",
-    profile: { aggression: 0.5, precision: 0.7, patience: 0.9, ultBias: 0.3, hunt: 0.3 },
+    profile: {
+      aggression: 0.5, precision: 0.7, patience: 0.9, ultBias: 0.3, hunt: 0.3,
+      pace: 0.48, mistake: 0.03, nerve: 0.95, pattern: "racer",
+    },
     bio: "Never quick. Never gone. Has finished every Dead Mile ever run.",
     taunt: "It's a long road. You'll see.",
     beaten: "Long road. You lasted it.",
@@ -236,7 +283,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Ex-Marrow",
     classId: "trickster",
     homeTrack: "rustline",
-    profile: { aggression: 0.45, precision: 0.9, patience: 0.6, ultBias: 0.5, hunt: 0.15 },
+    profile: {
+      aggression: 0.45, precision: 0.9, patience: 0.6, ultBias: 0.5, hunt: 0.15,
+      pace: 0.7, mistake: 0.08, nerve: 0.7, pattern: "pacer",
+    },
     bio: "Drove for Marrow until the night they took your car. Has not spoken to him since.",
     taunt: "I'm not going to make this easy. I am going to make it fair.",
     beaten: "Good. Now you're worth talking to.",
@@ -249,7 +299,8 @@ export const RIVALS: RivalDef[] = [
       brief: ["Vey has called weapons cold. She means it.", "She was in the car behind you the night of the stack. Win it clean."],
     },
     reward: { scrap: 580, markers: 7, title: "Witness", pinkSlip: "what she saw" },
-    beatAfter: "vey-turns",
+    beatAfter: "outraced-vey",
+    beatAfterWrecked: "wrecked-vey",
   },
   {
     id: "ptok",
@@ -259,7 +310,10 @@ export const RIVALS: RivalDef[] = [
     crew: "The House",
     classId: "interceptor",
     homeTrack: "sable_run",
-    profile: { aggression: 0.7, precision: 0.85, patience: 0.75, ultBias: 0.7, hunt: 0.55 },
+    profile: {
+      aggression: 0.7, precision: 0.85, patience: 0.75, ultBias: 0.7, hunt: 0.55,
+      pace: 0.62, mistake: 0.25, nerve: 0.65, pattern: "hunter",
+    },
     bio: "Sold you your first three heats. Takes a cut of everything, including this.",
     taunt: "Business. You understand.",
     beaten: "Costly. For me.",
@@ -281,7 +335,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Foundry Set",
     classId: "bruiser",
     homeTrack: "foundry_pit",
-    profile: { aggression: 1, precision: 0.55, patience: 0.5, ultBias: 0.85, hunt: 0.85 },
+    profile: {
+      aggression: 1, precision: 0.55, patience: 0.5, ultBias: 0.85, hunt: 0.85,
+      pace: 0.55, mistake: 0.3, nerve: 0.85, pattern: "blocker",
+    },
     bio: "Does not race. Processes. The Foundry is where the board sends people to stop.",
     taunt: "In you go.",
     beaten: "Out again. Rare.",
@@ -308,7 +365,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Marrow's Crew",
     classId: "trickster",
     homeTrack: "rustline",
-    profile: { aggression: 0.85, precision: 0.7, patience: 0.3, ultBias: 0.9, hunt: 0.9 },
+    profile: {
+      aggression: 0.85, precision: 0.7, patience: 0.3, ultBias: 0.9, hunt: 0.9,
+      pace: 0.72, mistake: 0.2, nerve: 0.5, pattern: "hunter",
+    },
     bio: "Marrow's outrider. Was on your inside at the flare stack. Was smiling.",
     taunt: "You remember the stack. I remember the stack.",
     beaten: "He'll just send the next one.",
@@ -321,7 +381,9 @@ export const RIVALS: RivalDef[] = [
       brief: ["Kade put you in the stack. Kade is on the Rustline tonight.", "Wreck him. Then win it anyway."],
     },
     reward: { scrap: 820, markers: 9, title: "Even", pinkSlip: "his half of the story" },
-    beatAfter: "kade-confesses",
+    beatBefore: "duel-kade",
+    beatAfter: "outraced-kade",
+    beatAfterWrecked: "wrecked-kade",
   },
   {
     id: "rhee",
@@ -331,7 +393,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Marrow's Crew",
     classId: "bruiser",
     homeTrack: "dead_mile",
-    profile: { aggression: 0.95, precision: 0.8, patience: 0.85, ultBias: 0.7, hunt: 0.95 },
+    profile: {
+      aggression: 0.95, precision: 0.8, patience: 0.85, ultBias: 0.7, hunt: 0.95,
+      pace: 0.78, mistake: 0.1, nerve: 1, pattern: "hunter",
+    },
     bio: "The last car anyone sees. Runs the Dead Mile because it gives her time to work.",
     taunt: "Nobody gets past me twice.",
     beaten: "Then go and take it back.",
@@ -348,6 +413,7 @@ export const RIVALS: RivalDef[] = [
       brief: ["Rhee has three and a half kilometres to take you apart.", "Do not give her the long straight."],
     },
     reward: { scrap: 960, markers: 10, title: "Number Two", pinkSlip: "the road to Marrow" },
+    beatBefore: "duel-rhee",
     beatAfter: "quist-offer",
   },
   {
@@ -358,7 +424,10 @@ export const RIVALS: RivalDef[] = [
     crew: "Marrow's Crew",
     classId: "interceptor",
     homeTrack: "ash_spire",
-    profile: { aggression: 0.9, precision: 1, patience: 0.9, ultBias: 0.8, hunt: 1 },
+    profile: {
+      aggression: 0.9, precision: 1, patience: 0.9, ultBias: 0.8, hunt: 1,
+      pace: 0.9, mistake: 0.05, nerve: 0.9, pattern: "duelist",
+    },
     bio: "Champion of the Scrapline. Drives your car. Has done for a year and a half.",
     taunt: "It runs better for me.",
     beaten: "It was never mine. Take it.",
@@ -383,7 +452,9 @@ export const RIVALS: RivalDef[] = [
       title: "The Ardent",
       pinkSlip: "your car",
     },
+    beatBefore: "duel-marrow",
     beatAfter: "final",
+    beatAfterWrecked: "wrecked-marrow",
   },
 ];
 
@@ -437,7 +508,13 @@ export function duelMission(rival: RivalDef): MissionDef {
       })),
     ],
     rivalId: rival.id,
+    beatBefore: rival.beatBefore,
     beatAfter: rival.beatAfter,
+    beatAfterWrecked: rival.beatAfterWrecked,
+    // A fifth of the purse, staked. Derived rather than authored so a rival
+    // whose reward is retuned cannot end up with a stake worth more than the
+    // race is — the exact failure that makes a wager feel like a punishment.
+    entryFee: Math.round(rival.reward.scrap * 0.2),
     requiresMarkers: rival.unlock.markers,
   };
 }

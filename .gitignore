@@ -31,3 +31,6 @@ public/assets/audio/
 # Draco/KTX2 transcoders copied out of node_modules by scripts/copy-decoders.mjs
 # (wired to predev/prebuild, so they are always regenerated).
 public/decoders/
+
+# Scratch space for scripts/import-meshgen.mjs
+.meshgen-tmp/

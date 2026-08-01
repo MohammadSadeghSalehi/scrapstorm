@@ -867,6 +867,10 @@ export function getEdgeMarkers() {
   return EDGE_MARKERS;
 }
 
+export function getCheckpoints(): CheckpointGate[] {
+  return CHECKPOINTS;
+}
+
 /**
  * Centreline length of the ACTIVE circuit, in metres.
  *

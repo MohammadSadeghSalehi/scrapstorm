@@ -143,6 +143,25 @@ export interface VehicleState {
   uiAccel: number;
   lapTimes: number[];
   lastLapTime: number;
+  /**
+   * Who last put damage on this car, and how long ago in sim seconds.
+   *
+   * Takedown attribution used to be a proximity-and-facing guess made by the
+   * mission runtime, because applyDamage took an ownerId and threw it away.
+   * Recording it on the VICTIM rather than tallying it on the attacker is what
+   * keeps it one field: every damage path already has the victim in hand.
+   *
+   * `lastHitAge` exists so credit expires. Without it a rival you shot on lap
+   * one and never touched again would still be "your" takedown when they put it
+   * into a wall four minutes later. sim.fixedStep ages it and clears the
+   * attribution once it is stale.
+   *
+   * Both are OPTIONAL, and that is not laziness: world/GameScene.tsx builds a
+   * display-only VehicleState literal and is owned elsewhere. A required field
+   * here would break a file this change has no business editing.
+   */
+  lastHitBy?: string | null;
+  lastHitAge?: number;
 }
 
 export interface Projectile {

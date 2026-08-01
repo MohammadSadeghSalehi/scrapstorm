@@ -215,6 +215,23 @@ export function effectiveHeat(career: CareerState, mission: MissionDef): number 
   return Math.min(1, Math.max(mission.modifiers.heat, heatNormalised(career) * 0.75));
 }
 
+/**
+ * The pace the ANONYMOUS grid drives to, 0..1.
+ *
+ * Heat says how willing the field is to come for you. This says how good they
+ * are, and it is a separate axis on purpose: a quiet event at rank 3 should
+ * still be a quiet event, and still be full of drivers who would have beaten
+ * you on the night you started.
+ *
+ * Keyed to board rank rather than to markers, because rank is what the player
+ * believes their progress is. Capped below the top rivals' own pace so the
+ * extras never outdrive the names.
+ */
+export function fieldPace(career: CareerState): number {
+  const climbed = (16 - currentRank(career)) / 15;
+  return Math.max(0, Math.min(0.62, climbed * 0.62));
+}
+
 /* ── results ──────────────────────────────────────────────────────────── */
 
 export interface CareerAward {
@@ -229,6 +246,29 @@ export interface CareerAward {
   heatBefore: number;
   heatAfter: number;
   firstClear: boolean;
+  /** Stake the player put up at the grid and did not get back. */
+  feeLost: number;
+  /**
+   * Qualifying event id the player has to run again before this rival will take
+   * their call. Set only when a DUEL is lost.
+   */
+  requalify: string | null;
+}
+
+/**
+ * What it costs to put the car on the grid.
+ *
+ * A stake, not a fee: it is why entering the Dead Mile's Last Call is a
+ * decision. Scrap is held in meta.ts, so the SHELL takes this at the grid and
+ * career only reports what was lost — the two must not both try to own it.
+ */
+export function missionCost(def: MissionDef): number {
+  return Math.max(0, Math.floor(def.entryFee ?? 0));
+}
+
+/** Never let the ladder lock: if you cannot pay, you cannot enter, and the free tiers stay free. */
+export function affordable(scrap: number, def: MissionDef): boolean {
+  return scrap >= missionCost(def);
 }
 
 /**
@@ -260,8 +300,19 @@ export function applyMissionResult(
     heatBefore: career.heat,
     heatAfter: career.heat,
     firstClear: false,
+    feeLost: 0,
+    requalify: null,
   };
 
+  const fire = (beat: string | undefined | null) => {
+    if (!beat || next.seenBeats.includes(beat)) return;
+    next.seenBeats.push(beat);
+    award.beats.push(beat);
+  };
+
+  // Fired before the count is folded in, so "your first car off the board" is
+  // actually the first.
+  if (career.takedowns === 0 && summary.takedowns > 0) fire("first-blood");
   next.takedowns += summary.takedowns;
 
   const prevBest = career.best[def.id];
@@ -287,8 +338,36 @@ export function applyMissionResult(
     // nothing, and being paid for the fight is what keeps a retry appealing.
     award.markers = summary.takedowns;
     award.scrap = Math.round(summary.takedowns * 25);
+    // The stake is gone. It was taken at the grid by the shell; career only
+    // reports it so the results screen can be honest about what the run cost.
+    award.feeLost = missionCost(def);
     next.markers += award.markers;
     next.scrapPending += award.scrap;
+
+    /*
+     * Losing a DUEL costs a qualification.
+     *
+     * Scrap is the wrong currency for this and always was: by the time the
+     * board gets dangerous a player has thousands of it, and a stake they can
+     * pay twenty times over is not a stake. What is actually scarce is standing
+     * — so a lost duel takes back one of the events that earned you the call,
+     * and the rival will not answer again until you have run it.
+     *
+     * The LAST qualifier rather than the first, because it is the one the
+     * player most recently proved and the one they will remember. It can never
+     * lock the ladder: the event stays available (its marker requirement was
+     * met long ago), it is simply outstanding again.
+     */
+    const rival = def.rivalId ? rivalById(def.rivalId) : undefined;
+    if (rival && !career.defeated.includes(rival.id)) {
+      const lost = [...rival.unlock.events]
+        .reverse()
+        .find((id) => next.completed.includes(id));
+      if (lost) {
+        next.completed = next.completed.filter((id) => id !== lost);
+        award.requalify = lost;
+      }
+    }
     return { career: next, award };
   }
 
@@ -296,15 +375,28 @@ export function applyMissionResult(
   if (award.firstClear) next.completed.push(def.id);
 
   const heatMul = 1 + (career.heat - 1) * 0.12;
+  /*
+   * A repeat clear pays a quarter, rounded up to at least one marker.
+   *
+   * Not generosity — a floor. Without it a player who never takes anyone out
+   * and never chases a bonus earns NOTHING from a re-run, and the board can
+   * dead-end a few markers short of Marrow with no way left to close the gap.
+   * The quarter keeps grinding strictly worse than clearing something new, and
+   * the smoke test walks the whole ladder as that player to prove it holds.
+   */
+  const repeatMarkers = Math.max(1, Math.round(def.reward.markers * 0.25));
   award.markers =
-    def.reward.markers * (award.firstClear ? 1 : 0) +
+    (award.firstClear ? def.reward.markers : repeatMarkers) +
     summary.bonusMet * 2 +
     summary.takedowns;
   award.scrap = Math.round(
     (def.reward.scrap * (award.firstClear ? 1 : 0.35) +
       (award.firstClear ? (def.reward.firstClearBonus ?? 0) : 0) +
       summary.takedowns * 30) *
-      heatMul,
+      heatMul +
+      // The stake comes back on a clear. Risking it has to be worth something
+      // more than not risking it, and the reward above already is.
+      missionCost(def),
   );
 
   const markersBefore = next.markers;
@@ -329,12 +421,29 @@ export function applyMissionResult(
     if (markersBefore < need && next.markers >= need) award.tracksUnlocked.push(id);
   }
 
-  for (const beat of [def.beatAfter, award.rivalDefeated?.beatAfter]) {
-    if (beat && !next.seenBeats.includes(beat)) {
-      next.seenBeats.push(beat);
-      award.beats.push(beat);
-    }
-  }
+  /*
+   * The aftermath beat depends on HOW you beat them.
+   *
+   * `beatAfterWrecked` is only consulted when the run actually recorded you
+   * putting that rival into a wall; otherwise the out-raced beat plays. Falling
+   * back rather than requiring both means a rival who has only one thing to say
+   * says it either way, which is the right default for the ten names whose
+   * story does not turn on this.
+   *
+   * Resolved ONCE, through the same helper for both the mission and the rival,
+   * because duelMission copies both ids onto the def: picking separately fired
+   * the out-raced line and the wrecked line for the same race.
+   */
+  const pickBeat = (normal?: string, wrecked?: string) =>
+    summary.rivalWrecked ? (wrecked ?? normal) : normal;
+  fire(pickBeat(def.beatAfter, def.beatAfterWrecked));
+  const beaten = award.rivalDefeated;
+  if (beaten) fire(pickBeat(beaten.beatAfter, beaten.beatAfterWrecked));
+
+  // Heat thresholds. Announced as they are CROSSED, so they land on the run
+  // that caused them rather than on the next menu the player happens to open.
+  if (award.heatBefore < 3 && next.heat >= 3) fire("heat-rising");
+  if (award.heatBefore < 5 && next.heat >= 5) fire("heat-max");
 
   return { career: next, award };
 }

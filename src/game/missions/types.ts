@@ -132,6 +132,9 @@ export interface MissionReward {
   unlockTrack?: AnyTrackId;
 }
 
+/** How hard a mission reads on the board, before the player has run it. */
+export type MissionRisk = "low" | "medium" | "high" | "extreme";
+
 export interface MissionDef {
   id: string;
   name: string;
@@ -150,8 +153,21 @@ export interface MissionDef {
   /** Story beat ids fired before / after. Resolved against story.ts. */
   beatBefore?: string;
   beatAfter?: string;
+  /** Aftermath used instead of `beatAfter` when the rival was wrecked, not out-driven. */
+  beatAfterWrecked?: string;
   /** Requires this many markers to appear on the board. */
   requiresMarkers?: number;
+  /**
+   * Scrap staked on the outcome. Paid at the grid, gone if you fail.
+   *
+   * The system had no failure cost at all: a lost run cooled your heat and paid
+   * you for your takedowns, so the optimal play was to enter everything and
+   * abandon anything that went wrong. A stake is the smallest honest fix — it
+   * is the player's own money, they can see it before they commit, and it makes
+   * "restart" a decision instead of a reflex. Deliberately never large enough
+   * to soft-lock: `affordable()` gates entry and the low tiers stay free.
+   */
+  entryFee?: number;
 }
 
 /* ── the structural view of the sim ──────────────────────────────────── */
@@ -175,6 +191,13 @@ export interface MissionVehicleView {
   finishTime: number;
   raceProgress: number;
   lastLapTime: number;
+  /**
+   * Who last damaged this car. Optional to mirror VehicleState, where it has to
+   * be optional because a file this module does not own builds a display-only
+   * vehicle literal. The runtime treats absent and null the same way and falls
+   * back to the proximity heuristic.
+   */
+  lastHitBy?: string | null;
 }
 
 /** Event kinds SimState already understands. Missions must not invent one. */
@@ -243,6 +266,14 @@ export interface MissionRunSummary {
   objectives: ObjectiveState[];
   /** Optional objectives that were met — drives bonus markers. */
   bonusMet: number;
+  /**
+   * You put the mission's own rival into a wall, as opposed to out-driving them.
+   *
+   * Recorded because the story asks about it. The two ways of beating Halcyon
+   * Vey are not the same event and the league does not react to them the same
+   * way; without this the narrative can only know THAT you won.
+   */
+  rivalWrecked: boolean;
 }
 
 export interface RivalDef {
@@ -268,5 +299,13 @@ export interface RivalDef {
     brief: string[];
   };
   reward: MissionReward & { title: string; pinkSlip: string };
+  /** Played on the way to the grid, once. Reserved for the nights that matter. */
+  beatBefore?: string;
   beatAfter?: string;
+  /**
+   * Alternative aftermath when the player WRECKED this rival rather than
+   * out-driving them. Optional: most names on the board only have one thing to
+   * say, and career falls back to `beatAfter` for them.
+   */
+  beatAfterWrecked?: string;
 }

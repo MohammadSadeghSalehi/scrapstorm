@@ -26,6 +26,26 @@ function wrapAngle(a: number) {
  * sim needs to know it exists.
  */
 
+/**
+ * HOW a rival fights, as distinct from how hard.
+ *
+ * The single most common way a difficulty ladder goes wrong is that rank 2 is
+ * rank 14 with bigger numbers. These are the four ways of being dangerous that
+ * are actually different to drive against, and each one wants a different
+ * answer from the player rather than more of the same answer:
+ *
+ *  racer   — the honest baseline. Races the race.
+ *  blocker — owns the road ahead of you. Covers the inside, brake-checks the
+ *            car in their mirrors. Beaten by taking the line they are not on.
+ *  hunter  — does not care about the podium. Comes for you, holds the ultimate
+ *            until you are hurt. Beaten by not being hurt.
+ *  pacer   — never fires a shot and never makes a mistake. Beaten by driving,
+ *            which is the whole point of putting one on the board.
+ *  duelist — measures itself against YOU rather than the leader. Will not be
+ *            dropped, will not run away, and rams on corner entry.
+ */
+export type RivalPattern = "racer" | "blocker" | "hunter" | "pacer" | "duelist";
+
 /** Per-rival driving character. Blacklist names should not drive identically. */
 export interface RivalProfile {
   /** 0..1 — weapon fire rate, ram commitment, willingness to trade paint. */
@@ -38,6 +58,23 @@ export interface RivalProfile {
   ultBias: number;
   /** 0..1 — preference for hunting the bounty target over the nearest car. */
   hunt: number;
+  /**
+   * 0..1 raw pace: grip, drive and corner commitment.
+   *
+   * Deliberately separate from `aggression`. A rival can be quick and clean
+   * (Sparrow) or slow and vicious (Kiln), and collapsing the two into one
+   * "difficulty" number is what makes a ladder feel like a slider.
+   */
+  pace: number;
+  /** 0..1 — how often they throw one away. The player's overtaking window. */
+  mistake: number;
+  /**
+   * 0..1 composure. Under 0.5 they fold when damaged or behind; over 0.5 they
+   * get meaner. This is what makes "survive her first two laps" true of Novo
+   * and false of Rhee.
+   */
+  nerve: number;
+  pattern: RivalPattern;
 }
 
 export const DEFAULT_PROFILE: RivalProfile = {
@@ -46,6 +83,10 @@ export const DEFAULT_PROFILE: RivalProfile = {
   patience: 0.5,
   ultBias: 0.5,
   hunt: 0.25,
+  pace: 0.3,
+  mistake: 0.55,
+  nerve: 0.5,
+  pattern: "racer",
 };
 
 export interface AiDirective {
@@ -63,6 +104,17 @@ export interface AiDirective {
   protect: string | null;
   /** Overrides by vehicle id ("bot-0".."bot-2"), from the rival roster. */
   profiles: Record<string, RivalProfile>;
+  /**
+   * 0..1 floor under every car's pace, including the anonymous house cars.
+   *
+   * This is the league getting better as you climb, and it is why rank 12 does
+   * not become trivial once you are running rank 4's events: the extras on the
+   * grid are no longer the extras you learned on. A floor rather than a
+   * replacement, so an authored rival never gets slower than they were written.
+   */
+  fieldPace: number;
+  /** Who the patterns orient themselves around. */
+  playerId: string;
 }
 
 const NEUTRAL: AiDirective = {
@@ -73,12 +125,15 @@ const NEUTRAL: AiDirective = {
   bountyOn: null,
   protect: null,
   profiles: {},
+  fieldPace: 0,
+  playerId: "player",
 };
 
 let directive: AiDirective = { ...NEUTRAL };
 
 export function setAiDirective(next: Partial<AiDirective>): void {
   directive = { ...directive, ...next };
+  mood.clear();
 }
 
 export function getAiDirective(): Readonly<AiDirective> {
@@ -88,10 +143,100 @@ export function getAiDirective(): Readonly<AiDirective> {
 /** Free play must not inherit the last mission's manhunt. Call on race exit. */
 export function resetAiDirective(): void {
   directive = { ...NEUTRAL, profiles: {} };
+  mood.clear();
 }
 
 function profileFor(id: string): RivalProfile {
-  return directive.profiles[id] ?? DEFAULT_PROFILE;
+  const p = directive.profiles[id];
+  if (!p) {
+    // House cars are not characters, but they are not stationary targets
+    // either — they drive at whatever the league's current standard is.
+    return directive.fieldPace > 0
+      ? { ...DEFAULT_PROFILE, pace: Math.max(DEFAULT_PROFILE.pace, directive.fieldPace) }
+      : DEFAULT_PROFILE;
+  }
+  return p.pace >= directive.fieldPace
+    ? p
+    : { ...p, pace: directive.fieldPace };
+}
+
+/* ── mistakes ─────────────────────────────────────────────────────────
+ *
+ * A field that never errs is not difficult, it is impermeable: every overtake
+ * has to be forced with a weapon, and a clean racing line stops being a way to
+ * win. So every driver is on a schedule of MOMENTS — a corner taken without
+ * lifting, a late brake, an exit run wide — and the schedule's rate is the
+ * rival's `mistake` trait.
+ *
+ * Two rules make the difference between this reading as character and reading
+ * as the AI stuttering:
+ *
+ *  1. A moment only fires IN A CORNER or under close pressure. A car briefly
+ *     losing grip on a straight is a bug; the same car understeering out of a
+ *     hairpin with you alongside is a race.
+ *  2. It is scheduled in world time, not rolled per frame, so it cannot fire
+ *     twice in a second on a fast machine and never on a slow one.
+ */
+interface AiMood {
+  /** World time the next moment is allowed to fire. */
+  nextErrorAt: number;
+  /** World time the current moment ends. 0 = not in one. */
+  errorUntil: number;
+  /** Last time this driver leaned on the brakes to check the car behind. */
+  lastCheckAt: number;
+}
+
+const mood = new Map<string, AiMood>();
+
+function moodFor(id: string, time: number, prof: RivalProfile): AiMood {
+  let m = mood.get(id);
+  if (!m) {
+    // Stagger the first moment so a grid of four does not all wobble together
+    // on the same corner of lap one.
+    m = {
+      nextErrorAt: time + 12 + Math.random() * 30,
+      errorUntil: 0,
+      // Far in the past, not zero: the brake-check reads `time - lastCheckAt`,
+      // and a zero here has every blocker standing on the brakes off the line.
+      lastCheckAt: -999,
+    };
+    mood.set(id, m);
+  }
+  void prof;
+  return m;
+}
+
+/** Mean seconds between moments. Perfect drivers are simply never due one. */
+function errorInterval(prof: RivalProfile): number {
+  if (prof.pattern === "pacer") return Infinity;
+  return 16 + (1 - prof.mistake) * 74;
+}
+
+/**
+ * The car's side of driver skill, read by sim.fixedStep and handed to
+ * stepVehicle. Must be called AFTER aiInput for the same step — aiInput is what
+ * advances the moment schedule.
+ */
+export function aiSkill(v: VehicleState): {
+  grip: number;
+  power: number;
+  turn: number;
+} {
+  if (v.isPlayer) return { grip: 1, power: 1, turn: 1 };
+  const prof = profileFor(v.id);
+  const m = mood.get(v.id);
+  const erring = !!m && m.errorUntil > 0;
+  // Nerve reads the car's condition: a driver with low nerve is measurably
+  // slower once their hull is gone, which is what "folds harder" has to mean if
+  // it is going to mean anything.
+  const hurt = 1 - v.health / Math.max(1, v.maxHealth);
+  const nerveTrim = hurt * (0.5 - prof.nerve) * 0.16;
+  const pace = Math.max(0, Math.min(1, prof.pace - nerveTrim));
+  return {
+    grip: (0.93 + pace * 0.14) * (erring ? 0.88 : 1),
+    power: 0.965 + pace * 0.075,
+    turn: (0.95 + pace * 0.1) * (erring ? 0.9 : 1),
+  };
 }
 
 /**
@@ -142,7 +287,12 @@ const MIN_LOOKAHEAD = 16;
  * - Class kits used under pressure (not just random)
  * - League Heat: the field hunts the bounty target instead of the podium
  */
-export function aiInput(v: VehicleState, all: VehicleState[], time: number): PlayerInput {
+export function aiInput(
+  v: VehicleState,
+  all: VehicleState[],
+  time: number,
+  lapCount: number = RACE.laps,
+): PlayerInput {
   const input = createEmptyInput();
   if (v.wreckTimer > 0 || !v.alive) return input;
 
@@ -151,15 +301,22 @@ export function aiInput(v: VehicleState, all: VehicleState[], time: number): Pla
   const n = samples.length;
   const idx = nearestTrackIndex(v.x, v.z, v.yaw);
   const prof = profileFor(v.id);
+  const m = moodFor(v.id, time, prof);
+  // The patterns all orient around one car. Resolved once, may be absent
+  // (headless tests, a grid with no player) and every use guards for it.
+  const mark = all.find((o) => o.id === directive.playerId) ?? null;
+  const markDist = mark ? Math.hypot(mark.x - v.x, mark.z - v.z) : Infinity;
 
   // Drama flags
-  const lastLap = v.lap >= RACE.laps - 1;
+  const lastLap = v.lap >= lapCount - 1;
   const midPack = v.position >= 2;
   const desperate = v.position === all.filter((x) => x.alive).length || v.health < v.maxHealth * 0.35;
   const heat =
     (lastLap ? 0.35 : 0) +
     (midPack ? 0.15 : 0) +
-    (desperate ? 0.25 : 0) +
+    // Nerve, not a constant. A driver written as glass gets QUIETER in trouble;
+    // one written as a pallbearer gets louder. Same flag, opposite sign.
+    (desperate ? (prof.nerve - 0.5) * 0.7 : 0) +
     directive.heat * 0.4 +
     directive.aggression * 0.3 +
     (prof.aggression - 0.5) * 0.3;
@@ -179,31 +336,102 @@ export function aiInput(v: VehicleState, all: VehicleState[], time: number): Pla
   const rx = Math.cos(pathYaw);
   const rz = -Math.sin(pathYaw);
 
-  const bias =
+  let bias =
     ((v.id.charCodeAt(v.id.length - 1) % 5) - 2) *
     (v.classId === "bruiser" ? 0.7 : 1.15) *
     (1.4 - prof.precision * 0.8);
+
+  /*
+   * BLOCKER — the road ahead is theirs.
+   *
+   * Implemented as a lateral bias toward the pursuer's side of the track rather
+   * than as a steering override, so it stays a racing line: they are covering
+   * the inside, not swerving at you. Clamped to the road's half width so the
+   * cover never walks them into the scenery, and it only engages when the mark
+   * is actually behind and close — a blocker on the far side of the circuit is
+   * just a driver.
+   */
+  const behindMe =
+    !!mark && markDist < 26 && mark.raceProgress < v.raceProgress;
+  if (prof.pattern === "blocker" && behindMe && mark) {
+    const off = (mark.x - near.x) * rx + (mark.z - near.z) * rz;
+    const cover = Math.max(-1, Math.min(1, off / Math.max(1, near.width * 0.5)));
+    bias = cover * near.width * 0.34;
+  }
+
   const tx = target.x + rx * bias;
   const tz = target.z + rz * bias;
 
   const desiredYaw = Math.atan2(-(tx - v.x), -(tz - v.z));
-  let dyaw = wrapAngle(desiredYaw - v.yaw);
-  input.steering = Math.max(-1, Math.min(1, dyaw * (2.4 + heat * 0.3)));
+  const dyaw = wrapAngle(desiredYaw - v.yaw);
 
   const cornerTight = Math.abs(dyaw) > 0.48;
   const veryTight = Math.abs(dyaw) > 0.82;
-  // An impatient rival carries 15% more speed into the corner than the line
-  // supports. That is not "better" — it is why they run wide and why you can
-  // have them on the exit.
-  const liftSpeed = def.maxSpeed * (0.74 + (0.5 - prof.patience) * 0.3);
-  input.throttle = cornerTight && Math.abs(v.speed) > liftSpeed ? 0.55 : 1;
+
+  /*
+   * Moments. Only in a corner, or with someone close enough to have caused it.
+   * Firing one on an empty straight would be indistinguishable from a physics
+   * glitch, and would hand the player nothing.
+   */
+  if (m.errorUntil > 0 && time >= m.errorUntil) {
+    m.errorUntil = 0;
+    m.nextErrorAt = time + errorInterval(prof) * (0.6 + Math.random() * 0.8);
+  }
+  if (
+    m.errorUntil === 0 &&
+    time >= m.nextErrorAt &&
+    (cornerTight || markDist < 14) &&
+    Math.abs(v.speed) > def.maxSpeed * 0.35
+  ) {
+    m.errorUntil = time + 0.7 + prof.mistake * 0.5;
+  }
+  const erring = m.errorUntil > 0;
+
+  input.steering = Math.max(
+    -1,
+    Math.min(1, dyaw * (2.4 + heat * 0.3) * (erring ? 0.6 : 1)),
+  );
+
+  /*
+   * Corner speed budget — where `pace` actually earns its keep.
+   *
+   * Two different reasons to carry more speed into a corner, and they must not
+   * be confused. An IMPATIENT rival lifts late and runs wide; that is a flaw you
+   * exploit on the exit. A FAST rival lifts late and makes it stick, because
+   * aiSkill has given the same car more grip on the same step. Without this term
+   * pace was only a top-speed and grip trim, and a grip advantage a driver never
+   * asks for is a difficulty setting that cannot be felt.
+   */
+  const liftSpeed =
+    def.maxSpeed *
+    (0.74 + (0.5 - prof.patience) * 0.3 + (prof.pace - 0.5) * 0.16);
+  input.throttle = !erring && cornerTight && Math.abs(v.speed) > liftSpeed ? 0.55 : 1;
 
   if (v.classId === "trickster" && cornerTight && Math.abs(v.speed) > 14) {
-    input.brake = Math.abs(dyaw) > 0.38;
-    input.steering = Math.max(-1, Math.min(1, dyaw * 2.7));
+    input.brake = !erring && Math.abs(dyaw) > 0.38;
+    input.steering = Math.max(-1, Math.min(1, dyaw * (erring ? 1.6 : 2.7)));
     input.throttle = 0.85;
   } else {
-    input.brake = veryTight && Math.abs(v.speed) > def.maxSpeed * 0.8;
+    input.brake = !erring && veryTight && Math.abs(v.speed) > def.maxSpeed * 0.8;
+  }
+
+  /*
+   * Blocker brake-check. Rate limited to once every four seconds and only above
+   * a real speed, because the failure mode is a car that sits in front of you
+   * at walking pace and turns a race into a wall.
+   */
+  if (
+    prof.pattern === "blocker" &&
+    behindMe &&
+    markDist < 9 &&
+    Math.abs(v.speed) > def.maxSpeed * 0.45 &&
+    time - m.lastCheckAt > 4
+  ) {
+    m.lastCheckAt = time;
+  }
+  if (prof.pattern === "blocker" && time - m.lastCheckAt < 0.45) {
+    input.throttle = 0.2;
+    input.brake = true;
   }
 
   // Surface recovery
@@ -256,20 +484,34 @@ export function aiInput(v: VehicleState, all: VehicleState[], time: number): Pla
    * race still feels like a race, and so a rival characterised as a hunter plays
    * like one even when the league is calm.
    */
-  const huntWeight = Math.min(1, directive.heat * 0.7 + prof.hunt * 0.6);
-  if (directive.bountyOn && huntWeight > 0.15) {
-    const mark = all.find((o) => o.id === directive.bountyOn);
-    if (mark && mark.alive && mark.wreckTimer <= 0 && mark.id !== v.id) {
-      const d = Math.hypot(mark.x - v.x, mark.z - v.z);
-      const toMark = Math.atan2(-(mark.x - v.x), -(mark.z - v.z));
+  const huntWeight = Math.min(
+    1,
+    directive.heat * 0.7 +
+      prof.hunt * 0.6 +
+      // A HUNTER carries the bounty in their own head. They come for you whether
+      // or not the Feed is paying tonight, which is the whole reason they are a
+      // different fight rather than a higher number.
+      (prof.pattern === "hunter" ? 0.7 : 0),
+  );
+  const bountyId =
+    prof.pattern === "hunter" ? (directive.bountyOn ?? directive.playerId) : directive.bountyOn;
+  if (bountyId && huntWeight > 0.15) {
+    const bounty = all.find((o) => o.id === bountyId);
+    if (bounty && bounty.alive && bounty.wreckTimer <= 0 && bounty.id !== v.id) {
+      const d = Math.hypot(bounty.x - v.x, bounty.z - v.z);
+      const toMark = Math.atan2(-(bounty.x - v.x), -(bounty.z - v.z));
       const off = Math.abs(wrapAngle(toMark - v.yaw));
       if (d < def.primaryRange * (1 + huntWeight * 0.4) && off < 0.5 + huntWeight * 0.5) {
-        lock = mark.id;
+        lock = bounty.id;
       }
     }
   }
   // Escort ally. Cheaper to drop the lock than to filter every fire site.
   if (directive.protect && lock === directive.protect) lock = null;
+  // A PACER does not shoot. Not "shoots rarely" — never. It is the one rival
+  // archetype whose entire threat is the stopwatch, and a single stray bolt
+  // would rewrite what the fight is about.
+  if (prof.pattern === "pacer") lock = null;
   v.lockTargetId = lock;
 
   // Incoming threat → defense
@@ -297,9 +539,13 @@ export function aiInput(v: VehicleState, all: VehicleState[], time: number): Pla
       const toT = Math.atan2(-(t.x - v.x), -(t.z - v.z));
       const aimOk = Math.abs(wrapAngle(toT - v.yaw)) < 0.48;
       if (aimOk && d < def.primaryRange && directive.weaponsFree) {
+        // Cadence is a rival trait, not just a class one. Vance shooting at
+        // nearly one and a half times Sparrow's rate is most of what "counts his
+        // takedowns on air" means once you are in front of him.
         const fireRate =
-          (v.classId === "interceptor" ? 0.45 : v.classId === "bruiser" ? 0.3 : 0.34) +
-          heat * 0.2;
+          ((v.classId === "interceptor" ? 0.45 : v.classId === "bruiser" ? 0.3 : 0.34) +
+            heat * 0.2) *
+          (0.55 + prof.aggression * 0.9);
         input.firePrimary = Math.random() < fireRate;
       }
       // Bruiser ram charge. Ramming is not a weapon and survives weaponsFree:
@@ -322,12 +568,42 @@ export function aiInput(v: VehicleState, all: VehicleState[], time: number): Pla
     }
   }
 
+  /*
+   * DUELIST ram, timed rather than ranged.
+   *
+   * The ordinary bruiser charge fires on distance, which means it lands on the
+   * straight where you can simply out-accelerate it. A duellist waits until you
+   * are loaded up — steering angle on, car already sliding — because that is the
+   * hit you cannot drive out of. It reads as being read.
+   */
+  if (prof.pattern === "duelist" && mark && markDist < 17 && mark.alive) {
+    const busy = Math.abs(mark.steerAngle) > 0.22 || Math.abs(mark.lateral) > 5.5;
+    const toMark = wrapAngle(
+      Math.atan2(-(mark.x - v.x), -(mark.z - v.z)) - v.yaw,
+    );
+    if (busy && Math.abs(toMark) < 0.7) {
+      input.throttle = 1;
+      input.brake = false;
+      input.boost = true;
+      input.steering = Math.max(-1, Math.min(1, toMark * 2.6));
+    }
+  }
+
   // Ultimates — earlier on last lap / desperate / high heat / by rival taste
   const ultThreshold =
     (lastLap || desperate ? 0.72 : 0.88) - (prof.ultBias - 0.5) * 0.3 - directive.heat * 0.12;
+  // A hunter does not spend the ultimate on traffic. It is held for the moment
+  // the mark is already hurt, which is what makes being hurt around one bad.
+  const ultHeld =
+    prof.pattern === "hunter" &&
+    !!mark &&
+    mark.alive &&
+    markDist < def.primaryRange * 1.8 &&
+    mark.health > mark.maxHealth * 0.55;
   if (
     v.ultimateCharge >= 1 &&
     directive.weaponsFree &&
+    !ultHeld &&
     (v.position > 1 || v.health < v.maxHealth * 0.55 || lastLap || directive.heat > 0.5)
   ) {
     if (v.classId === "bruiser" && lock) {
@@ -346,12 +622,43 @@ export function aiInput(v: VehicleState, all: VehicleState[], time: number): Pla
   return input;
 }
 
-/** Rubber-band amount for a vehicle vs race leader (0..catchUpMax). */
-export function catchUpFactor(v: VehicleState, all: VehicleState[]): number {
+/**
+ * Rubber-band amount for a vehicle (−0.1 .. catchUpMax).
+ *
+ * Three rules make this defensible rather than cheap, and they are the whole
+ * reason this is not two lines:
+ *
+ *  1. It is measured against the LEADER, not the player, so a player who is
+ *     winning by a mile is not personally chased. Being fast is allowed to be
+ *     rewarded.
+ *  2. It fades to nothing inside 30 metres of the player. The thing that reads
+ *     as cheating is not a car that is quick on the far side of the circuit, it
+ *     is watching a car glued to your bumper up a straight it has no business
+ *     matching you on. Out of sight it keeps the field together; in your mirror
+ *     it is off.
+ *  3. It can be negative, but only for a duellist and only when they are ahead
+ *     of the PLAYER. A boss that disappears at half distance is not a fight.
+ */
+export function catchUpFactor(
+  v: VehicleState,
+  all: VehicleState[],
+  lapCount: number = RACE.laps,
+): number {
   if (v.isPlayer || v.finished) return 0;
   // A time attack with rubber-banded traffic is not a time attack, and a boss
   // duel where the boss is towed back to you by the physics is not a duel.
   if (directive.catchUp <= 0) return 0;
+
+  const mark = all.find((o) => o.id === directive.playerId) ?? null;
+  const prof = profileFor(v.id);
+
+  if (prof.pattern === "duelist" && mark) {
+    // Anchored to you, symmetric, and clamped tight in both directions.
+    const gap = mark.raceProgress - v.raceProgress;
+    const trim = Math.max(-0.09, Math.min(0.16, gap * 0.5)) * directive.catchUp;
+    return nearFade(v, mark, trim);
+  }
+
   let leader = 0;
   for (const o of all) {
     if (o.raceProgress > leader) leader = o.raceProgress;
@@ -359,9 +666,17 @@ export function catchUpFactor(v: VehicleState, all: VehicleState[]): number {
   const gap = leader - v.raceProgress;
   if (gap < RACE.catchUpStartGap) return 0;
   // Slightly stronger catch-up on last stretch of race progress
-  const late = leader > RACE.laps - 0.4 ? 1.2 : 1;
-  return (
+  const late = leader > lapCount - 0.4 ? 1.2 : 1;
+  const amount =
     Math.min(RACE.catchUpMax * late, (gap - RACE.catchUpStartGap) * 0.14 * late) *
-    directive.catchUp
-  );
+    directive.catchUp;
+  return mark ? nearFade(v, mark, amount) : amount;
+}
+
+/** Rule 2 above: no assistance a player can watch happening. */
+function nearFade(v: VehicleState, mark: VehicleState, amount: number): number {
+  if (amount <= 0) return amount;
+  const d = Math.hypot(mark.x - v.x, mark.z - v.z);
+  if (d >= 30) return amount;
+  return amount * Math.max(0, (d - 8) / 22);
 }
