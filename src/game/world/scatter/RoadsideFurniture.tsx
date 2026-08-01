@@ -22,9 +22,9 @@ import { getTrackEpoch } from "../../track";
 import { boardGeometry, railModuleGeometry } from "./geometry";
 import {
   curvatureThreshold,
+  linkedRuns,
   meanSpacing,
   vergePoints,
-  type VergePoint,
 } from "./placement";
 import {
   packLayer,
@@ -57,33 +57,6 @@ const RAIL_RANGE: TierScale = { low: 0.45, medium: 0.75, high: 1 };
 const BOARD_DENSITY: TierScale = { low: 0.5, medium: 1, high: 1 };
 const BOARD_RANGE: TierScale = { low: 0.5, medium: 0.8, high: 1 };
 
-/**
- * Split verge anchors into runs of consecutive same-side points.
- *
- * `vergePoints` walks the circuit in order but drops anchors that fail the
- * curvature filter or the whole-loop clearance test, so consecutive entries are
- * not necessarily neighbours. Joining across a drop would throw a 200m beam
- * across the infield.
- */
-function railRuns(points: VergePoint[], maxGap: number): VergePoint[][] {
-  const runs: VergePoint[][] = [];
-  let cur: VergePoint[] = [];
-  for (const p of points) {
-    const last = cur[cur.length - 1];
-    const joins =
-      last !== undefined &&
-      last.side === p.side &&
-      Math.hypot(p.x - last.x, p.z - last.z) <= maxGap;
-    if (!joins) {
-      if (cur.length > 1) runs.push(cur);
-      cur = [];
-    }
-    cur.push(p);
-  }
-  if (cur.length > 1) runs.push(cur);
-  return runs;
-}
-
 function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
   // Top ~40% of the circuit by curvature. Rail belongs where a car leaves the
   // road, which is the outside of a bend, and nowhere else.
@@ -98,7 +71,7 @@ function buildRail(): { data: ScatterLayerData; dispose: () => void } | null {
   if (points.length < 4) return null;
 
   const spacing = meanSpacing(points);
-  const runs = railRuns(points, spacing * 2.4);
+  const runs = linkedRuns(points, spacing * 2.4);
   const geo = railModuleGeometry(spacing);
 
   const q = new THREE.Quaternion();

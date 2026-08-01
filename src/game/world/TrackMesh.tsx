@@ -20,6 +20,7 @@ import {
   type RoadBuildResult,
 } from "./culling";
 import { RoadsideFurniture, ScatterField, VergeDrift } from "./scatter";
+import { Setpieces } from "./setpieces";
 import { getActiveEnvironment } from "./environments";
 import type { SurfaceDef } from "./environments";
 
@@ -387,6 +388,15 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       */}
       <ScatterField />
       <RoadsideFurniture />
+
+      {/*
+        Per-circuit built structure — the thing that makes a circuit a place
+        rather than a palette. 0-4 additional draw calls depending on the
+        circuit (Ash Spire is deliberately zero; see setpieces/presets.ts),
+        instanced and culled per instance by the same machinery above.
+      */}
+      <Setpieces />
+
       <VergeDrift />
     </group>
   );

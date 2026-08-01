@@ -20,8 +20,16 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { mulberry32 } from "./placement";
 
-/** Uniformly coloured box, ready to merge into a module. */
-function coloredBox(
+/**
+ * Uniformly coloured box, ready to merge into a module.
+ *
+ * Exported for setpieces/, which builds its structures out of the same
+ * primitive for the same reason: one merged geometry per structure family means
+ * a circuit's worth of walls, stacks and gantries is one draw call. A second
+ * copy of this helper over there would be a second place for the vertex-colour
+ * convention (and the clearGroups() line, which is load-bearing) to drift.
+ */
+export function coloredBox(
   w: number,
   h: number,
   d: number,
@@ -44,7 +52,7 @@ function coloredBox(
   return g;
 }
 
-function mergeOrThrow(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+export function mergeOrThrow(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const merged = mergeGeometries(parts, false);
   for (const p of parts) p.dispose();
   if (!merged) throw new Error("scatter: geometry merge failed");

@@ -20,7 +20,19 @@
  *    can just as easily push a rock onto a different part of the circuit, and
  *    at these densities losing a few percent of the field costs nothing.
  */
-import { TRACK_SAMPLES, duneProfile, getSurfaceAt } from "../../track";
+/*
+ * `getTrackSamples()`, not the `TRACK_SAMPLES` binding.
+ *
+ * The whole point of this module having no renderer dependency is that it can
+ * be run and asserted headlessly — and headless means jiti, which transpiles to
+ * CJS and snapshots an `export let` at module init instead of keeping it live.
+ * Reading the binding gives whichever circuit happened to be active when this
+ * file was first imported, while `getSurfaceAt` (a function) reports the
+ * current one, so a check would place one circuit's scatter against another
+ * circuit's road and report success. Live in the browser, wrong in the harness
+ * meant to police it.
+ */
+import { duneProfile, getSurfaceAt, getTrackSamples } from "../../track";
 import { sampleDuneField, sampleRockMask } from "../terrainHeight";
 import type { TrackSample } from "../../types";
 
@@ -123,7 +135,7 @@ export function scatterPoints(opts: {
    *  neat hedgerows tracing the circuit. */
   jitter?: number;
 }): ScatterPoint[] {
-  const samples = TRACK_SAMPLES;
+  const samples = getTrackSamples();
   const n = samples.length;
   const out: ScatterPoint[] = [];
   if (n < 4) return out;
@@ -190,7 +202,8 @@ export function scatterPoints(opts: {
  * other bare.
  */
 export function curvatureThreshold(fraction: number, reach = 3): number {
-  const n = TRACK_SAMPLES.length;
+  const samples = getTrackSamples();
+  const n = samples.length;
   if (n < 8) return 0;
   const mags: number[] = [];
   for (let i = 0; i < n; i++) mags.push(Math.abs(curvatureAt(i, reach)));
@@ -217,10 +230,11 @@ export type VergePoint = {
  * means the road bends such that the outside of the corner is side -1.
  */
 function curvatureAt(i: number, reach: number): number {
-  const n = TRACK_SAMPLES.length;
-  const p = TRACK_SAMPLES[i]!;
-  const a = TRACK_SAMPLES[(i - reach + n * 2) % n]!;
-  const b = TRACK_SAMPLES[(i + reach) % n]!;
+  const samples = getTrackSamples();
+  const n = samples.length;
+  const p = samples[i]!;
+  const a = samples[(i - reach + n * 2) % n]!;
+  const b = samples[(i + reach) % n]!;
   const t0x = p.x - a.x;
   const t0z = p.z - a.z;
   const t1x = b.x - p.x;
@@ -254,7 +268,7 @@ export function vergePoints(opts: {
   /** Samples over which curvature is measured. */
   reach?: number;
 }): VergePoint[] {
-  const samples = TRACK_SAMPLES;
+  const samples = getTrackSamples();
   const n = samples.length;
   const out: VergePoint[] = [];
   if (n < 8) return out;
@@ -307,6 +321,39 @@ export function vergePoints(opts: {
     }
   }
   return out;
+}
+
+/**
+ * Split verge anchors into runs of consecutive, same-side, adjacent points.
+ *
+ * Anchor lists walk the circuit in order but drop entries — a curvature filter,
+ * a clearance failure, a deliberate gap in a container wall. Consecutive
+ * entries are therefore not necessarily neighbours, and joining across a drop
+ * throws a 200m beam across the infield.
+ *
+ * Generic over the point type so the guard rail and the setpiece walls and
+ * pipelines share one copy of that rule rather than three subtly different ones.
+ */
+export function linkedRuns<T extends { x: number; z: number; side: number }>(
+  points: T[],
+  maxGap: number,
+): T[][] {
+  const runs: T[][] = [];
+  let cur: T[] = [];
+  for (const p of points) {
+    const last = cur[cur.length - 1];
+    const joins =
+      last !== undefined &&
+      last.side === p.side &&
+      Math.hypot(p.x - last.x, p.z - last.z) <= maxGap;
+    if (!joins) {
+      if (cur.length > 1) runs.push(cur);
+      cur = [];
+    }
+    cur.push(p);
+  }
+  if (cur.length > 1) runs.push(cur);
+  return runs;
 }
 
 /**
