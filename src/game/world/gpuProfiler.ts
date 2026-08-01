@@ -59,6 +59,25 @@ class GpuProfiler {
    */
   completed = 0;
   discarded = 0;
+  /**
+   * Distinct pass OBJECTS ever seen, and renders of the component that owns the
+   * composer.
+   *
+   * @react-three/postprocessing rebuilds every EffectPass in a layout effect
+   * keyed on `children` — a fresh React element on every render of the
+   * component holding the composer. So these two numbers together say whether
+   * the post stack is stable: `composerRenders` climbing while `passWraps`
+   * stays at the size of the chain means React is re-rendering but the passes
+   * survive; `passWraps` climbing with it means the whole chain is being torn
+   * down and reconstructed, reallocating a material and a render target per
+   * pass every time.
+   *
+   * Counted against a set that survives the instrumenting effect, because that
+   * effect re-runs on every render by design and would otherwise count its own
+   * re-binding.
+   */
+  passWraps = 0;
+  composerRenders = 0;
 
   init(renderer: THREE.WebGLRenderer): boolean {
     const ctx = renderer.getContext();
@@ -166,12 +185,44 @@ class GpuProfiler {
   }
 
   /** Is it collecting, and if not, why not. */
-  health(): { completed: number; discarded: number; inflight: number } {
+  health(): {
+    completed: number;
+    discarded: number;
+    inflight: number;
+    passWraps: number;
+    composerRenders: number;
+  } {
     return {
       completed: this.completed,
       discarded: this.discarded,
       inflight: this.inflight.length,
+      passWraps: this.passWraps,
+      composerRenders: this.composerRenders,
     };
+  }
+
+  /**
+   * Drop accumulated averages without tearing down the GL objects.
+   *
+   * An automated run enables the profiler, drives the car for a few seconds and
+   * then samples. Without this the EMAs still carry the loading-screen and
+   * first-frame numbers, which are 10-100x the steady-state ones and dominate a
+   * 0.15-alpha average for hundreds of frames.
+   */
+  resetStats() {
+    this.ema.clear();
+    this.cpu.clear();
+    this.cpuMark.clear();
+    this.completed = 0;
+    this.discarded = 0;
+    this.passWraps = 0;
+    this.composerRenders = 0;
+    /*
+     * Long tasks too. The question that matters about a 226ms spike is whether
+     * it recurs or was one-time load work, and that is only answerable if the
+     * buffer can be cleared after the world has finished loading.
+     */
+    longTasks.length = 0;
   }
 
   dispose() {
@@ -239,7 +290,13 @@ export type ProfileSnap = {
   gpu: Record<string, number>;
   cpu: Record<string, number>;
   longTasks: { count: number; worstMs: number; recent: LongTask[] };
-  health: { completed: number; discarded: number; inflight: number };
+  health: {
+    completed: number;
+    discarded: number;
+    inflight: number;
+    passWraps: number;
+    composerRenders: number;
+  };
 };
 
 declare global {
@@ -249,5 +306,18 @@ declare global {
      * A getter, not a snapshot — nothing is computed unless something reads it.
      */
     __gpuProfile?: ProfileSnap;
+    /**
+     * Profiler control, installed alongside `__gpuProfile`.
+     *
+     * Collection used to be reachable only by opening the debug panel, which an
+     * automated run cannot do without also paying for the panel's 4Hz React
+     * re-render — i.e. the only way to measure was to perturb the thing being
+     * measured. This is the headless entry point.
+     */
+    __perf?: {
+      setEnabled: (on: boolean) => void;
+      reset: () => void;
+      isEnabled: () => boolean;
+    };
   }
 }

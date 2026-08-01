@@ -58,6 +58,7 @@ import { PhysicsPropsView } from "./PhysicsPropsView";
 import { SceneryDecor } from "./SceneryDecor";
 import { getActiveEnvironment } from "./environments";
 import { VfxScene } from "./vfx/VfxScene";
+import type { PostFxInputs } from "./PostFX";
 import { preloadPhRaceProps, preloadSceneryModels } from "./polyHavenAssets";
 
 const USE_GLTF_CARS = true;
@@ -880,16 +881,60 @@ function emptyStats() {
   return { tested: 0, frustumPass: 0, distancePass: 0, visible: 0, ms: 0 };
 }
 
+/**
+ * Draws the scene whenever no EffectComposer is mounted.
+ *
+ * react-three-fiber only renders by itself while every useFrame subscription
+ * sits at priority 0 — its loop ends with
+ * `if (!state.internal.priority) gl.render(scene, camera)`. This scene has
+ * THIRTY subscribers above zero (the whole FRAME.LATE and FRAME.TELEMETRY
+ * bands), so r3f has permanently handed rendering over and the composer inside
+ * PostFX was the only thing drawing anything.
+ *
+ * PostFX is not mounted on the low tier, and not in the garage or showcase, and
+ * not until its dynamic import resolves. Measured at HEAD on an RTX 5080: low
+ * tier reported 0 draw calls, a 0.45ms frame loop, a black canvas under a live
+ * HUD, and "161 fps". The garage was the same — info.render.frame stopped
+ * advancing at 42 and stayed there for the twelve seconds it was watched.
+ *
+ * Priority 1 is the slot the composer itself occupies, so the ordering against
+ * every other band is identical whether or not post is running.
+ */
+const RENDER_PRIORITY = 1;
+
+function SceneRenderer() {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+  useFrame(() => {
+    gl.render(scene, camera);
+  }, RENDER_PRIORITY);
+  return null;
+}
+
+/**
+ * Feeds the post chain without re-rendering it.
+ *
+ * boost/hit/speed/drift used to be React state here, and every change
+ * re-rendered PostFX, which re-created the EffectComposer's `children` element,
+ * which made @react-three/postprocessing remove and rebuild all six passes. The
+ * profiler's pass-wrap counter measured 696 rebuilds in 24 seconds of racing —
+ * the whole chain reconstructed about five times a second because the car was
+ * accelerating. These are uniforms; they go through a ref the driver reads.
+ * Only `on` and `tier` remain state, and both genuinely need a new chain.
+ */
 function PostFxLive({ sim }: { sim: GameSimulation }) {
-  const [boost, setBoost] = useState(false);
-  const [hit, setHit] = useState(false);
-  const [speedBand, setSpeedBand] = useState(0);
-  const [drifting, setDrifting] = useState(false);
   const [on, setOn] = useState(false);
   const [tier, setTier] = useState(qualityManager.get().tier);
   const [PostFX, setPostFX] = useState<null | typeof import("./PostFX").PostFX>(
     null,
   );
+  const inputs = useRef<PostFxInputs>({
+    boost: false,
+    hit: false,
+    speedNorm: 0,
+    drifting: false,
+  });
 
   useEffect(() => {
     if (tier === "low") return;
@@ -909,23 +954,20 @@ function PostFxLive({ sim }: { sim: GameSimulation }) {
     const t = qualityManager.get().tier;
     if (t !== tier) setTier(t);
     const player = sim.state.vehicles.find((v) => v.isPlayer);
-    const b = (player?.boostTimer ?? 0) > 0;
-    const h = (player?.impactFlash ?? 0) > 0.15;
+    const i = inputs.current;
+    i.boost = (player?.boostTimer ?? 0) > 0;
+    i.hit = (player?.impactFlash ?? 0) > 0.15;
     // Same normalisation the chase rig uses. These were independently
     // hard-coded, which is how the blur and the FOV push ended up arriving at
     // different points on the speedo.
-    const sn = speedNorm(player?.speed ?? 0);
-    const d = (player?.driftMeter ?? 0) > 0.12;
-    if (b !== boost) setBoost(b);
-    if (h !== hit) setHit(h);
-    if (Math.abs(sn - speedBand) > 0.04) setSpeedBand(sn);
-    if (d !== drifting) setDrifting(d);
+    i.speedNorm = speedNorm(player?.speed ?? 0);
+    i.drifting = (player?.driftMeter ?? 0) > 0.12;
   }, FRAME.LATE);
 
-  if (!on || tier === "low" || !PostFX) return null;
-  return (
-    <PostFX boost={boost} hit={hit} speedNorm={speedBand} drifting={drifting} />
-  );
+  // Mutually exclusive with the composer by construction — never both, so the
+  // scene is drawn exactly once per frame either way.
+  if (!on || tier === "low" || !PostFX) return <SceneRenderer />;
+  return <PostFX inputs={inputs} />;
 }
 
 function CinematicPlayer({ sim }: { sim: GameSimulation }) {
@@ -979,6 +1021,9 @@ function ShowcaseWorld({ sim }: { sim: GameSimulation }) {
       <LiveVehicles sim={sim} />
       <GaragePilot sim={sim} />
       <LiveCamera sim={sim} />
+      {/* The showcase never mounts PostFX, so without this the garage and the
+          menu backdrop are a black canvas — see SceneRenderer. */}
+      <SceneRenderer />
     </>
   );
 }

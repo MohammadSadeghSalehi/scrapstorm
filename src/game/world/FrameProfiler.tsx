@@ -31,6 +31,17 @@ const AFTER_RENDER = 1.5;
 
 type Patched = Pass & { __profiled?: boolean };
 
+/**
+ * Every pass object ever instrumented, across effect re-runs.
+ *
+ * The patching effect below deliberately has no dependency array, so it
+ * unwraps and re-wraps on every render. Counting wraps there therefore measures
+ * renders, not rebuilds — which is exactly the confusion that made the first
+ * churn reading unreadable (696 "wraps" that turned out to be 111 re-renders of
+ * a chain that was not actually being rebuilt).
+ */
+const everSeen = new WeakSet<Pass>();
+
 export function FrameProfiler({
   composer,
 }: {
@@ -65,11 +76,20 @@ export function FrameProfiler({
       }),
     });
 
+    window.__perf = {
+      setEnabled: (on: boolean) => {
+        gpuProfiler.enabled = on;
+      },
+      reset: () => gpuProfiler.resetStats(),
+      isEnabled: () => gpuProfiler.enabled,
+    };
+
     return () => {
       stopLongTaskWatch();
       gpuProfiler.dispose();
       ready.current = false;
       delete (window as unknown as Record<string, unknown>).__gpuProfile;
+      delete window.__perf;
     };
   }, [gl]);
 
@@ -89,10 +109,45 @@ export function FrameProfiler({
     const passes = (c as unknown as { passes: Patched[] }).passes;
     if (!passes) return;
     const undo: Array<() => void> = [];
+    /*
+     * Name the passes usefully.
+     *
+     * `postprocessing` is a pre-bundled dependency, so its class names are
+     * mangled: the first real reading off this profiler came back as
+     * "RenderPass 6.51ms / Pass 3.33ms / EffectPass 0.57ms", which says nothing
+     * about whether the 3.33 was N8AO or SMAA — the entire question being
+     * asked. EffectPass carries its effects, and effects keep their `name`, so
+     * the merged chain can name itself; anything else falls back to its class
+     * plus an index so two passes never share a row.
+     */
+    gpuProfiler.composerRenders++;
+    const seen = new Map<string, number>();
     for (const pass of passes) {
       if (pass.__profiled) continue;
-      const label = pass.name || pass.constructor.name;
+      const effects = (pass as Pass & { effects?: Array<{ name?: string }> }).effects;
+      /*
+       * Effect names beat pass.name. Every merged chain calls itself
+       * "EffectPass", and the first four rows of the first real reading were
+       * EffectPass, EffectPass#2, #3 and #4 — four indistinguishable
+       * full-screen passes where the whole point was to find out which one was
+       * expensive. The effects inside know what they are.
+       */
+      let label = effects?.length
+        ? effects.map((e) => (e.name || "?").replace(/Effect$/, "")).join("+")
+        : pass.name && pass.name !== "Pass"
+          ? pass.name
+          : pass.constructor.name;
+      /* n8ao and friends leave the base class default, so fall back to the
+         class — and if that is mangled too, at least index them apart. */
+      if (label === "Pass") label = pass.constructor.name;
+      const n = (seen.get(label) ?? 0) + 1;
+      seen.set(label, n);
+      if (n > 1) label = `${label}#${n}`;
       gpuProfiler.register(label);
+      if (!everSeen.has(pass)) {
+        everSeen.add(pass);
+        gpuProfiler.passWraps++;
+      }
       const original = pass.render.bind(pass);
       const wrapped: Pass["render"] = (...args) => {
         gpuProfiler.begin(label);
