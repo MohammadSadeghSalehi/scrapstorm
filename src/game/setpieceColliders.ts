@@ -91,7 +91,14 @@ export interface StaticCollider {
  */
 type Footprint = { halfX: number; r: number } | null;
 
-const FOOTPRINT: Record<SetpieceShape, Footprint> = {
+/**
+ * Exported ONLY so scripts/check-setpiece-footprints.mjs can guard it.
+ *
+ * These numbers are derived by hand from world/setpieces/geometry.ts and there
+ * is nothing in the type system connecting the two — retune a furnace and this
+ * silently keeps the old width. The script is the tripwire for that.
+ */
+export const FOOTPRINT: Record<SetpieceShape, Footprint> = {
   // Linked families: halfX is unused, the segment is anchor-to-anchor.
   // Wall body is 1.5m deep (half 0.75) and its plinth 2.4m (half 1.2); 0.85
   // sits between them so the collider face is within 15cm of the face you see.
