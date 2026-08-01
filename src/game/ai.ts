@@ -232,10 +232,27 @@ export function aiSkill(v: VehicleState): {
   const hurt = 1 - v.health / Math.max(1, v.maxHealth);
   const nerveTrim = hurt * (0.5 - prof.nerve) * 0.16;
   const pace = Math.max(0, Math.min(1, prof.pace - nerveTrim));
+  /*
+   * Widened from (0.93 + 0.14p) grip / (0.965 + 0.075p) power.
+   *
+   * The old spread was authored to be "deliberately narrow" and was verified by
+   * a regression check that a pace-1 field covers measurably more ground than a
+   * pace-0 one. That check was passing against a BROKEN measurement:
+   * raceProgress was a 14-step staircase that reported how many gates a car had
+   * passed rather than how far it had gone (see sim.raceProgressOf). Measured
+   * honestly, the whole ladder from the league's slowest driver to its fastest
+   * was worth 2.6% of ground speed and 3.8% of distance over a three-lap heat —
+   * inside the race-to-race noise of a single mistake, i.e. a difficulty setting
+   * nobody could feel, which is exactly what that check exists to forbid.
+   *
+   * 7.4% of power and 12% of grip across the same range puts the separation at
+   * roughly 5-6% of distance: still narrow enough that the field is visibly
+   * driving the same cars the player is, and now outside the noise.
+   */
   return {
-    grip: (0.93 + pace * 0.14) * (erring ? 0.88 : 1),
-    power: 0.965 + pace * 0.075,
-    turn: (0.95 + pace * 0.1) * (erring ? 0.9 : 1),
+    grip: (0.92 + pace * 0.17) * (erring ? 0.88 : 1),
+    power: 0.955 + pace * 0.105,
+    turn: (0.95 + pace * 0.12) * (erring ? 0.9 : 1),
   };
 }
 

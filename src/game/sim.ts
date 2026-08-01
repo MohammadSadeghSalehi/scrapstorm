@@ -1,4 +1,10 @@
-import { BOT_NAMES, CLASS_ORDER, VEHICLE_CLASSES, getFieldRoster } from "./classes";
+import {
+  BOT_NAMES,
+  CLASS_ORDER,
+  VEHICLE_CLASSES,
+  getFieldRoster,
+  slotOfVehicle,
+} from "./classes";
 import { RACE, COMBAT, FEEL } from "./balance";
 import { aiInput, aiSkill, catchUpFactor } from "./ai";
 import {
@@ -13,7 +19,8 @@ import {
 import { createEmptyInput } from "./input";
 import {
   collideVehicles,
-  isDrifting,
+  isHandbrakeDrift,
+  resetDriftState,
   resetSteerRamp,
   spawnDamageSmoke,
   stepVehicle,
@@ -29,10 +36,12 @@ import {
   // track.ts exports no accessor for it. See the report: one added
   // `getCheckpoints()` there makes this file fully testable off a real circuit.
   getCheckpoints,
+  getGroundHeight,
   getTrackDef,
+  getTrackLength,
   getTrackSamples,
+  getTrackEpoch,
   nearestTrackIndex,
-  trackProgress,
   setActiveTrack,
   type TrackId,
 } from "./track";
@@ -71,6 +80,71 @@ type VehicleRuntime = {
 
 const runtime = new Map<string, VehicleRuntime>();
 
+/* ── starting grid ───────────────────────────────────────────────────
+ *
+ * Rows are measured in SAMPLES because that is what the track exposes, and
+ * every circuit in the catalogue is resampled to TARGET_SAMPLE_SPACING — a
+ * measured 3.12-3.16m mean on all six — so three samples is 9.4m everywhere
+ * rather than a different distance per road. If a future circuit ever changes
+ * that, this is the constant that has to become metres.
+ */
+const GRID_ROWS = 4;
+/** Samples between grid rows. ~9.4m — over two car lengths. */
+const GRID_ROW_SAMPLES = 3;
+/**
+ * Sample index of the LAST row. Pole sits `(GRID_ROWS - 1) * GRID_ROW_SAMPLES`
+ * further on, which puts the front of the grid exactly where the old back-to-
+ * front layout put its leading car — so the length of lap one is unchanged.
+ */
+const GRID_REAR_SAMPLE = 2;
+/** Metres either side of the centreline. Fits the 24m narrowest start line. */
+const GRID_LANE_M = 3.4;
+
+/**
+ * Hysteresis on a position change, in METRES of centreline progress.
+ *
+ * This used to be a flat 0.01 of `raceProgress`, which is 1% of A LAP — 6.6m on
+ * the Foundry Pit and 17m on the Dead Mile. Two cars seventeen metres apart
+ * being called a tie is not hysteresis, it is a standings table that lags a pass
+ * by most of a straight, and it lagged it by a different amount on every
+ * circuit. Expressed in metres it is the same on all six.
+ */
+const STANDINGS_HOLD_M = 4;
+
+/**
+ * Seconds after a gate registers during which no gate may register.
+ *
+ * This was 0.6s, and 0.6s is LONGER THAN THE GAP BETWEEN TWO GATES on the fast
+ * circuits. Gate spacing is 41m at its tightest (Cinder Bowl; Foundry Pit 46m,
+ * Rustline 55m), and a car at 80 m/s covers 41m in 0.51s — a drift boost or an
+ * Overdrive Lock takes that to 104 m/s and 0.39s. Any car quick enough through
+ * that stretch had the NEXT gate swallowed by the cooldown, and since
+ * `v.checkpoint` only advances on a registered crossing, the miss is not
+ * cosmetic: the car cannot complete the lap until it comes round and takes the
+ * skipped gate again.
+ *
+ * The cooldown only ever needed to stop one crossing double-registering across
+ * consecutive steps, and the gate list advances on every trigger anyway, so
+ * 0.15s does that job with a factor of three in hand: 15m at the very highest
+ * speed in the game, against a 41m minimum gate spacing.
+ */
+const GATE_COOLDOWN = 0.15;
+
+/**
+ * Gate half-width, as a multiple of the authored `halfWidth` (0.62 x road).
+ *
+ * At 1.05 a gate reached only 0.65 of the road's width from the centreline —
+ * about 4m past the tarmac edge on a 26m road, i.e. inside the apron. A car that
+ * ran wide onto the sand at a gate simply did not register it, and then, exactly
+ * as above, could not finish the lap. Widening to ~1.0 x the full road width
+ * covers the apron and several metres of sand.
+ *
+ * It cannot let a car claim a gate from the wrong leg of the loop: the widest
+ * this produces is 28m on the Dead Mile, whose two legs pass ~95m apart, and the
+ * crossing still has to be through the plane in the forward direction.
+ */
+const GATE_WIDTH_MUL = 1.6;
+
 function rt(id: string, v: VehicleState): VehicleRuntime {
   let r = runtime.get(id);
   if (!r) {
@@ -100,6 +174,105 @@ function trackYawAt(index: number, lookAhead = 6): number {
   return Math.atan2(-(b.x - a.x), -(b.z - a.z));
 }
 
+/* ── race progress ───────────────────────────────────────────────────
+ *
+ * `track.trackProgress` is OFF BY ONE SECTOR, and the effect is not a rounding
+ * error — it destroys the quantity entirely. Measured on ash_spire, walking the
+ * centreline as a car that crosses every gate correctly:
+ *
+ *   sample   true arc   trackProgress   error
+ *      0      0.0000       0.0714       +64.9m
+ *     72      0.2505       0.2857       +32.0m
+ *    144      0.4967       0.5714       +67.9m
+ *    264      0.9136       0.9286       +13.6m
+ *
+ * Every reported value is an exact multiple of 1/14. It is a STAIRCASE: it
+ * jumps a whole sector at each gate and then does not move again until the next
+ * one, so within a sector every car on the circuit has identical progress no
+ * matter where in that 65m they are.
+ *
+ * The cause: `v.checkpoint` names the gate a car is heading FOR, so the sector
+ * it occupies runs from gate `checkpoint - 1` to gate `checkpoint`. trackProgress
+ * reads the sector as `[checkpoint/n, (checkpoint+1)/n)` — one sector too far
+ * along — so the car's true arc is always BELOW its own sector floor and the
+ * clamp pins it there. Its `checkpoint === 0` special case spells the correct
+ * formula out (`(n-1)/n`), which is why the one sector before the start line is
+ * the only one that reads correctly.
+ *
+ * What it cost, everywhere raceProgress is read:
+ *   · standings could not separate two cars in the same sector at all, so the
+ *     order inside a sector was whatever the hysteresis fallback said;
+ *   · ai.catchUpFactor measured gaps to the leader in 65m quanta;
+ *   · ai's `blocker` pattern tests `mark.raceProgress < v.raceProgress`, which
+ *     is false for a car right behind you in the same sector — so blockers did
+ *     not block until you happened to be a sector back;
+ *   · the mission runtime's "player is ahead of the mark" check, same.
+ *
+ * Fixed here rather than in track.ts because this is the only caller and
+ * track.ts is not this change's to edit. Gate arc positions are MEASURED rather
+ * than assumed to be k/n — buildCheckpointsFrom places gates by sample index and
+ * index is only approximately proportional to distance (worst deviation across
+ * the catalogue: 0.66% of a lap, 5.3m on Rustline).
+ */
+let gateArc: number[] = [];
+let gateArcEpoch = -1;
+
+function gateArcs(): number[] {
+  const epoch = getTrackEpoch();
+  if (epoch === gateArcEpoch) return gateArc;
+  gateArcEpoch = epoch;
+  const S = getTrackSamples();
+  const L = Math.max(1e-6, getTrackLength());
+  gateArc = getCheckpoints().map((g) => {
+    const s = S[nearestTrackIndex(g.x, g.z)];
+    return s ? s.s / L : 0;
+  });
+  return gateArc;
+}
+
+/**
+ * Whole laps + [0,1) around the circuit, continuous within a sector.
+ *
+ * Takes the five fields it needs rather than a VehicleState, so the grid
+ * builder can ask for a car's starting progress before that car exists.
+ */
+function raceProgressOf(
+  x: number,
+  z: number,
+  yaw: number,
+  lap: number,
+  checkpoint: number,
+): number {
+  const arcs = gateArcs();
+  const n = arcs.length;
+  if (n === 0) return lap;
+  const S = getTrackSamples();
+  const L = Math.max(1e-6, getTrackLength());
+  const idx = nearestTrackIndex(x, z, yaw);
+  const arc = (S[idx]?.s ?? 0) / L;
+
+  // The sector the car is IN starts at the gate it last crossed.
+  const sector = (((checkpoint - 1) % n) + n) % n;
+  const lo = arcs[sector]!;
+  const next = sector === n - 1 ? 1 : arcs[sector + 1]!;
+  const span = Math.max(1e-4, next - lo);
+
+  /*
+   * Signed offset from the sector start, taken the short way round the loop, so
+   * a car sitting a metre behind the line it just crossed reads as the start of
+   * its sector rather than as almost a full lap ahead.
+   */
+  let rel = arc - lo;
+  if (rel < -0.5) rel += 1;
+  else if (rel > 0.5) rel -= 1;
+  // Clamped INTO the sector: the sequential gate is the authority on which
+  // sector you are in, arc-length only refines where inside it. A car that has
+  // run wide past the next gate without triggering it is held at the boundary
+  // rather than credited with a sector it has not been given.
+  const within = lo + Math.max(0, Math.min(span - 1e-4, rel));
+  return lap + within;
+}
+
 function resolvePaint(classId: VehicleClassId): string {
   const def = VEHICLE_CLASSES[classId];
   try {
@@ -120,17 +293,36 @@ function makeVehicle(
   showcase = false,
 ): VehicleState {
   const def = VEHICLE_CLASSES[classId];
-  // Stagger rows so grid cars don't occupy the same sample
-  const startIdx = 2 + gridIndex * 3;
+  /*
+   * THE GRID RUNS FORWARD FROM POLE, and it did not.
+   *
+   * `startIdx = 2 + gridIndex * 3` put grid slot 0 — the player, whose
+   * `position` is initialised to 1 — at the sample NEAREST the start line, and
+   * slot 3 nine samples further down the road. Sample spacing is ~3.14m on
+   * every circuit in the catalogue (TARGET_SAMPLE_SPACING, verified: 3.12-3.16
+   * mean across all six), so the car the HUD called P4 physically started ~28m
+   * AHEAD of the car it called P1. Pole was the back of the grid.
+   *
+   * Slot 0 now takes the FRONT row and the rows walk backwards, so the reported
+   * order and the physical order are the same thing. Lanes alternate sides
+   * instead of running diagonally across the road, which is what a grid looks
+   * like and also keeps every car within half a road width of the centreline on
+   * the narrowest circuit in the catalogue (Rustline, 24m at the line).
+   */
   const S = getTrackSamples();
+  const row = Math.min(GRID_ROWS - 1, Math.max(0, gridIndex));
+  const startIdx =
+    GRID_REAR_SAMPLE + (GRID_ROWS - 1 - row) * GRID_ROW_SAMPLES;
   const sample = S[Math.min(startIdx, S.length - 1)] ?? S[0]!;
-  // Wide lanes — half-widths ~1.0; 3.6 keeps bumpers clear on start
-  const lane = (gridIndex - 1.5) * 3.6;
+  const lane = (row % 2 === 0 ? -1 : 1) * GRID_LANE_M;
   const rx = Math.cos(sample.yaw);
   const rz = -Math.sin(sample.yaw);
   const x = showcase ? SHOWCASE.x : sample.x + rx * lane;
   const z = showcase ? SHOWCASE.z : sample.z + rz * lane;
-  const y = showcase ? SHOWCASE.y : sample.y + 0.55;
+  // getGroundHeight, not sample.y: sample.y is the ROAD plane, and while the
+  // lane offset is well inside the flat corridor on every circuit today, a
+  // narrower one would put the outside car on the berm roll-off.
+  const y = showcase ? SHOWCASE.y : getGroundHeight(x, z) + 0.55;
   const yaw = showcase ? SHOWCASE.yaw : trackYawAt(startIdx);
 
   return {
@@ -160,7 +352,7 @@ function makeVehicle(
     boostTimer: 0,
     lap: 0,
     checkpoint: 1,
-    raceProgress: trackProgress(x, z, 0, 1, yaw),
+    raceProgress: raceProgressOf(x, z, yaw, 0, 1),
     finished: false,
     finishTime: 0,
     position: gridIndex + 1,
@@ -308,9 +500,9 @@ function updateCheckpoints(v: VehicleState, state: SimState, dt: number) {
     prevAlong < 0.35 &&
     along >= -0.15 &&
     prevAlong < along &&
-    Math.abs(across) < gate.halfWidth * 1.05
+    Math.abs(across) < gate.halfWidth * GATE_WIDTH_MUL
   ) {
-    r.gateCool = 0.6;
+    r.gateCool = GATE_COOLDOWN;
     const isStart = gateIdx === 0;
     v.checkpoint = (gateIdx + 1) % n;
     if (isStart) {
@@ -348,7 +540,7 @@ function updateCheckpoints(v: VehicleState, state: SimState, dt: number) {
 
   r.prevX = v.x;
   r.prevZ = v.z;
-  const prog = trackProgress(v.x, v.z, v.lap, v.checkpoint, v.yaw);
+  const prog = raceProgressOf(v.x, v.z, v.yaw, v.lap, v.checkpoint);
   if (prog >= v.raceProgress - 0.04 || Math.floor(prog) > Math.floor(v.raceProgress)) {
     v.raceProgress = prog;
   } else {
@@ -356,25 +548,54 @@ function updateCheckpoints(v: VehicleState, state: SimState, dt: number) {
   }
 }
 
+/**
+ * Race positions from race progress.
+ *
+ * THE OLD COMPARATOR WAS NOT A TOTAL ORDER, and that is not a style objection.
+ * It returned "tied" for any pair within 0.01 laps and then fell back to the
+ * PREVIOUS frame's position, so with a = 0.005 behind b, b = 0.005 behind c and
+ * a = 0.010 behind c, it reported a~b, b~c and a<c simultaneously. Array.prototype
+ * .sort is explicitly undefined on an inconsistent comparator: the result is
+ * whatever the engine's merge happens to do with it, which is how a standings
+ * table develops a mind of its own in a close pack — the exact situation it
+ * exists to describe.
+ *
+ * Rewritten as a SORT KEY, which cannot be inconsistent by construction:
+ *
+ *   finished cars   → a descending band above every runner, in crossing order
+ *   everyone else   → raceProgress, plus a small bonus for the place they
+ *                     currently hold
+ *
+ * The bonus is the hysteresis, and being part of the key rather than a branch is
+ * what makes it transitive. A car has to gain STANDINGS_HOLD_M / fieldSize of
+ * centreline — one metre on a four-car grid — over the car ahead before it takes
+ * the place, so side-by-side running does not flicker and a genuine pass shows
+ * up within a car length instead of within a straight.
+ */
 function updateStandings(state: SimState) {
   const order = state.finishedOrder;
+  const n = Math.max(1, state.vehicles.length);
+  // Metres of progress, expressed in laps, so the deadband is the same distance
+  // on a 656m circuit and a 1702m one.
+  const stick = STANDINGS_HOLD_M / Math.max(1, getTrackLength());
+  const key = new Map<string, number>();
+  for (const v of state.vehicles) {
+    if (v.finished) {
+      const idx = order.indexOf(v.id);
+      // Well above any reachable lap count, so a finisher outranks every runner
+      // however far round the leader is.
+      key.set(v.id, 1e6 - (idx >= 0 ? idx : 999));
+    } else {
+      key.set(v.id, v.raceProgress + stick * ((n - v.position) / n));
+    }
+  }
   [...state.vehicles]
     .sort((a, b) => {
-      if (a.finished && b.finished) {
-        const ia = order.indexOf(a.id);
-        const ib = order.indexOf(b.id);
-        if (ia >= 0 && ib >= 0) return ia - ib;
-        return (a.finishTime || 0) - (b.finishTime || 0);
-      }
-      if (a.finished !== b.finished) return a.finished ? -1 : 1;
-      const dp = b.raceProgress - a.raceProgress;
-      if (dp > 0.01) return 1;
-      if (dp < -0.01) return -1;
-      if (a.position === b.position) {
-        if (Math.abs(b.speed - a.speed) > 1.5) return b.speed - a.speed;
-        return a.id.localeCompare(b.id);
-      }
-      return a.position - b.position;
+      const d = key.get(b.id)! - key.get(a.id)!;
+      // Exact equality only, and then a stable id tiebreak — the deadband is
+      // already in the key.
+      if (d !== 0) return d > 0 ? 1 : -1;
+      return a.id.localeCompare(b.id);
     })
     .forEach((v, i) => {
       v.position = i + 1;
@@ -418,11 +639,32 @@ function updateWrecks(state: SimState, dt: number) {
     if (v.wreckTimer > 0) {
       v.wreckTimer = Math.max(0, v.wreckTimer - dt);
       if (v.wreckTimer <= 0) {
-        const idx = nearestTrackIndex(v.x, v.z, v.yaw);
-        const s = getTrackSamples()[idx]!;
-        v.x = s.x;
-        v.y = s.y + 0.55;
-        v.z = s.z;
+        /*
+         * NO YAW HINT. nearestTrackIndex adds `dyaw^2 * 18` to the squared
+         * distance when given one — worth about 13m of position at half a turn
+         * of error — and a wreck's yaw is whatever it was spinning at when the
+         * hull failed. On a circuit that doubles back on itself (all six do; the
+         * Dead Mile's legs pass within ~95m) that penalty is enough to pick a
+         * sample on the OTHER leg because it happens to point the way the
+         * wreck ended up facing, and respawn the car across the infield facing
+         * a direction it never drove. Position alone cannot do that.
+         */
+        const idx = nearestTrackIndex(v.x, v.z);
+        const S = getTrackSamples();
+        const s = S[idx]!;
+        /*
+         * Set back from the centreline, alternating by grid slot. Every wreck
+         * used to be put on the exact centreline, so a multi-car pile-up
+         * respawned two stationary cars inside each other and the solver spent
+         * the next second pushing them apart.
+         */
+        const slot = slotOfVehicle(v.id);
+        const lane = (slot < 0 ? 0 : slot % 2 === 0 ? -1 : 1) * 2.2;
+        const rx = Math.cos(s.yaw);
+        const rz = -Math.sin(s.yaw);
+        v.x = s.x + rx * lane;
+        v.z = s.z + rz * lane;
+        v.y = getGroundHeight(v.x, v.z) + 0.55;
         v.yaw = s.yaw;
         v.speed = 0;
         v.lateral = 0;
@@ -434,6 +676,27 @@ function updateWrecks(state: SimState, dt: number) {
         // not also own the next one.
         v.lastHitBy = null;
         v.lastHitAge = 0;
+        /*
+         * THE TELEPORT MUST NOT COUNT AS A GATE CROSSING.
+         *
+         * updateCheckpoints decides a crossing from `prev` behind the gate plane
+         * and `current` in front of it, and while a car is wrecked it keeps
+         * updating `prev` at the wreck's position. Respawning moved the car
+         * without moving `prev`, so the next step compared a point at the crash
+         * site with a point on the road — a straight line that can pass through
+         * any number of gate planes, including the start line. A car wrecked
+         * just before the flag could respawn straight into a lap it had not
+         * driven. Re-anchoring `prev` and holding the gate cooldown for the
+         * length of the respawn makes the jump invisible to the lap counter.
+         */
+        const r = rt(v.id, v);
+        r.prevX = v.x;
+        r.prevZ = v.z;
+        r.gateCool = Math.max(r.gateCool, 0.35);
+        // Re-derived rather than eased toward: a car recovered a long way from
+        // where it died would take seconds to converge through the smoothing in
+        // updateCheckpoints, and would be mis-ranked for all of them.
+        v.raceProgress = raceProgressOf(v.x, v.z, v.yaw, v.lap, v.checkpoint);
         if (v.isPlayer) {
           pushEvent(state, "respawn", "Respawned · armor patched");
         }
@@ -560,6 +823,10 @@ export class GameSimulation {
     // motion, and a key held at the flag starts you already at full lock.
     sharedHitStop.reset();
     resetSteerRamp();
+    // Same reason as the steer ramp: drift engagement lives outside SimState, so
+    // a car that crossed the line sideways would otherwise start the next heat
+    // already in a slide.
+    resetDriftState();
     this.ghostRecorder.reset();
     this.ghostFinalized = false;
     this.activeGhost = this.ghostEnabled ? getGhost(this.state.selectedTrack) : null;
@@ -693,7 +960,16 @@ export class GameSimulation {
       const input = v.isPlayer
         ? (playerInput ?? createEmptyInput())
         : aiInput(v, state.vehicles, state.time, state.lapCount);
-      const drifting = isDrifting(v, input);
+      /*
+       * The HANDBRAKE predicate, deliberately, not isDrifting().
+       *
+       * isDrifting() is now a query over both drift modes, and stepVehicle feeds
+       * whatever it is handed back in as `forced` hysteresis for the handbrake
+       * branch. Passing the combined answer would let a grip drift silently arm
+       * the handbrake physics — 0.16 grip and a 1.85x turn multiplier — without
+       * the handbrake ever being touched.
+       */
+      const drifting = isHandbrakeDrift(v, input);
       const catchUp = v.isPlayer
         ? 0
         : catchUpFactor(v, state.vehicles, state.lapCount);

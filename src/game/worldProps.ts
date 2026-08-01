@@ -12,6 +12,11 @@ import {
   getGroundHeight,
 } from "./track";
 import { VEHICLE_CLASSES } from "./classes";
+import {
+  capsuleContact,
+  querySetpieceColliders,
+  rebuildSetpieceColliders,
+} from "./setpieceColliders";
 import { downEdgeAt, resetEdgeDamage } from "./world/edgeDamage";
 import {
   debrisActiveCount,
@@ -73,6 +78,14 @@ export function spawnWorldProps(): PhysProp[] {
   // Fresh grid — every post stands again and the road is swept.
   resetEdgeDamage();
   resetDebris();
+  /*
+   * Built structure gets its colliders here rather than through a hook of its
+   * own, because every path that rebuilds a grid already calls this: createState,
+   * setTrack, rebuildShowcase and startCountdown. A second entry point would be
+   * a second thing to forget. Cached on the track epoch inside, so restarting a
+   * heat on the same circuit costs a string compare.
+   */
+  rebuildSetpieceColliders();
 
   /**
    * Track samples either side of the start line kept free of obstacles. The
@@ -464,6 +477,93 @@ const PROP_REF_MASS = 0.02;
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
 
+/**
+ * The single place hull damage from the world is applied. Two bugs it fixes,
+ * both of which were spread across seven separate `v.health = Math.max(0, ...)`
+ * sites in this file:
+ *
+ * 1. INVULNERABILITY WAS IGNORED HERE. physics.applyDamage returns immediately
+ *    while `invuln > 0`, and collideVehicles checks it before hurting either
+ *    car, but nothing in this file did — so the two seconds of protection a car
+ *    gets on respawn (COMBAT.wreckInvuln) stopped weapons and other cars and did
+ *    nothing at all about scenery. A car respawned onto the racing line could be
+ *    killed outright by the first barrel it met, and then again by the next one.
+ *    The physical response still happens while invulnerable; only the damage is
+ *    withheld, which is what invulnerability has always meant everywhere else.
+ *
+ * 2. REACHING ZERO DID NOT WRECK THE CAR. applyDamage and collideVehicles both
+ *    set `alive = false` and start the wreck timer at zero health; this file
+ *    only zeroed the number. A car finished off by a barrel therefore kept
+ *    driving on 0 hp forever — never wrecking, never respawning, and carrying
+ *    the full COMBAT.dmg*Penalty (-14% top speed, -20% acceleration) for the
+ *    rest of the race. Measured on a three-lap AI heat, one car in the field was
+ *    in that state at the flag in six races out of eight.
+ */
+function hurtVehicle(v: VehicleState, amount: number): void {
+  if (amount <= 0 || !v.alive || v.wreckTimer > 0 || v.invuln > 0) return;
+  v.health = Math.max(0, v.health - amount);
+  v.damageVisual = Math.min(
+    1,
+    Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
+  );
+  if (v.health <= 0) {
+    v.alive = false;
+    // Same 2.8s as applyDamage and collideVehicles. updateWrecks owns what
+    // happens at the end of it.
+    v.wreckTimer = 2.8;
+    v.speed *= 0.35;
+  }
+}
+
+/**
+ * The one response an immovable object is allowed to give: DEFLECT, never
+ * reverse. Read this before adding a second solid thing to the world.
+ *
+ * A static prop has `invSum = 1 / massV`, so the shared restitution impulse used
+ * for dynamic props works out to `-(1 + e) x approach` — it flips the car's
+ * velocity straight back out of the wall. That is the "it stops us dead and
+ * throws us back" behaviour, and it is the reason this is a separate path
+ * instead of a mass of Infinity in the generic solver.
+ *
+ * So: cancel only the component INTO the surface and keep the component along
+ * it. You scrape past and lose speed in proportion to how square the hit was.
+ * The 0.9 rather than 1.0 leaves a sliver of inward velocity, which is what
+ * stops the car re-sticking to the surface on the following step.
+ *
+ * `nx, nz` points FROM the car TOWARD the obstacle. `velN` is the closing speed
+ * along that normal, positive when approaching.
+ *
+ * Shared by the verge barriers, the SCENERY blockers and the set-piece
+ * structures, deliberately: three copies of a rule this hard-won is three
+ * chances to reintroduce the impulse.
+ */
+function deflectOffStatic(
+  v: VehicleState,
+  va: { vx: number; vz: number },
+  nx: number,
+  nz: number,
+  pen: number,
+  velN: number,
+): void {
+  v.x -= nx * pen;
+  v.z -= nz * pen;
+  v.yaw += (nx * Math.cos(v.yaw) + nz * -Math.sin(v.yaw)) * pen * 0.06;
+  const closing = Math.max(0, velN);
+  if (closing <= 0.4) return;
+  const removeN = closing * 0.9;
+  const scrub = 1 - Math.min(0.3, closing * 0.012);
+  const nvx = (va.vx - nx * removeN) * scrub;
+  const nvz = (va.vz - nz * removeN) * scrub;
+  applyWorldVel(v, nvx, nvz);
+  va.vx = nvx;
+  va.vz = nvz;
+  if (closing > 6) {
+    v.impactFlash = Math.max(v.impactFlash, 0.22);
+    v.hitStun = Math.max(v.hitStun, 0.04);
+    hurtVehicle(v, closing * 0.06);
+  }
+}
+
 export function collideVehiclesWithProps(
   vehicles: VehicleState[],
   props: PhysProp[],
@@ -546,49 +646,15 @@ export function collideVehiclesWithProps(
         va.vz *= keep;
         v.hitStun = Math.max(v.hitStun, 0.015);
         v.impactFlash = Math.max(v.impactFlash, 0.12);
-        v.health = Math.max(0, v.health - 0.5 * drive);
-        v.damageVisual = Math.min(
-          1,
-          Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-        );
+        hurtVehicle(v, 0.5 * drive);
         maxImpact = Math.max(maxImpact, velN);
         continue;
       }
 
-      // Intact barrier (below break speed): deflect, never reverse.
-      //
-      // A static prop has invSum = 1/massV, so the shared restitution impulse
-      // below worked out to -(1 + e) x approach — it flipped the car's velocity
-      // straight back out of the wall. That is the "it stops us dead and throws
-      // us back" behaviour. Instead cancel only the component INTO the barrier
-      // and keep the component along it, so you scrape past and lose speed in
-      // proportion to how square the hit was. Handled entirely here so the
-      // generic impulse never runs for barriers.
+      // Intact barrier (below break speed): deflect, never reverse. The rule and
+      // the reason it is not the generic impulse are on deflectOffStatic.
       if (!p.dynamic) {
-        v.x -= nx * pen;
-        v.z -= nz * pen;
-        v.yaw += (nx * Math.cos(v.yaw) + nz * -Math.sin(v.yaw)) * pen * 0.06;
-        const closing = Math.max(0, velN);
-        if (closing > 0.4) {
-          // Kill the inward component (leaving a sliver avoids re-sticking),
-          // then take a speed cost that scales with the impact.
-          const removeN = closing * 0.9;
-          const scrub = 1 - Math.min(0.3, closing * 0.012);
-          const nvx = (va.vx - nx * removeN) * scrub;
-          const nvz = (va.vz - nz * removeN) * scrub;
-          applyWorldVel(v, nvx, nvz);
-          va.vx = nvx;
-          va.vz = nvz;
-          if (closing > 6) {
-            v.impactFlash = Math.max(v.impactFlash, 0.22);
-            v.hitStun = Math.max(v.hitStun, 0.04);
-            v.health = Math.max(0, v.health - closing * 0.06);
-            v.damageVisual = Math.min(
-              1,
-              Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-            );
-          }
-        }
+        deflectOffStatic(v, va, nx, nz, pen, velN);
         maxImpact = Math.max(maxImpact, Math.abs(velN));
         continue;
       }
@@ -663,11 +729,19 @@ export function collideVehiclesWithProps(
           destroyProp(p, particles, nx, nz, blast * 1.1);
           v.hitStun = Math.max(v.hitStun, 0.14 * blast);
           v.impactFlash = Math.max(v.impactFlash, 0.6);
-          v.health = Math.max(0, v.health - 6 * blast);
-          v.damageVisual = Math.min(
-            1,
-            Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-          );
+          /*
+           * 6 x blast was 14.4 hull at a full-speed rupture — 15% of an
+           * Interceptor. Ten barrels stand ON the racing line by design ("dodge
+           * or smash"), so driving the line and smashing them was worth 144
+           * damage against 92 health: the line itself was lethal. That never
+           * showed, only because nothing in this file acted on reaching zero —
+           * the car limped on at 0 hp instead of wrecking. Now that it does
+           * wreck, the number has to be one a race can survive: 2.6 x blast is
+           * 6.2 at the cap, so a clean lap through every barrel on the circuit
+           * costs about two thirds of the hull rather than one and a half times
+           * it. Still the most expensive prop on the track by a factor of two.
+           */
+          hurtVehicle(v, 2.6 * blast);
           // Blast radius: throws nearby props and hurts nearby cars, so a
           // cluster of barrels chain-reacts instead of each one popping in
           // isolation. This is what makes them worth aiming at.
@@ -699,11 +773,9 @@ export function collideVehiclesWithProps(
             const od2 = ox * ox + oz * oz;
             if (od2 > R2) continue;
             const falloff = (1 - Math.sqrt(od2) / R) * blast;
-            other.health = Math.max(0, other.health - 9 * falloff);
-            other.damageVisual = Math.min(
-              1,
-              Math.max(other.damageVisual, 1 - other.health / other.maxHealth),
-            );
+            // Scaled with the direct hit above, and kept below it: being near a
+            // barrel somebody else hit must always cost less than hitting it.
+            hurtVehicle(other, 3.5 * falloff);
             other.impactFlash = Math.max(other.impactFlash, 0.5 * falloff);
             other.hitStun = Math.max(other.hitStun, 0.1 * falloff);
           }
@@ -721,11 +793,7 @@ export function collideVehiclesWithProps(
           destroyProp(p, particles, va.vx, va.vz, closing / 11);
           v.impactFlash = Math.max(v.impactFlash, 0.34);
           v.hitStun = Math.max(v.hitStun, 0.06);
-          v.health = Math.max(0, v.health - closing * 0.08);
-          v.damageVisual = Math.min(
-            1,
-            Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-          );
+          hurtVehicle(v, closing * 0.08);
           maxImpact = Math.max(maxImpact, impact);
           continue;
         }
@@ -740,11 +808,7 @@ export function collideVehiclesWithProps(
             // rupture threshold cost nothing at all — they read as scenery.
             // Lighter than a scrap pile, but no longer free.
             const dmgMul = p.kind === "barrel" ? 0.07 : 0.12;
-            v.health = Math.max(0, v.health - impact * dmgMul);
-            v.damageVisual = Math.min(
-              1,
-              Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-            );
+            hurtVehicle(v, impact * dmgMul);
             spawnPropFx(
               particles,
               p.x,
@@ -765,13 +829,37 @@ export function collideVehiclesWithProps(
         if (impact > 8) {
           v.impactFlash = Math.max(v.impactFlash, 0.18);
           v.hitStun = Math.max(v.hitStun, 0.06);
-          v.health = Math.max(0, v.health - impact * 0.07);
-          v.damageVisual = Math.min(
-            1,
-            Math.max(v.damageVisual, 1 - v.health / v.maxHealth),
-          );
+          hurtVehicle(v, impact * 0.07);
         }
       }
+    }
+
+    /*
+     * Built structure — the walls, gates, container runs, wreck piles, pipeline
+     * trestles, cranes, kilns, pumps and monoliths in world/setpieces.
+     *
+     * Separate from the props pass because these are capsules, not circles, and
+     * they come out of a uniform grid rather than a linear scan: a 14m wall
+     * module is the wrong shape for a circle at any radius, and there are up to
+     * 136 of them on a circuit. The RESPONSE is the same deflectOffStatic every
+     * other immovable thing gets — solid, immovable, never a push-back.
+     *
+     * Cost: one grid query per vehicle per fixed step (1-4 cells at a 24m cell
+     * size), then a point-to-segment projection per capsule in those cells.
+     */
+    const yawC = Math.abs(Math.cos(v.yaw));
+    const yawS = Math.abs(Math.sin(v.yaw));
+    const carR =
+      Math.max(hb.halfW * yawC + hb.halfL * yawS, hb.halfW * yawS + hb.halfL * yawC) *
+      0.92;
+    const statics = querySetpieceColliders(v.x, v.z, carR);
+    for (const sc of statics) {
+      const hit = capsuleContact(sc, v.x, v.z, carR);
+      if (!hit.hit) continue;
+      // Static, so the closing speed is just the car's velocity along the normal.
+      const velN = va.vx * hit.nx + va.vz * hit.nz;
+      deflectOffStatic(v, va, hit.nx, hit.nz, hit.pen, velN);
+      maxImpact = Math.max(maxImpact, Math.abs(velN));
     }
   }
   return maxImpact;

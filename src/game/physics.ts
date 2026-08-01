@@ -1,4 +1,4 @@
-import { COMBAT, HANDLING, OFFROAD } from "./balance";
+import { COMBAT, DRIFT, HANDLING, OFFROAD } from "./balance";
 import { VEHICLE_CLASSES } from "./classes";
 import { getGroundHeight, getSurfaceAt } from "./track";
 import { stepTires, tireGripMul, tireScrubDrag } from "./tires";
@@ -105,6 +105,149 @@ export function resetSteerRamp() {
   playerSteerCmd = 0;
 }
 
+/**
+ * Grip-drift state, one per vehicle, held OUTSIDE VehicleState.
+ *
+ * Same reason as playerSteerCmd: types.ts is shared with the UI layer, which
+ * builds VehicleState literals of its own, so a required field there would
+ * break files this change has no business editing. Nothing here is observable
+ * state — `driftMeter`, `tireSlip` and the `isDrifting()` query are what the
+ * HUD, PostFX, camera and audio actually read, and all three are already on the
+ * vehicle or derived from it.
+ *
+ * Keyed by vehicle id, so it survives the per-step VehicleState churn and is
+ * cleared with the grid. Four entries in practice.
+ */
+interface DriftState {
+  /** Seconds the lock has been held on ONE side above DRIFT.steerMin. */
+  hold: number;
+  /** Committed slide direction, sign of the steering that started it. */
+  dir: number;
+  /** 0..1 engagement. Ramps in on entry, bleeds out on release. */
+  active: number;
+  /**
+   * Published answer to "is this car sliding", for isDrifting(). Covers the
+   * handbrake drift too, so external consumers have one question to ask.
+   */
+  sliding: boolean;
+}
+
+const driftStates = new Map<string, DriftState>();
+
+/** Clear on a grid reset, alongside resetSteerRamp. */
+export function resetDriftState() {
+  driftStates.clear();
+}
+
+function driftStateFor(id: string): DriftState {
+  let st = driftStates.get(id);
+  if (!st) {
+    st = { hold: 0, dir: 0, active: 0, sliding: false };
+    driftStates.set(id, st);
+  }
+  return st;
+}
+
+/**
+ * The handbrake drift, unchanged: Shift + steer at pace. Shift alone, or at low
+ * speed, is a brake.
+ *
+ * `forced` is the previous step's answer, passed back in by the caller as
+ * hysteresis — once you are in a handbrake slide it takes less to stay in one.
+ * Kept separate from `isDrifting()` because that is now a QUERY over both drift
+ * modes: feeding it back in here would let a grip drift silently arm the
+ * handbrake physics without the handbrake being touched.
+ */
+export function isHandbrakeDrift(
+  v: VehicleState,
+  input: PlayerInput,
+  forced?: boolean,
+): boolean {
+  if (forced) return Math.abs(v.speed) > 8 && Math.abs(input.steering) > 0.12;
+  return (
+    input.brake &&
+    Math.abs(input.steering) > 0.2 &&
+    Math.abs(v.speed) > 10
+  );
+}
+
+/**
+ * Advance the grip-drift state machine for one step and report engagement.
+ *
+ * Called from stepVehicle with the values the rest of the physics is already
+ * using — the RAMPED steering command, the turn rate after every class, damage,
+ * surface and speed modifier, and the grip after the tyre model. Deriving the
+ * limit from those rather than from raw input is what makes cold tyres, a
+ * damaged car and a sand excursion all break away early without a line of code
+ * each.
+ */
+function stepGripDrift(
+  v: VehicleState,
+  steerIn: number,
+  speedRatio: number,
+  grip: number,
+  dt: number,
+): DriftState {
+  const st = driftStateFor(v.id);
+  const sp = Math.abs(v.speed);
+  const mag = Math.abs(steerIn);
+  const sign = steerIn >= 0 ? 1 : -1;
+
+  /*
+   * The hold. Only runs while the lock is held on ONE side: a flick the other
+   * way zeroes it, and easing off unwinds it at 2.4x, so a drift is something
+   * committed to rather than something a sequence of corrections accumulates
+   * into.
+   */
+  if (mag >= DRIFT.steerMin && sp > DRIFT.minSpeed) {
+    if (st.dir !== 0 && sign !== st.dir && st.active <= 0) st.hold = 0;
+    if (st.active <= 0) st.dir = sign;
+    st.hold += dt;
+  } else {
+    st.hold = Math.max(0, st.hold - dt * 2.4);
+    if (st.hold <= 0 && st.active <= 0) st.dir = 0;
+  }
+
+  // How far past the tyres' limit the corner being asked for is. See DRIFT.
+  const load = (mag * speedRatio) / Math.max(0.3, grip);
+  const over = load / DRIFT.breakLoad - 1;
+  const holdMul = v.isPlayer ? 1 : DRIFT.aiHoldMul;
+  const needed =
+    over <= 0
+      ? Infinity
+      : (DRIFT.holdBase +
+          (DRIFT.holdFloor - DRIFT.holdBase) *
+            Math.min(1, over / DRIFT.overFull)) *
+        holdMul;
+
+  const counter = st.dir !== 0 && steerIn * st.dir < -0.1;
+  const sustaining =
+    st.active > 0 &&
+    sp > DRIFT.sustainSpeed &&
+    !counter &&
+    mag >= DRIFT.sustainSteer &&
+    sign === st.dir &&
+    // A slide has to keep being paid for. Lift and the corner comes back under
+    // the limit, which is the difference between an exit and a spin.
+    load > DRIFT.breakLoad * 0.55;
+
+  if (sustaining || (st.active <= 0 && st.hold >= needed && sp > DRIFT.minSpeed)) {
+    st.active = Math.min(1, st.active + DRIFT.enterRate * dt);
+  } else {
+    const was = st.active;
+    st.active = Math.max(
+      0,
+      st.active - DRIFT.exitRate * (counter ? DRIFT.counterExit : 1) * dt,
+    );
+    // Clear the commitment only when a slide has ENDED — `was > 0` is doing the
+    // whole job here. Clearing it unconditionally zeroes the timer on every step
+    // the car is not yet drifting, which is every step before entry, so the hold
+    // can never reach `needed` and the drift can never fire at all.
+    if (was > 0 && st.active <= 0) st.hold = 0;
+  }
+  return st;
+}
+
 function rampPlayerSteer(target: number, speedRatio: number, dt: number): number {
   const prev = playerSteerCmd;
   // Unwinding — including crossing centre — takes the fast rate, so catching a
@@ -121,20 +264,24 @@ function rampPlayerSteer(target: number, speedRatio: number, dt: number): number
 }
 
 /**
- * True when the player is in a handbrake-slide (not a full stop).
- * Shift alone at low speed / no steer = brake. Shift + steer at pace = drift.
+ * Is this car sliding — by handbrake OR by having overdriven a corner?
+ *
+ * A QUERY, not a decision: stepVehicle publishes the answer on the drift state
+ * each step, and this reports it. That is what lets the audio driver, PostFX
+ * and the camera ask one question and get the truth for both drift modes,
+ * without any of them knowing there are two.
+ *
+ * Falls back to evaluating the handbrake predicate directly for a car that has
+ * not been stepped yet (a showcase pad car, a freshly built grid).
  */
 export function isDrifting(
   v: VehicleState,
   input: PlayerInput,
   forced?: boolean,
 ): boolean {
-  if (forced) return Math.abs(v.speed) > 8 && Math.abs(input.steering) > 0.12;
-  return (
-    input.brake &&
-    Math.abs(input.steering) > 0.2 &&
-    Math.abs(v.speed) > 10
-  );
+  const st = driftStates.get(v.id);
+  if (st?.sliding) return true;
+  return isHandbrakeDrift(v, input, forced);
 }
 
 export function stepVehicle(
@@ -172,6 +319,15 @@ export function stepVehicle(
     v.bodyRoll *= Math.max(0, 1 - 4 * dt);
     v.bodyPitch *= Math.max(0, 1 - 4 * dt);
     v.driftMeter = 0;
+    // A wreck is not drifting. Without this the state stays latched through the
+    // respawn and the car arrives back on the road already sideways.
+    const st = driftStates.get(v.id);
+    if (st) {
+      st.active = 0;
+      st.hold = 0;
+      st.dir = 0;
+      st.sliding = false;
+    }
     if (v.tires) {
       for (const t of v.tires) {
         t.compress *= Math.max(0, 1 - 3 * dt);
@@ -281,6 +437,38 @@ export function stepVehicle(
       : 1;
   turnRate *= lowBoost * Math.max(0.55, highMul);
 
+  /*
+   * Steering command, resolved HERE rather than just before the yaw integrator.
+   *
+   * Everything downstream reads the RAMPED command rather than the raw key
+   * state, so a tap is a nudge and the car, the wheels and the lean all agree on
+   * what was asked for. It moved up because the drift model has to key off the
+   * same number: deciding a slide from `input.steering` while the car is still
+   * ramping toward it would break traction ~170ms before the wheels are
+   * actually turned that far. `steerAngle` itself stays owned by stepTires,
+   * which weights the visual angle by load.
+   */
+  const steerRaw = Math.max(-1, Math.min(1, input.steering));
+  const steerIn = v.isPlayer
+    ? rampPlayerSteer(steerRaw, speedRatio, dt)
+    : steerRaw;
+
+  /*
+   * Grip drift. Fed the turn-rate and grip the car actually has on this step —
+   * after class, damage, skill, surface and tyre temperature — so the limit it
+   * measures against is the real one. See DRIFT in balance.ts.
+   */
+  const gd = stepGripDrift(v, steerIn, speedRatio, grip, dt);
+  const slide = gd.active * (v.isPlayer ? 1 : DRIFT.aiEffect);
+  if (slide > 0) {
+    // Grip falls toward a SLIDING value rather than being clamped to it: the
+    // entry has to be progressive or the car snaps sideways on one frame.
+    grip += (DRIFT.slideGrip - grip) * slide;
+    // The car rotating more than the steering asked for IS the drift. Without
+    // this the slide is just understeer with smoke.
+    turnRate *= 1 + slide * DRIFT.yawGain;
+  }
+
   // Progressive torque: soft launch → fat mid → hard taper near Vmax
   const t0 = HANDLING.torqueAt0 ?? 0.9;
   const tMid = HANDLING.torqueAtMid ?? 0.78;
@@ -303,7 +491,7 @@ export function stepVehicle(
     torqueMul *= HANDLING.launchMul ?? 1.0;
   }
 
-  const wantDrift = isDrifting(v, input, opts?.drifting);
+  const wantDrift = isHandbrakeDrift(v, input, opts?.drifting);
 
   if (wantDrift) {
     const thr = Math.max(input.throttle, input.boost ? 1 : 0);
@@ -360,18 +548,51 @@ export function stepVehicle(
   }
 
   const holdingDrift = wantDrift && Math.abs(input.steering) > 0.12 && v.speed > 6;
+  /*
+   * One "the car is sliding" flag for the two ways of getting there.
+   *
+   * Everything that pays off a drift hangs off this: the charge meter and
+   * therefore the boost, the tyre smoke, the tyre model's slip and heat, the
+   * HUD bar, the camera FOV, PostFX and the audio squeal. Wiring the grip drift
+   * into this one flag is what gives it its whole visible and audible payoff
+   * without touching a renderer or an audio file.
+   */
+  const gripSliding = slide > DRIFT.engaged;
+  const sliding = holdingDrift || gripSliding;
+  gd.sliding = sliding;
 
-  if (holdingDrift) {
-    grip = Math.min(grip, HANDLING.driftGrip + surf.factor * 0.06);
-    turnRate *= HANDLING.driftTurnMul * (v.classId === "trickster" ? 1.1 : 1);
-    const chargeMul =
-      (0.65 + Math.abs(input.steering) * 0.55) *
-      (v.classId === "trickster" ? 1.12 : 1) *
-      (surf.factor < 0.35 ? 1 : 0.7);
-    v.driftMeter = Math.min(
-      HANDLING.driftBoostMax,
-      v.driftMeter + HANDLING.driftChargeRate * dt * chargeMul,
-    );
+  if (sliding) {
+    if (holdingDrift) {
+      grip = Math.min(grip, HANDLING.driftGrip + surf.factor * 0.06);
+      turnRate *= HANDLING.driftTurnMul * (v.classId === "trickster" ? 1.1 : 1);
+    }
+    /*
+     * A GRIP DRIFT ONLY BANKS CHARGE FOR THE PLAYER.
+     *
+     * The mini-turbo is a skill payoff: you overdrove a corner deliberately,
+     * held it, and got a boost out of the exit. A bot holds near-full lock
+     * through most corners as a matter of course, so paying it the same boost
+     * hands every rival a free 12-30 m/s on every corner exit it never chose to
+     * take. Measured, that compressed the gap between a pace-0 field and a
+     * pace-1 field from ~4% to ~2.5% of distance covered — i.e. it quietly
+     * rubber-banded the whole grid, which is the one thing catchUpFactor is
+     * carefully written NOT to do. Rivals still slide; they just do not get paid
+     * for it. The handbrake drift is unchanged for everyone, because choosing to
+     * pull the handbrake is a choice even for a bot.
+     */
+    if (holdingDrift || v.isPlayer) {
+      // Charge scales with engagement, so a grip drift that is only half in
+      // banks half as fast. Cashing out is the same release path either way.
+      const chargeMul =
+        (0.65 + Math.abs(steerIn) * 0.55) *
+        (v.classId === "trickster" ? 1.12 : 1) *
+        (surf.factor < 0.35 ? 1 : 0.7) *
+        (holdingDrift ? 1 : slide);
+      v.driftMeter = Math.min(
+        HANDLING.driftBoostMax,
+        v.driftMeter + HANDLING.driftChargeRate * dt * chargeMul,
+      );
+    }
   } else if (!wantDrift && v.driftMeter > 0) {
     if (
       v.driftMeter >= HANDLING.driftBoostThreshold &&
@@ -402,32 +623,52 @@ export function stepVehicle(
     v.driftMeter *= Math.max(0, 1 - 0.9 * dt);
   }
 
-  const drifting = holdingDrift;
+  const drifting = sliding;
 
-  // Steering. Everything downstream of here — yaw, drift push, body lean, tyre
-  // slip — reads the RAMPED command rather than the raw key state, so a tap is
-  // a nudge and the car, the wheels and the lean all agree on what was asked
-  // for. steerAngle itself is owned by stepTires (it weights the visual angle
-  // by load), so it is not set here.
+  // Steering was resolved above, alongside the drift decision. Only the yaw
+  // integration lives here, because turnRate is not final until the drift
+  // model and the handbrake branch have both had a say.
   const speedFactor = Math.min(
     1,
     Math.max(0.12, Math.abs(v.speed) / Math.max(HANDLING.minSteerSpeed, 4)),
   );
-  const steerRaw = Math.max(-1, Math.min(1, input.steering));
-  const steerIn = v.isPlayer
-    ? rampPlayerSteer(steerRaw, speedRatio, dt)
-    : steerRaw;
   if (Math.abs(v.speed) > 0.4) {
     const sign = v.speed >= 0 ? 1 : -1;
     v.yaw += steerIn * turnRate * speedFactor * sign * dt;
   }
 
   // Lateral grip / drift push
-  if (drifting) {
+  if (holdingDrift) {
     const push = HANDLING.driftLateralPush * steerIn * Math.min(1, Math.abs(v.speed) / 28);
     v.lateral += push * accel * dt;
     const maxLat = Math.abs(v.speed) * (HANDLING.driftMaxLatFrac ?? 0.48);
     v.lateral = Math.max(-maxLat, Math.min(maxLat, v.lateral));
+  } else if (slide > 0) {
+    /*
+     * Grip drift. The slip angle is a TARGET the car chases, not an integral of
+     * a push — see DRIFT.maxLatFrac for why that distinction is the whole feel
+     * of the thing.
+     *
+     * The target reads three inputs live: the COMMITTED direction (so the slide
+     * does not flip mid-corner), the engagement (so entry and exit are ramps),
+     * and how much lock is currently held (so easing off straightens the car
+     * immediately rather than only after the state machine lets go). Counter-
+     * steer takes the target to zero AND scrubs what is already there, which is
+     * what makes opposite lock feel like it is doing something on the frame you
+     * apply it.
+     */
+    const counterSteer = steerIn * gd.dir < -0.1;
+    const lock = Math.min(1, Math.abs(steerIn) / DRIFT.fullLock);
+    const targetLat = counterSteer
+      ? 0
+      : gd.dir * slide * lock * DRIFT.maxLatFrac * Math.abs(v.speed);
+    v.lateral += (targetLat - v.lateral) * Math.min(1, DRIFT.latRate * dt);
+    if (counterSteer) {
+      v.lateral *= Math.max(0, 1 - DRIFT.counterScrub * dt);
+    }
+    // Sliding costs speed. Small, because the slip this creates already feeds
+    // tireScrubDrag above — this is the part you feel on corner exit.
+    v.speed *= Math.max(0, 1 - DRIFT.scrub * slide * dt);
   } else {
     const decay = HANDLING.lateralDecay * (0.55 + grip * 0.65);
     v.lateral *= Math.max(0, 1 - decay * dt);

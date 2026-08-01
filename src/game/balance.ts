@@ -82,6 +82,137 @@ export const HANDLING = {
   steerRampSpeedDrop: 0.35,
 } as const;
 
+/**
+ * Grip drift — a held steering lock through a heavy turn breaking traction.
+ *
+ * Distinct from the handbrake drift above (`HANDLING.drift*`), which is an
+ * INPUT: you press Shift, the rear steps out. This is a CONSEQUENCE: you asked
+ * the car for more corner than the tyres had and kept asking. Most Wanted's
+ * fast corners are won like this, and the handbrake is for the hairpins.
+ *
+ * ── the entry, and why it is two terms and not one ───────────────────
+ *
+ * "Longer presses" and "heavy turns" are different things and both have to be
+ * true, or the mechanic becomes either a timer (drift after 0.5s of any
+ * steering, including a lane change at 30km/h) or a switch (drift the instant
+ * you turn hard, which is a car that cannot be driven).
+ *
+ *   LOAD  = |steer| x speedRatio / grip
+ *
+ * One expression of "how hard a corner, how fast, in what car". speedRatio is
+ * per-class so it means the same thing in a Bruiser as an Interceptor, and
+ * dividing by `grip` means the number that decides this is the SAME number the
+ * rest of the physics already uses — including the tyre-temperature multiplier
+ * and the off-road penalty. Cold tyres and a sand excursion break away early
+ * for free, which is exactly right and cost nothing to arrange.
+ *
+ * Class-by-class, the steering x speed product needed to reach `breakLoad`:
+ *
+ *   trickster  grip 0.62  →  0.38   (full lock at 38% of Vmax — built to slide)
+ *   interceptor grip 0.88 →  0.55
+ *   bruiser    grip 0.96  →  0.60   (hardest to unstick, as advertised)
+ *
+ * ── the hold ─────────────────────────────────────────────────────────
+ *
+ * Past the limit, the slide still has to be COMMITTED to: `holdBase` seconds of
+ * sustained lock at the threshold, falling to `holdFloor` when you are well
+ * over it. A flick is never a drift; leaning on it through a fast sweeper is.
+ * The steering ramp (HANDLING.steerRampLoad) already costs ~0.17s to reach full
+ * lock, so a real press-to-slide is roughly 0.3s in a hard corner and 0.75s in
+ * a marginal one.
+ *
+ * ── the exit ─────────────────────────────────────────────────────────
+ *
+ * Releasing the lock ends it: `active` bleeds out over ~0.4s and the drift
+ * charge cashes in as a boost through the existing HANDLING.driftBoost* path,
+ * so the payoff and the exit are the same action. Counter-steering ends it
+ * faster AND scrubs the slip angle directly, which is what makes a slide
+ * something you can place rather than something you sit through.
+ */
+export const DRIFT = {
+  /** m/s floor. Below this a held lock is a manoeuvre, not a slide. */
+  minSpeed: 16,
+  /** |steer| that counts as "held". Below 0.6x of it the hold timer unwinds. */
+  steerMin: 0.5,
+  /** LOAD at which the tyres are exactly at the limit. */
+  breakLoad: 0.62,
+  /** Seconds of sustained lock needed AT the limit... */
+  holdBase: 0.55,
+  /** ...and once `overFull` past it. */
+  holdFloor: 0.18,
+  overFull: 0.32,
+  /** Engagement / release rate, in units of `active` per second. */
+  enterRate: 4.5,
+  exitRate: 2.6,
+  /** Counter-steer multiplies the release rate and scrubs slip at this rate. */
+  counterExit: 2.2,
+  counterScrub: 3.4,
+  /** Sustain floor: below this steering, or this speed, the slide lets go. */
+  sustainSteer: 0.3,
+  sustainSpeed: 11,
+  /** Grip held while fully sliding. Deliberately well above the handbrake's
+   *  0.16 — this is a slide you steer, not one you survive. */
+  slideGrip: 0.34,
+  /** Extra yaw authority at full slide. This is what rotates the car. */
+  yawGain: 0.42,
+  /**
+   * Slip angle is TARGETED, not integrated from a force, and that is a
+   * deliberate departure from the handbrake drift sitting above it.
+   *
+   * The handbrake branch adds a constant push and applies no lateral decay at
+   * all, so the slip angle is an open integral: it grows for as long as you hold
+   * the drift and only stops at a hard clamp. That is survivable for a handbrake
+   * slide you pulled on purpose, and wrong for one the corner gave you — the
+   * angle would depend on how long the corner was rather than on how hard you
+   * were driving it.
+   *
+   * Driving toward `maxLatFrac x speed x engagement x lock` instead means the
+   * angle is a readout of the input at every instant. Ease the lock off and the
+   * car straightens; hold it and the angle sits where it is. That is the whole
+   * difference between a slide you place and a slide you sit out.
+   *
+   * 0.30 is a 16.7deg slip angle at full commitment — the nose visibly inside
+   * the corner, the car travelling wide — against the handbrake's 0.48 (26deg).
+   */
+  maxLatFrac: 0.3,
+  /** How fast the slip angle chases its target, per second. ~0.45s to settle. */
+  latRate: 2.6,
+  /** Lock at which the slip target is fully expressed. Below it, proportional. */
+  fullLock: 0.8,
+  /** Speed bled per second at full slide, as an exponential rate. */
+  scrub: 0.22,
+  /** `active` above which the car counts as drifting for FX, audio and charge. */
+  engaged: 0.18,
+  /**
+   * ── the grip drift is PLAYER-ONLY, and that is a considered decision ──
+   *
+   * `aiEffect` scales the whole effect for a bot; `aiHoldMul` scales how long
+   * one has to hold a lock before it breaks away. Both knobs are real and the
+   * state machine runs for every car, so turning rivals' slides on is one number
+   * — but it is set to zero, for two reasons that are worth writing down.
+   *
+   * 1. aiInput is a CLOSED-LOOP CONTROLLER tuned against a car that does not
+   *    slide. It steers on heading error at a fixed gain, has no notion of slip
+   *    angle, no counter-steer, and no way to modulate a lock it is already
+   *    holding at the limit. Changing the plant under a controller without
+   *    changing the controller is the textbook way to make a loop unstable, and
+   *    it showed: bots holding near-full lock through ordinary corners entered a
+   *    slide, ran wide, corrected harder, and entered another.
+   * 2. Measured, it made the field's PACE SPREAD unrepeatable. The regression
+   *    suite compares distance covered by a pace-0 field against a pace-1 one;
+   *    with rivals sliding, the same comparison returned anywhere from -1% to
+   *    +7% across runs, because a bot that throws one away in a corner loses far
+   *    more than the grip advantage being measured is worth.
+   *
+   * Rivals are not on rails regardless: the handbrake drift is untouched, and
+   * tricksters already brake-and-steer through tight corners, so the field still
+   * slides. Giving rivals the grip drift properly means giving aiInput a slip
+   * angle to steer against, which is a bigger change than this one.
+   */
+  aiHoldMul: 1.9,
+  aiEffect: 0,
+} as const;
+
 export const COMBAT = {
   lockCone: 0.1,
   lockBlend: 0.72,
