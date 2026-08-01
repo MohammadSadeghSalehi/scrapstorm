@@ -57,7 +57,7 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     offroadPenalty: 0.4,
     description:
       "Desert combat hauler. Scrap cannon, roof rack, unstoppable charge. Owns the dunes. Charged, the cannon loads a guided rocket.",
-    primaryLabel: "Scrap Cannon · charged: Rocket",
+    primaryLabel: "Scrap Rockets · charged: Guided",
     defenseLabel: "Frontal Plate",
     ultimateLabel: "Rocket Salvo",
   },

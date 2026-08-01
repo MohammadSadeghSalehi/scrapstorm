@@ -127,7 +127,21 @@ export function spawnWorldProps(): PhysProp[] {
   // GRID_CLEAR skips the markers flanking the start line entirely. Four cars
   // launching abreast fan out across the full width, so barrier colliders
   // right there turned a normal start into an instant collision.
-  for (let i = 0; i < EDGE_MARKERS.length; i += 10) {
+  /*
+   * EVERY drawn post gets a collider.
+   *
+   * This strode by 10, on the reasoning that dense colliders meant clipping a
+   * corner put you into something immediately. The result was 17 colliders
+   * under 194 drawn posts — 91% of the sticks you can see were ghosts, which is
+   * a far worse problem than the one the stride was avoiding: the road looked
+   * lined and behaved empty, and which posts were real was invisible.
+   *
+   * The clipping worry is answered by the RESPONSE instead, not by leaving most
+   * of them out: a 10cm stick with a 0.28m collider that snaps at 5 m/s and
+   * costs a few percent is something you plough through, and doing that to
+   * three in a row should still be cheaper than lifting.
+   */
+  for (let i = 0; i < EDGE_MARKERS.length; i += 1) {
     const markerClear = Math.max(10, Math.floor(EDGE_MARKERS.length * 0.06));
     if (i < markerClear || i > EDGE_MARKERS.length - markerClear) continue;
     const m = EDGE_MARKERS[i];
@@ -489,7 +503,7 @@ const CRATE_SHATTER_SPEED = 19;
  * car — it read as a bollard. A marker post snaps if you lean on it. 2.5 m/s is
  * walking pace, so in practice it always snaps, which is the point.
  */
-const BARRIER_BREAK_SPEED = 2.5;
+const BARRIER_BREAK_SPEED = 5;
 /**
  * Reference prop mass (a light barrel) that reaction is scaled against.
  *
@@ -666,7 +680,9 @@ export function collideVehiclesWithProps(
         // Was 0.9 - 0.06*drive: up to 22% of your speed for one wooden post,
         // and the verge carries dozens of them. A stick this size costs you
         // almost nothing to snap — the penalty should be felt, not survived.
-        const keep = 0.985 - 0.012 * drive;
+        // 2.5 m/s and 1.5% was so cheap the post read as scenery you passed
+        // through. A snapped post should be FELT and survivable, not free.
+        const keep = 0.965 - 0.025 * drive;
         applyWorldVel(v, va.vx * keep, va.vz * keep);
         va.vx *= keep;
         va.vz *= keep;

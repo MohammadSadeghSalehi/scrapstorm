@@ -467,20 +467,53 @@ export function tryPrimary(
       });
     }
   } else if (v.classId === "bruiser") {
+    /*
+     * The bruiser fires ROCKETS, not shells, as its ordinary primary.
+     *
+     * It was a ballistic slug — a tracer that arced and hit or missed, which is
+     * the same thing every arcade racer has. The rocket art exists, the missile
+     * kind exists, and putting them on the default shot is what makes a combat
+     * racer feel like one: the thing that leaves the car is visibly a rocket,
+     * it trails smoke, and it flies TOWARD what you were aiming at.
+     *
+     * Guidance is deliberately weak here compared with the ultimate salvo — it
+     * arms late and turns slowly, so it corrects an imperfect lead rather than
+     * removing the need to aim. A primary that cannot miss is not a weapon, it
+     * is a delay.
+     */
+    let mark: VehicleState | null = null;
+    let best = def.primaryRange * def.primaryRange;
+    for (const o of vehicles) {
+      if (o.id === v.id || !o.alive || o.wreckTimer > 0) continue;
+      const dx = o.x - v.x;
+      const dz = o.z - v.z;
+      // Only ahead of the nose: a rocket that turns around and chases someone
+      // behind you is a bug that looks like a feature until it kills you.
+      if (dx * aimX + dz * aimZ <= 0) continue;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best) {
+        best = d2;
+        mark = o;
+      }
+    }
     projectiles.push({
-      id: uid("cannon"),
+      id: uid("rkt"),
       ownerId: v.id,
       x: v.x + aimX * 2.0,
       y: v.y + 0.7,
       z: v.z + aimZ * 2.0,
       vx: aimX * def.primarySpeed,
-      vy: 0.4,
+      vy: 0.25,
       vz: aimZ * def.primarySpeed,
       life: def.primaryRange / def.primarySpeed,
       damage: dmg,
-      kind: "cannon",
+      kind: "missile",
       bounce: 0,
       radius: 0.45,
+      seek: mark?.id,
+      // Long arm time: most of the flight is unguided, so a clean shot is still
+      // the player aiming rather than the missile fixing it.
+      armTime: 0.35,
     });
   } else {
     /*
