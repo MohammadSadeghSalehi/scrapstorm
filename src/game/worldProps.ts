@@ -28,6 +28,32 @@ import {
 
 export type PropKind = "barrel" | "crate" | "scrap" | "barrier";
 
+/**
+ * Height of a prop's CENTRE above the ground when it is at rest — which is
+ * exactly half its visual height, because every prop mesh is centred on its own
+ * origin.
+ *
+ * This lives in one place because it was previously in two, and they disagreed.
+ * The physics rested a barrel with its centre at ground + 0.48 while
+ * PhysicsPropsView ALSO lifted the mesh 0.48 inside its group, so the group sat
+ * at the resting centre and the mesh sat half a metre above that. Every barrel,
+ * crate and scrap pile on the track floated: 0.485m, 0.415m and 0.275m clear of
+ * the road respectively.
+ *
+ * The values are derived from the geometry in PhysicsPropsView.makePrimitive —
+ * barrel is a 0.95-tall cylinder, crate a 0.85 box, scrap a 0.45 box — and
+ * scrap in particular was wrong even before the double-offset, because it shared
+ * the crate's 0.42 while being half the height.
+ */
+export const PROP_REST_OFFSET: Record<PropKind, number> = {
+  barrel: 0.475,
+  crate: 0.425,
+  scrap: 0.225,
+  // Verge posts are placed from EDGE_MARKERS with their own lift; kept here so
+  // the record is total and nothing has to guess.
+  barrier: 0.4,
+};
+
 export interface PhysProp {
   id: string;
   kind: PropKind;
@@ -148,7 +174,7 @@ export function spawnWorldProps(): PhysProp[] {
       id: nid(kind),
       kind,
       x: s.x + rx * side * off,
-      y: s.y + (kind === "barrel" ? 0.48 : 0.42),
+      y: s.y + PROP_REST_OFFSET[kind],
       z: s.z + rz * side * off,
       yaw: s.yaw + side * 0.4,
       vx: 0,
@@ -184,7 +210,7 @@ export function spawnWorldProps(): PhysProp[] {
         id: nid(kind),
         kind,
         x: s.x + rx * side * (s.width * 0.38 + 0.85),
-        y: s.y + 0.48,
+        y: s.y + PROP_REST_OFFSET[kind],
         z: s.z + rz * side * (s.width * 0.38 + 0.85),
         yaw: s.yaw + side * 0.2,
         vx: 0,
@@ -218,7 +244,7 @@ export function spawnWorldProps(): PhysProp[] {
       id: nid("barrel"),
       kind: "barrel",
       x: s.x + rx * side * s.width * 0.5,
-      y: s.y + 0.5,
+      y: s.y + PROP_REST_OFFSET.barrel,
       z: s.z + rz * side * s.width * 0.5,
       yaw: s.yaw,
       vx: 0,
@@ -262,7 +288,7 @@ export function spawnWorldProps(): PhysProp[] {
         // Was a literal 0.48 — the height of a barrel resting on a road at
         // y = 0. This cluster sits 4-28m off the start line where the berm has
         // already started to climb, so every one of them was buried or hanging.
-        y: getGroundHeight(px, pz) + 0.48,
+        y: getGroundHeight(px, pz) + PROP_REST_OFFSET[y.kind],
         z: pz,
         yaw: Math.random() * Math.PI,
         vx: 0,
@@ -411,7 +437,7 @@ function destroyProp(
    */
   const ground = getGroundHeight(p.x, p.z);
   const groundY = p.dynamic
-    ? Math.min(p.y, ground + (p.kind === "barrel" ? 0.48 : 0.42))
+    ? Math.min(p.y, ground + PROP_REST_OFFSET[p.kind])
     : Math.max(ground, p.y - BARRIER_BASE_DROP);
   spawnPropDebris(
     p.kind,
@@ -896,8 +922,7 @@ export function stepWorldProps(props: PhysProp[], dt: number) {
     const settled =
       p.vy === 0 && p.vx === 0 && p.vz === 0 && p.restY !== undefined;
     if (!settled) {
-      p.restY =
-        getGroundHeight(p.x, p.z) + (p.kind === "barrel" ? 0.48 : 0.42);
+      p.restY = getGroundHeight(p.x, p.z) + PROP_REST_OFFSET[p.kind];
     }
     const restY = p.restY!;
     // Gravity + ground clamp

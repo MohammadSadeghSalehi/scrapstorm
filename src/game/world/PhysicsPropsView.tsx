@@ -77,22 +77,31 @@ function makeFallbackMats() {
   };
 }
 
+/**
+ * Prop bodies, centred on the group origin.
+ *
+ * These meshes used to be lifted inside the group — barrel +0.48, crate +0.42,
+ * scrap +0.25 — on the assumption that the group sits on the GROUND. It does
+ * not: the group is placed at `p.y`, which the physics rests at the prop's
+ * centre height. So the offset was applied twice and every prop on the track
+ * floated by half its own body: 0.485m for a barrel, 0.415m for a crate.
+ *
+ * Centring them here makes `p.y` mean one thing, and PROP_REST_OFFSET the only
+ * place that decides how high that is.
+ */
 function makePrimitive(kind: PropVisualKind, mats: ReturnType<typeof makeFallbackMats>) {
   const g = new THREE.Group();
   if (kind === "barrel") {
     const m = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.4, 0.95, 10), mats.barrel);
     m.castShadow = true;
-    m.position.y = 0.48;
     g.add(m);
   } else if (kind === "crate") {
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.85, 0.95), mats.crate);
     m.castShadow = true;
-    m.position.y = 0.42;
     g.add(m);
   } else {
     const m = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.45, 0.85), mats.scrap);
     m.castShadow = true;
-    m.position.y = 0.25;
     g.add(m);
   }
   return g;
@@ -351,7 +360,10 @@ export function PhysicsPropsView({ sim }: { sim: GameSimulation }) {
       // slid through the sky bolt upright. Deriving the tumble phase from yaw
       // (which p.spin already integrates) keeps it coherent with the spin and
       // needs no per-slot state, so a pool slot swap cannot pop the pose.
-      const restY = kind === "barrel" ? 0.48 : 0.42;
+      // Ground-relative, from the prop itself. An absolute constant here meant
+      // a prop sitting on a raised section read as permanently airborne and
+      // tumbled while stationary.
+      const restY = p.restY ?? p.y;
       const air = clamp01((p.y - restY) / 1.1) * 0.85;
       const leanA = slot.hash * Math.PI * 2;
 
