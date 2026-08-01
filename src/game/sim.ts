@@ -732,7 +732,9 @@ export class GameSimulation {
       v.lockTargetId = findLockTarget(v, state.vehicles, def.primaryRange * 1.12);
       tryPrimary(v, input, state.projectiles, state.vehicles);
       tryDefense(v, input, state.vehicles);
-      tryUltimate(v, input, state.mines);
+      // Vehicles and projectiles reach the ultimate now: the bruiser fires a
+      // homing salvo rather than only buffing itself.
+      tryUltimate(v, input, state.mines, state.vehicles, state.projectiles);
       updateCheckpoints(v, state, dt);
     }
 

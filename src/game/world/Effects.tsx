@@ -40,10 +40,13 @@ const PROJ_TINT = {
   bolt: [0.42, 1.0, 0.86],
   cannon: [1.0, 0.63, 0.3],
   disc: [0.46, 0.86, 1.0],
+  // Near-white: a missile is a physical object lit by its own motor, not a
+  // coloured tracer, and tinting it would fight the authored albedo.
+  missile: [0.95, 0.9, 0.86],
 } as const;
 
 type ProjKind = keyof typeof PROJ_TINT;
-const PROJ_ORDER: readonly ProjKind[] = ["bolt", "cannon", "disc"];
+const PROJ_ORDER: readonly ProjKind[] = ["bolt", "cannon", "disc", "missile"];
 
 /** See DebrisField: instanceColor needs a real `color` attribute to apply. */
 function withWhiteColors(geo: THREE.BufferGeometry): THREE.BufferGeometry {
@@ -81,6 +84,11 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
       withWhiteColors(
         new THREE.CylinderGeometry(0.4, 0.4, 0.06, 12).rotateX(Math.PI / 2),
       ),
+      // Missile: longer and finned-looking even as a primitive, so a salvo is
+      // distinguishable from cannon fire before the authored mesh resolves.
+      withWhiteColors(
+        new THREE.CylinderGeometry(0.09, 0.05, 0.9, 7).rotateX(Math.PI / 2),
+      ),
     ],
     [],
   );
@@ -103,17 +111,22 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
     null,
     null,
     null,
+    null,
   ]);
 
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const [shell, disc] = await Promise.all([
+      const [rocket, saw] = await Promise.all([
         loadWeaponGeometry("rocket"),
         loadWeaponGeometry("saw"),
       ]);
       if (!alive) return;
-      if (shell || disc) setAuthored([null, shell, disc]);
+      // The rocket is the MISSILE, not the cannon shell. It was on the shell
+      // slot while no missile weapon existed; the bruiser ultimate now fires a
+      // real salvo, so the authored body belongs to the thing it depicts and
+      // the shell keeps its blunt primitive.
+      if (rocket || saw) setAuthored([null, null, saw, rocket]);
     })();
     return () => {
       alive = false;
@@ -137,10 +150,11 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
 
   useFrame((_, dt) => {
     t.current += dt;
-    const counts = [0, 0, 0];
+    const counts = [0, 0, 0, 0];
 
     for (const p of projectiles) {
-      const k = p.kind === "cannon" ? 1 : p.kind === "disc" ? 2 : 0;
+      const k =
+        p.kind === "cannon" ? 1 : p.kind === "disc" ? 2 : p.kind === "missile" ? 3 : 0;
       const mesh = refs.current[k];
       if (!mesh) continue;
       const n = counts[k]!;
@@ -212,6 +226,21 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
 
 export function MinesView({ mines }: { mines: Mine[] }) {
   const t = useRef(0);
+  /*
+   * Authored body, swapped in when it resolves. Same pattern as the
+   * projectiles: the primitive draws until then and keeps drawing if the load
+   * fails, because a mine you cannot see is a mine you cannot avoid.
+   */
+  const [body, setBody] = useState<THREE.BufferGeometry | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void loadWeaponGeometry("mine").then((g) => {
+      if (alive && g) setBody(g);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   useFrame((_, dt) => {
     t.current += dt;
   }, FRAME.LATE);
@@ -225,7 +254,11 @@ export function MinesView({ mines }: { mines: Mine[] }) {
         return (
           <group key={m.id} position={[m.x, m.y + 0.12, m.z]}>
             <mesh>
-              <cylinderGeometry args={[0.5, 0.58, 0.22, 12]} />
+              {body ? (
+                <primitive object={body} attach="geometry" />
+              ) : (
+                <cylinderGeometry args={[0.5, 0.58, 0.22, 12]} />
+              )}
               <meshStandardMaterial
                 color={armed ? "#fafaf9" : "#3f3f46"}
                 emissive={armed ? "#ef4444" : "#000000"}

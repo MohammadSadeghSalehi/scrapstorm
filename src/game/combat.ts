@@ -8,6 +8,7 @@ import {
   vfxExplosion,
   vfxImpactBurst,
   vfxMuzzleFlash,
+  vfxProjectileTrail,
   vfxSparkShower,
 } from "./world/vfx/particles";
 import { spawnShockwave } from "./world/vfx/shockwave";
@@ -254,7 +255,13 @@ export function tryDefense(
   }
 }
 
-export function tryUltimate(v: VehicleState, input: PlayerInput, mines: Mine[]): void {
+export function tryUltimate(
+  v: VehicleState,
+  input: PlayerInput,
+  mines: Mine[],
+  vehicles: VehicleState[] = [],
+  projectiles: Projectile[] = [],
+): void {
   if (!input.useUltimate || v.ultimateCharge < 1 || v.wreckTimer > 0 || !v.alive) return;
   v.ultimateCharge = 0;
   emitAudioCue("ult", v.x, v.y + 0.6, v.z, 1.2, v.isPlayer);
@@ -264,9 +271,73 @@ export function tryUltimate(v: VehicleState, input: PlayerInput, mines: Mine[]):
     v.boostTimer = Math.max(v.boostTimer, 2.2);
     v.weaponCharge = 1;
   } else if (v.classId === "bruiser") {
-    v.ultimateActive = 3.0;
-    v.boostTimer = Math.max(v.boostTimer, 2.8);
-    v.defenseActive = Math.max(v.defenseActive, 1.4);
+    /*
+     * Rocket salvo — four missiles from the roof rack.
+     *
+     * This ultimate used to be a boost plus a shield, i.e. two things the class
+     * already had, only more so. It was the only ultimate that did not change
+     * what the player could DO, which made it the obvious place to put an
+     * actual weapon rather than inventing a fourth input.
+     *
+     * Launched with real spread and a short arming delay, so the salvo fans out
+     * before guidance pulls it back in. Firing four rockets that converge from
+     * the first frame just looks like one fat rocket.
+     */
+    v.ultimateActive = 2.2;
+    v.boostTimer = Math.max(v.boostTimer, 1.6);
+    /*
+     * Acquire once, at launch, rather than re-acquiring in flight. A salvo that
+     * re-targets mid-air chases whoever is momentarily nearest and reads as
+     * homing wasps; locking at launch makes the shot the player's decision.
+     */
+    let target: VehicleState | null = null;
+    let bestD2 = 150 * 150;
+    for (const o of vehicles) {
+      if (o.id === v.id || !o.alive || o.wreckTimer > 0) continue;
+      const d2 = (o.x - v.x) ** 2 + (o.z - v.z) ** 2;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        target = o;
+      }
+    }
+    const fx = -Math.sin(v.yaw);
+    const fz = -Math.cos(v.yaw);
+    const rx = Math.cos(v.yaw);
+    const rz = -Math.sin(v.yaw);
+    for (let i = 0; i < 4; i++) {
+      const side = (i % 2 === 0 ? 1 : -1) * (0.42 + Math.floor(i / 2) * 0.3);
+      const spread = side * 0.34;
+      projectiles.push({
+        id: uid("msl"),
+        ownerId: v.id,
+        x: v.x + rx * side * 1.5 + fx * 1.2,
+        y: v.y + 1.15,
+        z: v.z + rz * side * 1.5 + fz * 1.2,
+        vx: (fx + rx * spread) * 46,
+        // Lofted: a rocket that leaves flat reads as a bullet. The seek term
+        // below pulls it back down onto the target.
+        vy: 5.5 + Math.floor(i / 2) * 1.2,
+        vz: (fz + rz * spread) * 46,
+        life: 4.2,
+        damage: 26,
+        kind: "missile",
+        bounce: 0,
+        radius: 0.55,
+        seek: target?.id,
+        armTime: 0.28 + i * 0.06,
+      });
+    }
+    emitAudioCue("fire-cannon", v.x, v.y + 1.1, v.z, 1.15, v.isPlayer);
+    vfxMuzzleFlash(
+      v.x + fx * 1.6,
+      v.y + 1.2,
+      v.z + fz * 1.6,
+      fx,
+      fz,
+      "cannon",
+      1,
+      vfxSeed(v.x, v.y, v.z),
+    );
   } else {
     v.ultimateActive = 1.4;
     const fx = -Math.sin(v.yaw);
@@ -308,6 +379,62 @@ export function stepProjectiles(
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     p.z += p.vz * dt;
+    if (p.kind === "missile") {
+      /*
+       * Guidance. Steers the VELOCITY DIRECTION toward the target rather than
+       * adding an acceleration toward it — an acceleration term makes a missile
+       * that overshoots and then loops, which looks like a bug even though it is
+       * physically reasonable. Rotating the heading with a capped turn rate
+       * gives the arc a rocket actually flies and guarantees it cannot exceed
+       * its own speed.
+       *
+       * armTime keeps guidance off at launch so a salvo fans out first.
+       */
+      p.armTime = (p.armTime ?? 0) - dt;
+      const tgt =
+        (p.armTime ?? 0) <= 0 && p.seek
+          ? vehicles.find((o) => o.id === p.seek && o.alive && o.wreckTimer <= 0)
+          : undefined;
+      if (tgt) {
+        const speed = Math.hypot(p.vx, p.vy, p.vz) || 1;
+        // Lead the target slightly; aiming at where it is guarantees a tail chase.
+        const lead = Math.min(1.2, speed > 1 ? 0.55 : 0);
+        const tx = tgt.x + (-Math.sin(tgt.yaw) * tgt.speed) * lead - p.x;
+        const ty = tgt.y + 0.5 - p.y;
+        const tz = tgt.z + (-Math.cos(tgt.yaw) * tgt.speed) * lead - p.z;
+        const tl = Math.hypot(tx, ty, tz) || 1;
+        // ~110 deg/s. Enough to correct a launch spread, not enough to follow a
+        // car that jinks — dodging a missile has to remain possible.
+        const turn = Math.min(1, (1.9 * dt) / Math.max(0.15, tl / speed));
+        p.vx += (tx / tl * speed - p.vx) * turn;
+        p.vy += (ty / tl * speed - p.vy) * turn;
+        p.vz += (tz / tl * speed - p.vz) * turn;
+        const ns = Math.hypot(p.vx, p.vy, p.vz) || 1;
+        p.vx = (p.vx / ns) * speed;
+        p.vy = (p.vy / ns) * speed;
+        p.vz = (p.vz / ns) * speed;
+      } else {
+        p.vy -= 4 * dt;
+      }
+      // "cannon" is the heaviest trail the vocabulary has; a dedicated
+      // missile profile belongs in vfx/particles.ts, which is not this pass.
+      vfxProjectileTrail("cannon", p.x, p.y, p.z, p.vx, p.vy, p.vz, vfxSeed(p.x, p.y, p.z));
+      const groundY = getGroundHeight(p.x, p.z);
+      if (p.y < groundY + 0.25) {
+        vfxExplosion(p.x, groundY + 0.3, p.z, {
+          kind: "mine",
+          radius: 2.4,
+          energy: 1.5,
+          groundY,
+          dirX: p.vx,
+          dirZ: p.vz,
+          seed: vfxSeed(p.x, p.y, p.z),
+        });
+        emitAudioCue("shell-land", p.x, p.y, p.z, 1.1, false);
+        projectiles.splice(i, 1);
+        continue;
+      }
+    }
     if (p.kind === "cannon") {
       p.vy -= 6 * dt;
       const groundY = getGroundHeight(p.x, p.z);

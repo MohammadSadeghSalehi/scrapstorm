@@ -175,7 +175,19 @@ export interface Projectile {
   vz: number;
   life: number;
   damage: number;
-  kind: "bolt" | "cannon" | "disc";
+  kind: "bolt" | "cannon" | "disc" | "missile";
+  /**
+   * Homing target, missiles only.
+   *
+   * An id rather than a reference so the projectile stays plain data that can
+   * cross the sim/audio/VFX boundary and survive a structuredClone. Resolved
+   * against the vehicle list each step; a target that wrecks or vanishes simply
+   * stops being found and the missile flies straight, which is the behaviour we
+   * want anyway.
+   */
+  seek?: string;
+  /** Seconds before guidance engages, so a salvo spreads before it converges. */
+  armTime?: number;
   bounce: number;
   radius: number;
 }

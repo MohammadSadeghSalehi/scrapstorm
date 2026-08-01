@@ -58,6 +58,7 @@ import { PhysicsPropsView } from "./PhysicsPropsView";
 import { SceneryDecor } from "./SceneryDecor";
 import { getActiveEnvironment } from "./environments";
 import { VfxScene } from "./vfx/VfxScene";
+import { WeaponMounts } from "./WeaponMounts";
 import type { PostFxInputs } from "./PostFX";
 import { preloadPhRaceProps, preloadSceneryModels } from "./polyHavenAssets";
 
@@ -731,6 +732,9 @@ function LiveFx({ sim }: { sim: GameSimulation }) {
       <CinematicPlayer sim={sim} />
       <ProjectilesView projectiles={state.projectiles} />
       <MinesView mines={state.mines} />
+      {/* Roof hardware for the classes that carry it. Instanced across the
+          whole grid, so the field costs two draws rather than one per car. */}
+      <WeaponMounts vehicles={state.vehicles} />
       <ParticlesView particles={state.particles} />
       <VehicleFX vehicles={state.vehicles} />
       {tier !== "low" && <SpeedStreaks player={player} />}
