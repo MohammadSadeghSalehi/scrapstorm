@@ -55,12 +55,52 @@ import { CHASE, approach, speedNorm, speedResponse } from "./camera/speedCurve";
 import { getRivalGhost, subscribeRivalGhost } from "../ghostDuel";
 import { FRAME } from "./framePriority";
 import { PhysicsPropsView } from "./PhysicsPropsView";
-import { SceneryDecor } from "./SceneryDecor";
+import { SceneryDecor, buildDecorList } from "./SceneryDecor";
 import { getActiveEnvironment } from "./environments";
 import { VfxScene } from "./vfx/VfxScene";
 import { WeaponMounts } from "./WeaponMounts";
 import type { PostFxInputs } from "./PostFX";
-import { preloadPhRaceProps, preloadSceneryModels } from "./polyHavenAssets";
+import {
+  preloadPhRaceProps,
+  preloadSceneryModels,
+  type PhModelKey,
+} from "./polyHavenAssets";
+import { loadWeaponGeometry } from "./weaponMeshes";
+/*
+ * Only the util maps, deliberately NOT `getRecipeMaps`.
+ *
+ * `createProcMaterial` prefers the photo PBR pack whenever the library is
+ * resident, and the library is the first thing the loader waits for — so
+ * pre-baking the procedural recipes would spend seconds of CPU on maps that no
+ * material in a normally-loaded race ever reads. The util maps are 64px canvas
+ * fills and are used unconditionally.
+ */
+import { hazardMap, checkerMap } from "./procmat";
+import {
+  softCircleTexture,
+  softCloudTexture,
+  softSmokeTexture,
+} from "./softSprite";
+import {
+  arcTexture,
+  dropletTexture,
+  emberTexture,
+  fireTexture,
+  shimmerTexture,
+  shockRingTexture,
+  splatTexture,
+} from "./vfx/sprites";
+import { buildTerrainAsync, terrainKey, getCachedTerrain } from "./terrainGeometry";
+import { terrainSegmentsFor } from "./HeightmapTerrain";
+import {
+  closeRaceGate,
+  getRaceGate,
+  isSimHeld,
+  listRaceWarmTasks,
+  setWorldProgress,
+  withDeadline,
+  yieldToBrowser,
+} from "./raceGate";
 
 const USE_GLTF_CARS = true;
 const SIM_STEP = 1 / 60;
@@ -773,6 +813,31 @@ function SimDriver({
     // Earliest band (FRAME.SIM), so the counters accumulate across every pass
     // of the frame that follows and the HUD reads a real total.
     state.gl.info.reset();
+
+    /*
+     * THE HOLD. This is what actually stops the countdown running before the
+     * world is ready.
+     *
+     * `startCountdown` has already run by the time we get here — the grid is
+     * built, the field is placed, the world tree is mounting, and phase is
+     * "countdown". What has NOT happened is the clock: `state.countdown` only
+     * moves inside `sim.tick`, so simply not calling it freezes the lights on
+     * three while the terrain uploads, the props resolve and the shaders
+     * compile. Nothing else has to know: the cameras, the HUD, the audio driver
+     * and the post chain all keep running against a stationary grid.
+     *
+     * Returning early also keeps this frame out of `qualityManager.sampleFrame`,
+     * which matters more than it looks. Warm-up frames are slow BY DESIGN —
+     * that is the work being done — and feeding them to the auto-tier would drop
+     * the player to a lower tier before they had driven a metre, which would in
+     * turn invalidate the terrain field the loading screen just baked at the old
+     * tier and rebuild the whole world.
+     */
+    if (isSimHeld()) {
+      input.consumePause();
+      acc.current = 0;
+      return;
+    }
     if (input.consumePause()) onPauseToggle();
 
     // A rebuilt field reuses the same vehicle ids ("player", "bot-0", …), so a
@@ -1065,6 +1130,16 @@ function AdaptiveResolution() {
 
   useFrame((_, dt) => {
     if (dt > 0.25) return; // tab was backgrounded
+    /*
+     * Same reasoning as the sim hold: warm-up frames are slow on purpose, and a
+     * scaler that believed them would open the race at 60% resolution and take
+     * several seconds of real driving to climb back out.
+     */
+    if (isSimHeld()) {
+      frames.current = 0;
+      accum.current = 0;
+      return;
+    }
     accum.current += dt;
     frames.current += 1;
     if (cooldown.current > 0) cooldown.current -= 1;
@@ -1143,6 +1218,174 @@ function ShaderWarmup() {
       for (const t of timers) window.clearTimeout(t);
     };
   }, [gl, scene, camera]);
+
+  return null;
+}
+
+/**
+ * Minimum time the warm phase spends watching before it will believe the scene
+ * has settled.
+ *
+ * Without a floor the settle detector is trivially satisfied: on a warm cache
+ * nothing new is created for twenty frames and it declares victory in a third of
+ * a second — before `import("./PostFX")` has even resolved, so the entire post
+ * chain still compiles on the first green frame. This is the window the
+ * asynchronous stragglers get to announce themselves.
+ */
+const WARM_MIN_MS = 900;
+
+/** Frames with no new geometry, texture or program before we call it settled. */
+const WARM_STABLE_FRAMES = 20;
+
+/**
+ * When to stop waiting for the scene to settle and compile anyway.
+ *
+ * Reached when something is still creating resources every frame — a prop pool
+ * that keeps cloning, a texture that keeps failing and retrying. Compiling and
+ * starting is strictly better than holding a loading screen over a scene that
+ * will never be quiet.
+ */
+const WARM_SETTLE_BUDGET_MS = 6000;
+
+/** Frames drawn after the compile, so the driver actually links and uploads. */
+const WARM_FLUSH_FRAMES = 3;
+
+/** Frames held so the "Compiling shaders" caption reaches the screen first. */
+const WARM_ARM_FRAMES = 2;
+
+/**
+ * Holds the grid until the mounted world has stopped materialising.
+ *
+ * WHY A SETTLE DETECTOR RATHER THAN A LIST OF PROMISES
+ * ----------------------------------------------------
+ * Most of what lands during the countdown is not something this file can await.
+ * The scatter fields, the set-piece layers, the road ribbon and the decor
+ * batches are built inside other components' `useMemo`/`useEffect` and expose no
+ * promise; several of them live in modules this file must not import. A
+ * registry of preload hooks covers the ones that can opt in (see
+ * `listRaceWarmTasks`), but a gate that only waited on those would be silently
+ * incomplete the moment somebody adds a component that does not.
+ *
+ * So the gate watches the RENDERER instead. `gl.info` counts live geometries,
+ * live textures and compiled programs; those numbers only move when something
+ * new arrives. When they have not moved for twenty consecutive frames, nothing
+ * is still arriving — whatever the source, whether or not it cooperated. That is
+ * a property of the frame, which is the thing we actually care about.
+ *
+ * Deliberately NOT watched: draw calls and triangle counts. Both change every
+ * frame while the chase rig settles onto the grid and the culling drivers
+ * converge, so including them would mean the scene never reads as stable.
+ */
+function WorldWarmup() {
+  const { gl, scene, camera } = useThree();
+  const st = useRef({
+    stage: "settle" as "settle" | "arm" | "compile" | "flush" | "done",
+    gen: -1,
+    started: 0,
+    sig: "",
+    stable: 0,
+    flush: 0,
+  });
+
+  useFrame(() => {
+    const s = st.current;
+    const gate = getRaceGate();
+    // Not our race: either nothing is gated (a QA hook jumped straight in) or
+    // the assets are still downloading and the world has not been handed over.
+    if (!gate.held || gate.phase !== "world") return;
+
+    /*
+     * Re-arm on a new gate rather than relying on being remounted.
+     *
+     * A restart normally tears this tree down (worldEpoch feeds the scene key),
+     * so a fresh instance starts at "settle" anyway. This is the belt to that
+     * braces: if any future path ever opens the gate without changing the scene
+     * key, an instance parked at "done" would sit there while the watchdog ran
+     * out — a twelve-second loading screen over a world that was ready.
+     */
+    if (s.gen !== gate.generation) {
+      s.gen = gate.generation;
+      s.stage = "settle";
+      s.started = 0;
+      s.sig = "";
+      s.stable = 0;
+      s.flush = 0;
+    }
+    if (s.stage === "done") return;
+
+    const t = performance.now();
+    if (s.started === 0) s.started = t;
+    const elapsed = t - s.started;
+
+    if (s.stage === "settle") {
+      const info = gl.info;
+      const sig = `${info.memory.geometries}|${info.memory.textures}|${info.programs?.length ?? 0}`;
+      if (sig !== s.sig) {
+        s.sig = sig;
+        s.stable = 0;
+      } else {
+        s.stable += 1;
+      }
+      const settled = elapsed >= WARM_MIN_MS && s.stable >= WARM_STABLE_FRAMES;
+      const expired = elapsed >= WARM_SETTLE_BUDGET_MS;
+      setWorldProgress(
+        Math.min(
+          0.75,
+          Math.max(elapsed / WARM_SETTLE_BUDGET_MS, s.stable / WARM_STABLE_FRAMES) *
+            0.75,
+        ),
+        "Building world",
+      );
+      if (settled || expired) s.stage = "arm";
+      return;
+    }
+
+    if (s.stage === "arm") {
+      /*
+       * Two frames doing nothing but publishing the label, and it has to be two.
+       *
+       * `gl.compile` blocks for as long as it takes, so the loading screen must
+       * have PAINTED "Compiling shaders" before we call it — otherwise the last
+       * thing on screen through the freeze is a bar that says "Building world"
+       * and then stops, which is what a hang looks like. One frame is not
+       * enough: this runs inside rAF, so the setState here commits on React's
+       * scheduler task AFTER this frame has already painted. The commit lands
+       * between frames, and the next paint is the one that shows it.
+       */
+      if (s.flush === 0) {
+        setWorldProgress(0.8, "Compiling shaders");
+        s.flush = WARM_ARM_FRAMES;
+      }
+      s.flush -= 1;
+      if (s.flush > 0) return;
+      s.stage = "compile";
+      return;
+    }
+
+    if (s.stage === "compile") {
+      try {
+        // Synchronous, for exactly the reason ShaderWarmup documents above:
+        // compileAsync re-polls isReady() from a setTimeout loop and throws out
+        // of a timer where no .catch() can see it. The cost is one long frame,
+        // and this is the one moment in the game where a long frame is free —
+        // there is a loading screen over it and the countdown cannot start.
+        gl.compile(scene, camera);
+      } catch {
+        /* warmup is best-effort; a failed compile just means a lazier first lap */
+      }
+      s.flush = WARM_FLUSH_FRAMES;
+      s.stage = "flush";
+      return;
+    }
+
+    if (s.stage === "flush") {
+      setWorldProgress(0.9 + (1 - s.flush / WARM_FLUSH_FRAMES) * 0.1, "Grid ready");
+      s.flush -= 1;
+      if (s.flush > 0) return;
+      s.stage = "done";
+      closeRaceGate("world warm");
+    }
+  }, FRAME.TELEMETRY);
 
   return null;
 }
@@ -1314,13 +1557,24 @@ function RaceWorld({
   const trackEpoch = getTrackEpoch();
 
   useEffect(() => {
-    // Race-only assets
+    /*
+     * Safety net, not the load path.
+     *
+     * `prepareRaceAssets` has already awaited all three behind the loading
+     * screen, so on the normal route these are cache hits that resolve on the
+     * microtask queue. They stay because the loading screen is not the only door
+     * into a race: the QA `__scrapstorm.startRace` hook and a direct phase
+     * mutation both mount this tree with nothing preloaded, and a race with no
+     * road texture is worse than one that pops.
+     *
+     * The 500ms setTimeout that used to wrap the props is gone. It existed to
+     * keep the prop fetch off the first frames of the race, which is a sensible
+     * thing to want and completely the wrong way to get it — it guaranteed the
+     * props landed mid-lap. The gate is how that is bought now.
+     */
     void preloadCarModels();
     void preloadPbrLibrary();
-    const t = window.setTimeout(() => {
-      void preloadPhRaceProps();
-    }, 500);
-    return () => window.clearTimeout(t);
+    void preloadPhRaceProps();
   }, []);
 
   /*
@@ -1367,6 +1621,8 @@ function RaceWorld({
       */}
       <SunLight sim={sim} q={q} />
       <ShaderWarmup />
+      {/* Holds the countdown at three until this tree has stopped changing. */}
+      <WorldWarmup />
       <AdaptiveResolution />
       <directionalLight
         position={env.light.fill.dir}
@@ -1506,6 +1762,14 @@ export function GameCanvas({
         setAuto: (on: boolean) => qualityManager.setAuto(on),
         getFps: () => qualityManager.getFpsEma(),
       };
+      // Diagnostics: whether a race is currently held at the grid and why. The
+      // symptom of a gate bug is "the countdown never starts", which from the
+      // outside is indistinguishable from a hung frame — this is how a probe
+      // tells the two apart without guessing from a screenshot.
+      window.__raceGate = {
+        get: () => getRaceGate(),
+        release: () => closeRaceGate("manual release"),
+      };
     }
     return () => window.clearTimeout(late);
   }, [sim]);
@@ -1592,41 +1856,247 @@ export function GameCanvas({
 }
 
 /**
+ * Rasterise every sprite atlas the effect layers ask for at mount.
+ *
+ * All of these are canvas draws behind a module-level cache, so the only thing
+ * that matters is hitting the same key the consumer will: the sizes below are
+ * the ones Effects, VfxScene and Atmosphere actually request, not the defaults.
+ * A wrong size is not a failure, just a second atlas nobody uses.
+ */
+function warmSpriteAtlases(): void {
+  const jobs: (() => unknown)[] = [
+    () => softSmokeTexture(128),
+    () => softCloudTexture(192),
+    () => softCircleTexture(),
+    () => fireTexture(128),
+    () => emberTexture(64),
+    () => arcTexture(128, 32),
+    () => dropletTexture(64),
+    () => shimmerTexture(64),
+    () => splatTexture(128),
+    () => shockRingTexture(128),
+    // Beacon stripes. Cheap, but CulledBeacons asks for it during the mount we
+    // are trying to keep quiet.
+    () => hazardMap(),
+    () => checkerMap(),
+  ];
+  for (const job of jobs) {
+    try {
+      job();
+    } catch {
+      /* a sprite that will not rasterise is a missing decal, not a dead race */
+    }
+  }
+}
+
+/**
+ * One item of the load screen.
+ *
+ * `budgetMs` is not a nicety. The dev server hands out 274MB over HTTP/1.1 with
+ * six connections, and a single wedged response would otherwise hold the loading
+ * screen open forever — which is a worse outcome than the hitch this whole path
+ * exists to remove. On expiry the underlying work is NOT cancelled: it keeps
+ * downloading and lands mid-race, exactly as it did before any of this existed.
+ * That is the documented degraded mode.
+ */
+type LoadStep = {
+  label: string;
+  /** Share of the bar. Roughly proportional to measured cost on a cold cache. */
+  weight: number;
+  budgetMs: number;
+  run: () => Promise<unknown>;
+};
+
+/** Ceiling on the terrain bake specifically. It cannot stall, only be slow. */
+const TERRAIN_BUDGET_MS = 20_000;
+
+/**
  * Wait for everything a race needs before the lights go green.
  *
- * These preloads used to run *during* the race, so the opening lap paid for
- * texture decode, glTF parsing and prop instancing as they landed — props
- * popping in, the world lighting up several seconds late, and frame spikes
- * exactly when the field is bunched and accelerating. Paying for it up front
- * behind a loading state trades a few seconds of wait for a clean start.
+ * WHAT CHANGED AND WHY IT MATTERS
+ * -------------------------------
+ * This used to be five fire-and-await steps whose progress bar reported the
+ * index of the step ABOUT to start — so it showed 0/20/40/60/80 and then jumped
+ * to 100, regardless of the fact that the first step was worth several seconds
+ * and the last was worth a few hundred milliseconds. It also had no timeouts at
+ * all: any one of the five could hang the loading screen indefinitely.
  *
- * Failures resolve rather than reject: a missing optional pack should delay
- * the grid, not block it.
+ * Now every step carries a weight and a deadline, the terrain bake runs
+ * CONCURRENTLY with the downloads (it is pure CPU that yields between slices, so
+ * it costs nothing to run it while the network is the bottleneck), and the whole
+ * thing feeds a bar that measures real completed work.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. Anything built inside another component's
+ * `useMemo` — the road ribbon, the scatter fields, the set-piece layers, the
+ * decor batches — cannot be usefully preloaded, because those components rebuild
+ * it themselves on mount and dispose it on unmount with no shared cache. That
+ * work is covered by holding the countdown while the world mounts (see
+ * `WorldWarmup`), not by doing it twice here.
+ *
+ * Failures resolve rather than reject throughout: a missing optional pack should
+ * delay the grid, not block it.
  */
 export async function prepareRaceAssets(
   onProgress?: (pct: number, label: string) => void,
 ): Promise<void> {
-  const steps: [string, () => Promise<unknown>][] = [
-    ["Surfaces", () => preloadPbrLibrary()],
-    ["Vehicles", () => preloadCarModels()],
-    ["Track props", () => preloadPhRaceProps()],
-    // Set dressing: SceneryDecor pulls far more keys than the four race props,
-    // and they were still arriving mid-lap (props visibly popping in).
-    ["Set dressing", () => preloadSceneryModels()],
+  const tier = qualityManager.get().tier;
+  const env = getActiveEnvironment();
+  const epoch = getTrackEpoch();
+  const segs = terrainSegmentsFor(tier);
+
+  /*
+   * The exact sizes SceneryDecor will ask for, derived rather than copied.
+   *
+   * The template cache is keyed by `key|targetLen`, and the hand-written list
+   * inside preloadSceneryModels had already drifted from what decor requests —
+   * so coveredCar at 4.6, barrier at 1.7 and three of the four boulder sizes
+   * were unwarmed and landed mid-lap. Only high tier mounts SceneryDecor, so
+   * only high tier pays for this.
+   */
+  const decorJobs: [PhModelKey, number][] =
+    tier === "high"
+      ? buildDecorList(tier).map((d) => [d.key, d.targetLen] as [PhModelKey, number])
+      : [];
+
+  const steps: LoadStep[] = [
+    // First, and by some distance the heaviest: everything that draws a surface
+    // waits on this, and `createProcMaterial` silently falls back to a CPU bake
+    // for any material built before it lands.
+    { label: "Surfaces", weight: 22, budgetMs: 25_000, run: () => preloadPbrLibrary() },
+    { label: "Vehicles", weight: 16, budgetMs: 25_000, run: () => preloadCarModels() },
+    {
+      // All five, though only some classes carry roof hardware: the projectile
+      // and mine meshes are requested by Effects the first time one is fired,
+      // which is mid-race by definition. They are cached forever once loaded.
+      label: "Weapons",
+      weight: 6,
+      budgetMs: 15_000,
+      run: () =>
+        Promise.all(
+          (["rocket", "saw", "mine", "turret", "launcher"] as const).map((id) =>
+            loadWeaponGeometry(id),
+          ),
+        ),
+    },
+    { label: "Track props", weight: 8, budgetMs: 15_000, run: () => preloadPhRaceProps() },
+    // Set dressing: SceneryDecor and CullableScenery pull far more keys than the
+    // four race props, and they were still arriving mid-lap (props popping in).
+    {
+      label: "Set dressing",
+      weight: 12,
+      budgetMs: 20_000,
+      run: () => preloadSceneryModels(decorJobs),
+    },
     // Warm the HTTP cache for the tier's HDRI. EnvLighting owns the decode, but
     // fetching the file here means the environment is not still downloading
     // when the lights go green — that was the world lighting up seconds late.
-    ["Lighting", () => prefetchHdri()],
+    { label: "Lighting", weight: 6, budgetMs: 15_000, run: () => prefetchHdri() },
+    {
+      /*
+       * The post chain is a dynamic import, and it is not requested until
+       * PostFxLive sees the phase go to "countdown" — i.e. after the lights are
+       * already counting. Pulling the chunk here means only the pass
+       * construction and its shader compiles are left, and WorldWarmup covers
+       * those. Skipped on low, which never mounts it.
+       */
+      label: "Post chain",
+      weight: 4,
+      budgetMs: 12_000,
+      run: () => (tier === "low" ? Promise.resolve() : import("./PostFX")),
+    },
+    {
+      label: "Effects",
+      weight: 3,
+      budgetMs: 5_000,
+      run: async () => {
+        warmSpriteAtlases();
+      },
+    },
+    {
+      /*
+       * Whatever else registered itself. This is the seam for modules the loader
+       * does not import — audio banks and anything a later feature adds — so
+       * that they can join the load phase with one line instead of this file
+       * growing a dependency on each of them.
+       */
+      label: "Systems",
+      weight: 4,
+      budgetMs: 10_000,
+      run: () =>
+        Promise.all(
+          listRaceWarmTasks().map((t) =>
+            withDeadline(Promise.resolve().then(t.run), 8_000, t.label),
+          ),
+        ),
+    },
   ];
-  for (let i = 0; i < steps.length; i++) {
-    const [label, run] = steps[i]!;
-    onProgress?.(Math.round((i / steps.length) * 100), label);
-    try {
-      await run();
-    } catch {
-      /* optional asset — never block the grid */
-    }
+
+  /*
+   * The terrain bake is worth nothing on the bar if it is already cached, which
+   * is the normal case for a second race on the same circuit — and giving a
+   * free step a quarter of the bar is exactly how a progress bar starts lying.
+   */
+  const cached = getCachedTerrain(terrainKey(segs, env.id, epoch)) !== null;
+  const terrainWeight = cached ? 0 : 26;
+  const total = steps.reduce((n, s) => n + s.weight, 0) + terrainWeight;
+
+  let done = 0;
+  let terrainFrac = cached ? 1 : 0;
+  let label = steps[0]!.label;
+  const report = () =>
+    onProgress?.(
+      Math.min(99, Math.round(((done + terrainFrac * terrainWeight) / total) * 100)),
+      label,
+    );
+
+  /*
+   * Concurrent with the downloads, on purpose.
+   *
+   * This is ~750ms of pure main-thread fBm at the high tier and the network is
+   * the bottleneck for most of the load, so running it in the gaps costs
+   * essentially nothing in wall clock and takes the single largest stall out of
+   * the mount. `buildTerrainAsync` slices itself under one frame, so the garage
+   * behind the loading screen keeps animating throughout.
+   */
+  const terrain = cached
+    ? Promise.resolve(null)
+    : buildTerrainAsync(segs, env, epoch, (f) => {
+        terrainFrac = f;
+        report();
+      }).catch((e) => {
+        // Handled HERE and not at the await below. Nothing observes this promise
+        // for several seconds while the download steps run, and an unattached
+        // rejection in that window is an uncaught error in the console — and, in
+        // a browser configured to break on them, a stop. The mesh falls back to
+        // its blocking build.
+        console.warn("[prepareRaceAssets] terrain bake failed", e);
+        return null;
+      });
+
+  report();
+  for (const step of steps) {
+    label = step.label;
+    report();
+    await withDeadline(
+      Promise.resolve().then(step.run),
+      step.budgetMs,
+      step.label,
+    );
+    done += step.weight;
+    report();
   }
+
+  if (!cached) {
+    label = "Terrain";
+    report();
+    await withDeadline(terrain, TERRAIN_BUDGET_MS, "Terrain");
+    terrainFrac = 1;
+  }
+
+  // One more yield before the world is allowed to mount. Everything above just
+  // finished uploading textures and geometry; handing the frame back lets the
+  // browser flush that before it is asked to build a scene graph on top of it.
+  await yieldToBrowser();
   onProgress?.(100, "Ready");
 }
 
@@ -1661,6 +2131,10 @@ declare global {
       setTier: (t: "low" | "medium" | "high") => void;
       setAuto: (on: boolean) => void;
       getFps: () => number;
+    };
+    __raceGate?: {
+      get: () => import("./raceGate").RaceGateSnapshot;
+      release: () => void;
     };
     __webgl2Caps?: import("./webgl2/configure").WebGL2Caps;
     /** Live scene graph — QA/diagnostics only. */

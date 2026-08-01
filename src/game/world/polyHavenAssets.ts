@@ -80,6 +80,68 @@ const unavailable = new Set<PhModelKey>();
 const resolvedUrl = new Map<PhModelKey, string>();
 const loader = createGltfLoader();
 
+/**
+ * One fetch and one glTF parse per KEY, independent of how many sizes are asked
+ * for.
+ *
+ * `templateCache` is keyed by `key|targetLen`, which is correct — the normalise
+ * pass bakes the scale into the root — but it meant a key requested at three
+ * lengths was downloaded and parsed three times. That is not hypothetical:
+ * `buildDecorList` asks for coveredCar at 4.4, 4.6 AND 4.2, and boulder at 2.2,
+ * 2.6, 2.8 and 3.0. Six redundant parses of some of the largest assets in the
+ * game, on a dev server that serves them over HTTP/1.1 with six connections.
+ *
+ * The browser's HTTP cache already deduplicated the bytes; what this removes is
+ * the parse, the geometry duplication and the second and third texture upload.
+ */
+const rawTemplates = new Map<PhModelKey, Promise<THREE.Group>>();
+
+function rawTemplate(key: PhModelKey): Promise<THREE.Group> {
+  let p = rawTemplates.get(key);
+  if (!p) {
+    p = loadFirstAvailable(key).catch((err) => {
+      // Not remembered as a rejected promise: `unavailable` is what stops the
+      // retry storm, and a cached rejection would also deny a later attempt
+      // after the pack is restored without a reload.
+      rawTemplates.delete(key);
+      throw err;
+    });
+    rawTemplates.set(key, p);
+  }
+  return p;
+}
+
+/**
+ * Deep clone that also clones MATERIALS.
+ *
+ * `Object3D.clone(true)` copies the hierarchy but shares geometry and material
+ * references. Sharing geometry across size variants is exactly what we want;
+ * sharing materials is not, because every consumer of a template used to get a
+ * material private to its size variant and some of them tint or damage it in
+ * place. Cloning the material preserves that isolation while still sharing the
+ * textures, which are the part that costs VRAM.
+ */
+function cloneWithOwnMaterials(root: THREE.Group): THREE.Group {
+  const copy = root.clone(true) as THREE.Group;
+  const seen = new Map<THREE.Material, THREE.Material>();
+  copy.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || !m.material) return;
+    if (Array.isArray(m.material)) {
+      m.material = m.material.map((mat) => {
+        let c = seen.get(mat);
+        if (!c) seen.set(mat, (c = mat.clone()));
+        return c;
+      });
+    } else {
+      let c = seen.get(m.material);
+      if (!c) seen.set(m.material, (c = m.material.clone()));
+      m.material = c;
+    }
+  });
+  return copy;
+}
+
 /** First candidate that loads; remembered so later slots skip the misses. */
 function loadFirstAvailable(key: PhModelKey): Promise<THREE.Group> {
   const known = resolvedUrl.get(key);
@@ -144,8 +206,11 @@ export function loadPhModel(
 
   let p = pending.get(ck);
   if (!p) {
-    p = loadFirstAvailable(key)
-      .then((root) => {
+    p = rawTemplate(key)
+      .then((raw) => {
+        // Normalise a COPY: the raw template is shared by every size variant of
+        // this key, and normalizeRoot rescales and re-seats the root in place.
+        const root = cloneWithOwnMaterials(raw);
         normalizeRoot(root, targetLen);
         templateCache.set(ck, root);
         pending.delete(ck);
@@ -188,8 +253,10 @@ export const SCENERY_TEMPLATE_LEN = {
  * race-critical props) and tolerant of misses — an unavailable key should not
  * hold up the grid.
  */
-export function preloadSceneryModels(): Promise<void> {
-  const jobs: [PhModelKey, number][] = [
+export function preloadSceneryModels(
+  extra: readonly (readonly [PhModelKey, number])[] = [],
+): Promise<void> {
+  const jobs: (readonly [PhModelKey, number])[] = [
     ["coveredCar", 4.4],
     ["barrier", 1.8],
     ["boulder", 2.2],
@@ -200,9 +267,32 @@ export function preloadSceneryModels(): Promise<void> {
     ["pipes", 6],
     ["fence", 4],
     ...(Object.entries(SCENERY_TEMPLATE_LEN) as [PhModelKey, number][]),
+    /*
+     * `extra` is how the loader hands over the sizes SceneryDecor will actually
+     * ask for, derived from buildDecorList rather than copied here.
+     *
+     * The list above was written by hand and had already drifted: decor asks for
+     * coveredCar at 4.6 and 4.2 as well as 4.4, barrier at 1.7 as well as 1.8,
+     * and boulder at 2.6, 2.8 and 3.0 as well as 2.2. Because the template cache
+     * is keyed by size, every one of those was an unwarmed load that landed
+     * mid-lap — visibly, as props fading in on the opening straight. Deriving
+     * them is what stops that list drifting again the next time the decor
+     * placement is tuned.
+     */
+    ...extra,
   ];
+  // De-duplicate: buildDecorList repeats most sizes across dozens of slots, and
+  // loadPhModel would coalesce them anyway, but not before allocating a promise
+  // and a catch handler per slot.
+  const seen = new Set<string>();
+  const unique = jobs.filter(([k, len]) => {
+    const ck = `${k}|${len.toFixed(2)}`;
+    if (seen.has(ck)) return false;
+    seen.add(ck);
+    return true;
+  });
   return Promise.all(
-    jobs.map(([k, len]) => loadPhModel(k, len).catch(() => null)),
+    unique.map(([k, len]) => loadPhModel(k, len).catch(() => null)),
   ).then(() => undefined);
 }
 

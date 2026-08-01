@@ -45,7 +45,24 @@ import {
   type MissionRunSummary,
 } from "@/game/missions";
 import { haptic } from "@/game/haptics";
+/*
+ * The one module from world/ this shell imports eagerly.
+ *
+ * `raceGate` is deliberately dependency-free — no three.js, no game modules — so
+ * pulling it into the first paint costs a few hundred bytes and keeps this file
+ * able to open the gate before the engine chunk has even been requested. If it
+ * ever grows an import of something under world/ that touches three, this shell
+ * stops painting instantly and that is the reason why.
+ */
+import {
+  beginWorldWarm,
+  closeRaceGate,
+  getRaceGate,
+  openRaceGate,
+  setAssetProgress,
+} from "@/game/world/raceGate";
 import { MenuOverlay } from "./Menus";
+import { RaceLoadingScreen } from "./RaceLoadingScreen";
 import { CareerBoard, MissionBrief, MissionResults, StoryCard } from "./CareerMenus";
 import type { HudSlice, MissionHud } from "./GameHUD";
 
@@ -375,9 +392,6 @@ export function ScrapstormApp() {
   const bootGen = useRef(0);
   const prefs = useRef({ name: loadName(), classId: loadClass(), trackId: loadTrack() });
   const [ghostOn, setGhostOn] = useState(() => loadGhostOn());
-  const [raceLoad, setRaceLoad] = useState<{ pct: number; label: string } | null>(
-    null,
-  );
   const shellPhaseRef = useRef<MatchPhase>("menu");
 
   /* ── career ────────────────────────────────────────────────────────────
@@ -570,7 +584,18 @@ export function ScrapstormApp() {
           window as unknown as { __scrapstorm?: Record<string, unknown> }
         ).__scrapstorm = {
           getState: () => sim.state,
+          /*
+           * Deliberately NOT gated, and deliberately closing any gate it finds.
+           *
+           * QA drives this to get to a racing frame in a bounded number of
+           * steps; a probe that has to poll a loading screen for an
+           * unpredictable number of seconds is a probe that intermittently times
+           * out. The cost is that a QA-started race is the one path that still
+           * builds its world under a live countdown — which is fine, because
+           * nobody is looking at the first three seconds of it.
+           */
           startRace: () => {
+            closeRaceGate("QA startRace");
             loaded.audioEngine.unlock();
             loaded.audioEngine.playUi("confirm");
             sim.setGuest(sim.state.guestName, sim.state.selectedClass);
@@ -583,6 +608,10 @@ export function ScrapstormApp() {
            * never mounts and captures come back empty. Drive both.
            */
           setPhase: (p: MatchPhase) => {
+            // Same reasoning as startRace: a held gate freezes the sim clock,
+            // and a QA hook that silently did nothing would be worse than one
+            // that skips the warm-up.
+            closeRaceGate("QA setPhase");
             shellPhaseRef.current = p;
             setShellPhase(p);
             sim.setPhase(p);
@@ -592,6 +621,7 @@ export function ScrapstormApp() {
           pause: () => sim.togglePause(),
           resume: () => sim.resume(),
           restart: () => {
+            closeRaceGate("QA restart");
             sim.restartRace();
             setSceneEpoch(sim.worldEpoch);
           },
@@ -615,6 +645,10 @@ export function ScrapstormApp() {
     return () => {
       bootGen.current += 1;
       inputRef.current?.dispose?.();
+      // The gate is module state and outlives this component. A hot reload or a
+      // route change mid-load would otherwise leave the next mount's sim frozen
+      // until a watchdog nobody is watching fires.
+      closeRaceGate("app unmounted");
       delete (window as unknown as { __controlsTest?: unknown }).__controlsTest;
       delete (window as unknown as { __scrapstorm?: unknown }).__scrapstorm;
     };
@@ -623,24 +657,18 @@ export function ScrapstormApp() {
   useEffect(() => {
     if (!pendingRace || !kit || !simRef.current) return;
     setPendingRace(false);
-    const sim = simRef.current;
-    kit.audioEngine.unlock();
-    kit.audioEngine.playUi("confirm");
-    // This path only ever serves the free-play button pressed before the engine
-    // finished loading. It must still clear any armed mission, or a deferred
-    // quick heat inherits the last run's grid.
-    disarmMission();
-    runRef.current = null;
-    missionDefRef.current = null;
-    sim.setGuest(prefs.current.name, prefs.current.classId);
-    sim.setTrack(prefs.current.trackId);
-    sim.setPhase("countdown");
-    lastHit.current = 999;
-    rewardApplied.current = false;
-    lastHudSig.current = "";
-    setSceneEpoch(sim.worldEpoch);
-    setMenuState(snapshotMenu(sim.state));
-    setHud(kit.snapshotHud(sim.state));
+    /*
+     * The free-play button pressed before the engine finished loading.
+     *
+     * This used to build its own countdown inline, which made it the ONE path
+     * into a race that skipped the asset load entirely — on the coldest cache in
+     * the session, since the player had not even reached the garage. Routing it
+     * through beginRace means the deferred start gets the same gate as every
+     * other, including clearing any armed mission (beginRace's own null branch
+     * does that).
+     */
+    beginRace(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingRace, kit]);
 
   const audio = () => kitRef.current?.audioEngine;
@@ -777,16 +805,43 @@ export function ScrapstormApp() {
       sim.setGuest(prefs.current.name, prefs.current.classId);
       sim.setTrack(def ? def.trackId : prefs.current.trackId);
 
-      // Load everything the race needs BEFORE the countdown. These preloads used
-      // to run during the opening lap, so the first corner paid for texture
-      // decode and glTF parsing — props popping in and frame spikes exactly when
-      // the field is bunched. A few seconds of loading buys a clean start.
-      setRaceLoad({ pct: 0, label: "Surfaces" });
+      /*
+       * TAKE THE GRID.
+       *
+       * Two distinct waits happen behind this one loading screen, and the order
+       * is the whole point:
+       *
+       *  1. Everything fetchable is fetched and decoded, and the terrain field
+       *     is baked. Nothing is on screen yet but the garage.
+       *  2. Only THEN does the phase go to "countdown", which is what mounts the
+       *     race world — the terrain mesh, the road ribbon, the scatter fields,
+       *     the set-piece colliders, the prop pools, the post chain. That mount
+       *     used to happen with the clock already running, which is why the
+       *     first seconds of every race hitched.
+       *
+       * `openRaceGate` freezes the sim clock for both, so the lights sit on
+       * three until `WorldWarmup` inside the scene says the frame has stopped
+       * changing. See raceGate.ts — every phase of this is on a watchdog, so a
+       * failed asset costs a slower start and never a race that will not begin.
+       */
+      const gen = openRaceGate({ assets: true });
       void k
-        .prepareRaceAssets((pct, label) => setRaceLoad({ pct, label }))
+        .prepareRaceAssets((pct, label) => setAssetProgress(pct / 100, label))
         .finally(() => {
-          setRaceLoad(null);
-          if (simRef.current !== sim) return; // menu changed under us
+          if (simRef.current !== sim) {
+            // Menu changed under us — the gate belongs to a race that is not
+            // happening, and leaving it held would freeze the next one.
+            closeRaceGate("race abandoned during load");
+            return;
+          }
+          /*
+           * A second race was started while this one was still loading (retry
+           * hammered on the results screen, or a mission picked mid-load). The
+           * later call already owns the gate; this one must not put a countdown
+           * on the board or it would arm a mission the player did not choose.
+           */
+          if (getRaceGate().generation !== gen) return;
+          beginWorldWarm();
           if (def) {
             const c = careerRef.current;
             runRef.current = armMission(def, {
@@ -970,6 +1025,17 @@ export function ScrapstormApp() {
       simRef.current.state.lapCount = def.laps;
       radioRef.current = [];
     }
+    /*
+     * A restart is a race start, and it rebuilds just as much world.
+     *
+     * `restartRace` bumps worldEpoch, which changes the scene key, which tears
+     * down and remounts the entire race tree — terrain mesh, road ribbon,
+     * scatter fields, prop pools, post chain. All of it landed on the countdown
+     * exactly as a first race did. Nothing needs downloading this time, so the
+     * gate opens straight into the warm phase: typically a second or so, mostly
+     * geometry re-upload.
+     */
+    openRaceGate({ assets: false });
     simRef.current?.restartRace();
     setSceneEpoch(simRef.current?.worldEpoch ?? 0);
     refreshHud();
@@ -1104,27 +1170,14 @@ export function ScrapstormApp() {
         />
       )}
 
-      {raceLoad ? (
-        <div className="pointer-events-auto absolute inset-0 z-[60] flex items-center justify-center bg-bg/80 backdrop-blur-sm">
-          <div className="w-full max-w-xs px-6 text-center">
-            <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-muted">
-              Preparing race
-            </p>
-            <p className="mt-1 font-display text-lg font-semibold text-fg">
-              {raceLoad.label}
-            </p>
-            <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
-                style={{ width: `${Math.max(6, raceLoad.pct)}%` }}
-              />
-            </div>
-            <p className="mt-2 text-[0.65rem] text-muted">
-              Loading up front so the race runs clean
-            </p>
-          </div>
-        </div>
-      ) : null}
+      {/*
+        Subscribes to the race gate directly rather than taking props: the gate
+        is written from three places (this file, prepareRaceAssets and the
+        in-scene WorldWarmup driver) and routing all of that back up through
+        React state would re-render the whole shell — including the canvas
+        wrapper — several times a second during a load.
+      */}
+      <RaceLoadingScreen />
 
       {hud && GameHUD ? <GameHUD hud={hud} onPause={onPause} /> : null}
       {GraphicsDebug ? <GraphicsDebug phase={scenePhase} /> : null}

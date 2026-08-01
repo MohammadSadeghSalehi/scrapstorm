@@ -25,6 +25,7 @@ import type { GameSimulation } from "../sim";
 import { VEHICLE_CLASSES } from "../classes";
 import { isDrifting } from "../physics";
 import { getSurfaceAt } from "../track";
+import { isSimHeld } from "../world/raceGate";
 import { audioEngine, type ContinuousInput } from "./AudioEngine";
 import { drainAudioCues, type AudioCue } from "./cues";
 import {
@@ -479,7 +480,15 @@ export function AudioDriver({
     drainAudioCues(onCue);
 
     if (st.phase !== prevPhase.current) {
-      if (st.phase === "countdown") {
+      /*
+       * Gated on the race gate, not just the phase.
+       *
+       * The world now MOUNTS during "countdown" with the sim clock frozen, so
+       * the phase edge fires while the loading screen is still up — the grid
+       * confirm played a second or two before the player could see anything,
+       * which reads as a sound with no cause.
+       */
+      if (st.phase === "countdown" && !isSimHeld()) {
         audioEngine.playUi("confirm");
         // Fresh heat: restock the breakables and clear every per-vehicle edge.
         // These trackers are module-level (one allocation, not per frame), so a
