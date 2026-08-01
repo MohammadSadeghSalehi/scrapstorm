@@ -34,7 +34,19 @@ export type AudioCueKind =
   | "ult-blast"
   | "wreck-blast"
   | "barrel-rupture"
-  | "glass-break";
+  | "glass-break"
+  /*
+   * Mission objective outcomes.
+   *
+   * These exist as CUES rather than being inferred from the HUD feed, because
+   * inferring them from feed prose is exactly the bug the VO budget pass
+   * removed: keyword-matching announcement text fired a nitro ignition on the
+   * flavour line "Turbo lit." and detonated a vehicle explosion on any story
+   * beat containing the word "wreck". An objective being won or lost is real
+   * state the mission runtime already knows; it should say so directly.
+   */
+  | "objective-won"
+  | "objective-lost";
 
 export interface AudioCue {
   kind: AudioCueKind;

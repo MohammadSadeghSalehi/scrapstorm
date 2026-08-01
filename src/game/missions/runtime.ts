@@ -20,6 +20,7 @@ import {
 import { resetAiDirective, setAiDirective, type RivalProfile } from "../ai";
 import { getTrackLength, setActiveTrack } from "../track";
 import { EVENT_LINES, pickLine, rivalBark } from "../story";
+import { emitAudioCue } from "../audio/cues";
 import {
   DEFAULT_MODIFIERS,
   type MissionDef,
@@ -648,6 +649,7 @@ export function stepMission(
    * behind the HUD, and the run being over without the player knowing why, is
    * the single worst thing this layer can do to someone.
    */
+  const cuePlayer = findPlayer(snap);
   run.objectives.forEach((st, i) => {
     const was = b.prevStatus[i];
     if (was === st.status) return;
@@ -659,11 +661,37 @@ export function stepMission(
         : `${st.label.toUpperCase()} — FAILED`;
       run.announcements.push(line);
       effects.push({ kind: "announce", message: line, event: "wreck" });
+      // Positional at the player: an objective outcome is about them, so it
+      // should not pan to wherever the triggering car happened to be.
+      if (cuePlayer)
+        emitAudioCue(
+          "objective-lost",
+          cuePlayer.x,
+          // MissionVehicleView is deliberately narrow and carries no y; a
+          // fixed cabin height is right for a cue that is about the player
+          // rather than about a point in the world.
+          1.0,
+          cuePlayer.z,
+          st.optional ? 0.7 : 1,
+          true,
+        );
       b.radioAt = snap.raceTime;
     } else if (st.status === "met" && was === "pending") {
       const line = `Objective — ${st.label}`;
       run.announcements.push(line);
       effects.push({ kind: "announce", message: line, event: "pickup" });
+      if (cuePlayer)
+        emitAudioCue(
+          "objective-won",
+          cuePlayer.x,
+          // MissionVehicleView is deliberately narrow and carries no y; a
+          // fixed cabin height is right for a cue that is about the player
+          // rather than about a point in the world.
+          1.0,
+          cuePlayer.z,
+          st.optional ? 0.7 : 1,
+          true,
+        );
       b.radioAt = snap.raceTime;
     }
   });
