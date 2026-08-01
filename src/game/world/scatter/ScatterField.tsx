@@ -21,6 +21,7 @@ import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { getTrackEpoch } from "../../track";
 import { qualityManager } from "../quality";
+import { getActiveEnvironment } from "../environments";
 import { clonePbrPack, isPbrLibraryReady } from "../webgl2/textureLibrary";
 import { getMaxAnisotropy } from "../webgl2/configure";
 import { buildScatterFields } from "./fields";
@@ -32,12 +33,15 @@ function makeMaterials() {
   const q = qualityManager.get();
   const aniso = Math.min(getMaxAnisotropy(), q.anisotropy || 4);
   const ready = isPbrLibraryReady();
+  const env = getActiveEnvironment().scatter;
 
   // Cloned packs share their Source with the already-resident originals, so
-  // this is a new sampler configuration rather than a second upload.
-  const rockPack = ready ? clonePbrPack("rock", 1, 1) : null;
-  const rustPack = ready ? clonePbrPack("rust", 1.4, 1.4) : null;
-  for (const t of [rockPack?.map, rockPack?.normalMap, rustPack?.map]) {
+  // this is a new sampler configuration rather than a second upload — which is
+  // also why letting the environment pick a different pack per circuit costs
+  // nothing beyond the one upload that pack already pays for elsewhere.
+  const rockPack = ready ? clonePbrPack(env.rockPack, 1, 1) : null;
+  const driftPack = ready ? clonePbrPack(env.driftPack, 1.4, 1.4) : null;
+  for (const t of [rockPack?.map, rockPack?.normalMap, driftPack?.map]) {
     if (t) {
       t.anisotropy = aniso;
       t.needsUpdate = true;
@@ -50,7 +54,7 @@ function makeMaterials() {
     // few dozen pixels each across a couple of thousand instances, and the
     // extra fetch is the wrong place to spend fill rate below that tier.
     normalMap: q.tier === "high" ? (rockPack?.normalMap ?? null) : null,
-    color: "#97815f",
+    color: env.rock.color,
     vertexColors: true,
     roughness: 0.95,
     metalness: 0.02,
@@ -58,7 +62,7 @@ function makeMaterials() {
   });
 
   const scrub = new THREE.MeshStandardMaterial({
-    color: "#c2a870",
+    color: env.scrub.color,
     vertexColors: true,
     roughness: 0.97,
     metalness: 0,
@@ -69,8 +73,8 @@ function makeMaterials() {
   });
 
   const drift = new THREE.MeshStandardMaterial({
-    map: rustPack?.map ?? null,
-    color: "#9d8a70",
+    map: driftPack?.map ?? null,
+    color: env.drift.color,
     vertexColors: true,
     roughness: 0.74,
     metalness: 0.28,
@@ -134,26 +138,33 @@ export function ScatterField() {
     return built.dispose;
   }, [built]);
 
+  /*
+   * An empty layer is not mounted at all.
+   *
+   * An environment can set a layer's density to 0 — nothing grows in a slag pit
+   * — and an InstancedMesh with a count of zero is still an object in the
+   * graph, still traversed, still culled, still a draw call's worth of state
+   * setup for nothing.
+   */
+  const layers: [ScatterLayerData, TierScale, TierScale][] = [
+    [built.layers[0]!, ROCK_DENSITY, WIDE_RANGE],
+    [built.layers[1]!, SCRUB_DENSITY, NEAR_RANGE],
+    [built.layers[2]!, DRIFT_DENSITY, NEAR_RANGE],
+  ];
+
   return (
     <group>
-      <ScatterLayer
-        data={built.layers[0]!}
-        density={ROCK_DENSITY}
-        range={WIDE_RANGE}
-        phase={0}
-      />
-      <ScatterLayer
-        data={built.layers[1]!}
-        density={SCRUB_DENSITY}
-        range={NEAR_RANGE}
-        phase={1}
-      />
-      <ScatterLayer
-        data={built.layers[2]!}
-        density={DRIFT_DENSITY}
-        range={NEAR_RANGE}
-        phase={2}
-      />
+      {layers.map(([data, density, range], i) =>
+        data.total > 0 ? (
+          <ScatterLayer
+            key={i}
+            data={data}
+            density={density}
+            range={range}
+            phase={i}
+          />
+        ) : null,
+      )}
     </group>
   );
 }

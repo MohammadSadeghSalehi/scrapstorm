@@ -1,14 +1,22 @@
 /**
- * Procedural desert heightmap with PBR sand.
- * Build is optimized: coarse track index + moderate segments.
+ * Procedural ground: one heightfield, six palettes.
+ *
+ * The SHAPE of the ground is the circuit's (dunes, rock mask, the carved road
+ * corridor) and does not vary by environment — physics drives on it and the
+ * height curve is shared with `duneProfile`. What varies is what it is MADE OF:
+ * the elevation ramp, which material tiles over it, how rough and how reflective
+ * it is, and whether the exposed-material colour belongs on the slopes or on the
+ * flats. All of that comes from `getActiveEnvironment().terrain`.
  */
 import { useMemo } from "react";
 import * as THREE from "three";
-import { TRACK_SAMPLES, duneProfile, getSurfaceAt } from "../track";
+import { TRACK_SAMPLES, duneProfile, getSurfaceAt, getTrackEpoch } from "../track";
 import { sampleDuneField, sampleRockMask } from "./terrainHeight";
 import { qualityManager } from "./quality";
 import { attachGpuDetail } from "./shaders/gpuDetail";
 import { getMaxAnisotropy } from "./webgl2/configure";
+import { clonePbrPack, preloadPbrLibrary } from "./webgl2/textureLibrary";
+import { getActiveEnvironment } from "./environments";
 
 function trackCenter() {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
@@ -217,6 +225,9 @@ export function meshHeight(field: TrackField, x: number, z: number): number {
 
 export function HeightmapTerrain() {
   const tier = qualityManager.get().tier;
+  const epoch = getTrackEpoch();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const env = useMemo(() => getActiveEnvironment(), [epoch]);
   /**
    * Sampling resolution of the height field.
    *
@@ -229,6 +240,7 @@ export function HeightmapTerrain() {
   const segs = tier === "low" ? 128 : tier === "medium" ? 256 : 384;
 
   const { geometry, material } = useMemo(() => {
+    const t = env.terrain;
     const { cx, cz, span } = trackCenter();
     const field = buildTrackField();
     const geo = new THREE.PlaneGeometry(span, span, segs, segs);
@@ -236,11 +248,11 @@ export function HeightmapTerrain() {
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
 
-    const sandLo = new THREE.Color("#c49458");
-    const sandMid = new THREE.Color("#e8bc78");
-    const sandHi = new THREE.Color("#f8e8c0");
-    const rock = new THREE.Color("#5a4a3c");
-    const shadow = new THREE.Color("#8a6040");
+    const cHollow = new THREE.Color(t.hollow);
+    const cLow = new THREE.Color(t.low);
+    const cMid = new THREE.Color(t.mid);
+    const cHigh = new THREE.Color(t.high);
+    const cFace = new THREE.Color(t.face);
 
     let minY = Infinity;
     let maxY = -Infinity;
@@ -273,23 +285,39 @@ export function HeightmapTerrain() {
       // normal.y == 1 on flat ground, falling toward 0 as the face steepens.
       const slope = Math.min(1, Math.max(0, 1 - nrm.getY(i)));
 
-      if (elev < 0.25) tmp.copy(shadow).lerp(sandLo, elev / 0.25);
-      else if (elev < 0.55) tmp.copy(sandLo).lerp(sandMid, (elev - 0.25) / 0.3);
-      else tmp.copy(sandMid).lerp(sandHi, (elev - 0.55) / 0.45);
+      if (elev < 0.25) tmp.copy(cHollow).lerp(cLow, elev / 0.25);
+      else if (elev < 0.55) tmp.copy(cLow).lerp(cMid, (elev - 0.25) / 0.3);
+      else tmp.copy(cMid).lerp(cHigh, (elev - 0.55) / 0.45);
 
-      // Steep faces go to rock; the rock mask only biases where, not whether.
-      const rockAmt = Math.min(1, slope * 2.4 * (0.55 + rockM * 0.9));
-      if (rockAmt > 0.02) tmp.lerp(rock, rockAmt);
+      /*
+       * Where the ground is a different MATERIAL rather than a different height.
+       *
+       * The desert rule (faceOnFlats false) is that sand settles on flats and
+       * wind strips the steep faces back to rock, so the exposed colour keys off
+       * slope. A salt pan inverts it exactly: the crust forms in the flats where
+       * the water stood, and the dark material underneath shows on anything
+       * steep enough to shed it. Getting that backwards does not look subtly
+       * off — it makes a playa look like a dune field with a colour problem,
+       * which is why it is a flag on the environment and not a guess here.
+       *
+       * The rock mask only biases WHERE, never WHETHER, in both directions: it
+       * is what keeps the crust patchy instead of painting the whole plain
+       * white.
+       */
+      const facing = t.faceOnFlats ? Math.max(0, 1 - slope * 3.4) : slope;
+      const faceAmt = Math.min(1, facing * t.faceStrength * (0.55 + rockM * 0.9));
+      if (faceAmt > 0.02) tmp.lerp(cFace, faceAmt);
       colors[i * 3] = tmp.r;
       colors[i * 3 + 1] = tmp.g;
       colors[i * 3 + 2] = tmp.b;
     }
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
-    // One texture tile per ~7m. The old 0.06 scale combined with a repeat of
-    // 32 put a full tile inside every half metre, so the sand averaged out to
-    // flat colour at any normal viewing distance.
-    const UV_PER_METRE = 1 / 7;
+    // Tile size is per-environment: ~7m for wind-rippled sand, ~4.5m for the
+    // fine grit on the playa, ~5m for broken slag. The old 0.06 scale combined
+    // with a repeat of 32 put a full tile inside every half metre, so the
+    // ground averaged out to flat colour at any normal viewing distance.
+    const UV_PER_METRE = t.uvPerMetre;
     const uv = geo.attributes.uv as THREE.BufferAttribute;
     for (let i = 0; i < uv.count; i++) {
       uv.setXY(
@@ -305,20 +333,27 @@ export function HeightmapTerrain() {
     // Prefer solid+vertexColor first; maps enhance when loaded
     const q = qualityManager.get();
     const mat = new THREE.MeshStandardMaterial({
-      color: "#f5dcac",
+      color: t.base,
       vertexColors: true,
       // Dry sand is not a mirror, but at 0.88 the dunes had no terminator
       // sheen at all — they lit like flat paper. 0.82 is enough for the crests
-      // to catch the low sun without turning the desert glossy.
-      roughness: 0.82,
-      metalness: 0.02,
-      envMapIntensity: 1.05,
-      // Set here, not only in the normalMap callback, so the value is correct
-      // no matter which map resolves first. Nudged up because at 7m-per-tile
-      // the map's ripple frequency is low and 1.2 barely registered.
-      normalScale: new THREE.Vector2(1.5, 1.5),
-      emissive: new THREE.Color("#7a5430"),
-      emissiveIntensity: 0.0,
+      // to catch the low sun without turning the desert glossy; slag and
+      // hardpan sit higher still.
+      roughness: t.roughness,
+      metalness: t.metalness,
+      envMapIntensity: t.envMapIntensity,
+      // Set here, not only in the map callback, so the value is correct no
+      // matter which map resolves first.
+      normalScale: new THREE.Vector2(t.normalScale, t.normalScale),
+      /*
+       * Ground that is itself hot (cooling slag, a bowl that has not finished
+       * burning). Emissive is NOT multiplied by vertex colour in three.js, so
+       * this lifts the entire surface uniformly — it reads as the ground
+       * refusing to go fully black rather than as glowing veins, and anything
+       * above ~0.2 stops reading as heat and starts reading as fog.
+       */
+      emissive: new THREE.Color(t.emissive),
+      emissiveIntensity: t.emissiveIntensity,
     });
 
     /**
@@ -349,34 +384,54 @@ export function HeightmapTerrain() {
       attachGpuDetail(mat, { kind: "sand", detailScale: 16, quality: q });
     }
 
-    // Async PBR maps — don't block mesh spawn. Tiling comes entirely from the
-    // baked UVs above, so repeat stays 1:1 here.
-    const loader = new THREE.TextureLoader();
-    const apply = (url: string, key: "map" | "normalMap" | "roughnessMap" | "aoMap", srgb = false) => {
-      loader.load(url, (tex) => {
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        // The UVs run to hundreds of metres, so grazing-angle sampling is the
-        // whole game here — this is the one place anisotropy actually buys
-        // sharpness on the terrain. Read the cap inside the callback: the
-        // renderer may not have been configured yet when the mesh was built,
-        // and getMaxAnisotropy() still reports its conservative default then.
-        tex.anisotropy = Math.min(
-          getMaxAnisotropy(),
-          qualityManager.get().anisotropy || 8,
-        );
-        if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
-        (mat as any)[key] = tex;
-        if (key === "aoMap") mat.aoMapIntensity = 1.1;
-        mat.needsUpdate = true;
-      });
-    };
-    apply("/assets/textures/sand/diff.jpg", "map", true);
-    apply("/assets/textures/sand/nor_gl.jpg", "normalMap");
-    apply("/assets/textures/sand/rough.jpg", "roughnessMap");
-    apply("/assets/textures/sand/ao.jpg", "aoMap");
+    /*
+     * Maps come from the shared PBR library, not from a private TextureLoader.
+     *
+     * This used to fetch /assets/textures/sand/* directly, which meant the
+     * terrain uploaded a SECOND copy of a pack the library already had resident
+     * — and, more to the point, it hardcoded which pack. It also cannot survive
+     * an environment choosing `rock` or `dirt`, because those packs ship their
+     * normal map as nor.jpg while sand ships nor_gl.jpg; the direct URL would
+     * 404 on exactly the circuits that most needed a different ground.
+     *
+     * Awaiting the preload promise rather than testing isPbrLibraryReady() is
+     * load-bearing: that predicate goes true once the four CRITICAL packs land,
+     * and `rock` and `gravel` are not among them. Testing it would silently
+     * leave the Foundry and the Mile untextured — the failure mode that already
+     * caught the ridge material out once.
+     *
+     * Tiling comes entirely from the baked world-space UVs above, so the clone
+     * keeps a 1:1 repeat.
+     */
+    void preloadPbrLibrary().then(() => {
+      const pack = clonePbrPack(t.pack, 1, 1);
+      if (!pack) return;
+      // The UVs run to hundreds of metres, so grazing-angle sampling is the
+      // whole game here — this is the one place anisotropy actually buys
+      // sharpness on the terrain. Read the cap now rather than at build time:
+      // the renderer may not have been configured when the mesh was built, and
+      // getMaxAnisotropy() still reports its conservative default then.
+      const aniso = Math.min(
+        getMaxAnisotropy(),
+        qualityManager.get().anisotropy || 8,
+      );
+      for (const tex of [pack.map, pack.normalMap, pack.roughnessMap, pack.aoMap]) {
+        if (!tex) continue;
+        tex.anisotropy = aniso;
+        tex.needsUpdate = true;
+      }
+      mat.map = pack.map;
+      mat.normalMap = pack.normalMap;
+      mat.roughnessMap = pack.roughnessMap;
+      if (pack.aoMap) {
+        mat.aoMap = pack.aoMap;
+        mat.aoMapIntensity = 1.1;
+      }
+      mat.needsUpdate = true;
+    });
 
     return { geometry: geo, material: mat };
-  }, [segs, tier]);
+  }, [segs, tier, env]);
 
   return (
     <mesh geometry={geometry} material={material} receiveShadow frustumCulled={false} />

@@ -56,6 +56,7 @@ import { getRivalGhost, subscribeRivalGhost } from "../ghostDuel";
 import { FRAME } from "./framePriority";
 import { PhysicsPropsView } from "./PhysicsPropsView";
 import { SceneryDecor } from "./SceneryDecor";
+import { getActiveEnvironment } from "./environments";
 import { VfxScene } from "./vfx/VfxScene";
 import { preloadPhRaceProps, preloadSceneryModels } from "./polyHavenAssets";
 
@@ -1199,8 +1200,18 @@ function CascadedSun({ q }: { q: QualitySettings }) {
 
 function SunLight({ sim, q }: { sim: GameSimulation; q: QualitySettings }) {
   const ref = useRef<THREE.DirectionalLight>(null);
-  // Direction only — magnitude just needs to clear the shadow-camera near plane.
-  const dir = useMemo(() => new THREE.Vector3(55, 70, -25), []);
+  /*
+   * Direction only — magnitude just needs to clear the shadow-camera near
+   * plane. Note this is the KEY LIGHT direction, deliberately not the same as
+   * the drawn sun disc: the disc has to clear the ridgeline, while the key
+   * light's elevation sets shadow length and has to stay inside the 55m
+   * cascade. The environments keep their azimuths aligned so shadows still
+   * point away from the sun you can see.
+   */
+  const dir = useMemo(
+    () => new THREE.Vector3(...getActiveEnvironment().light.dir),
+    [],
+  );
 
   useFrame(() => {
     const light = ref.current;
@@ -1219,9 +1230,9 @@ function SunLight({ sim, q }: { sim: GameSimulation; q: QualitySettings }) {
   return (
     <directionalLight
       ref={ref}
-      position={[55, 70, -25]}
-      intensity={3.0}
-      color="#ffe8c8"
+      position={getActiveEnvironment().light.dir}
+      intensity={getActiveEnvironment().light.intensity}
+      color={getActiveEnvironment().light.color}
       castShadow={q.shadowEnabled}
       shadow-mapSize-width={q.shadowMapSize}
       shadow-mapSize-height={q.shadowMapSize}
@@ -1263,15 +1274,29 @@ function RaceWorld({
     return () => window.clearTimeout(t);
   }, []);
 
-  const fogNear = 120;
-  const fogFar = q.tier === "low" ? 480 : 720;
+  /*
+   * One read per render of the world tree, not per frame — WorldContent is
+   * keyed by track, so this resolves once per circuit.
+   */
+  const env = getActiveEnvironment();
+  const fogNear = env.fog.near;
+  const fogFar = q.tier === "low" ? env.fog.farLow : env.fog.far;
 
   return (
     <>
-      <color attach="background" args={["#5a7a9e"]} />
-      <fog attach="fog" args={["#c8b090", fogNear, fogFar]} />
-      <ambientLight intensity={0.62} color="#f4e4c8" />
-      <hemisphereLight args={["#ffc898", "#2a1810", 1.1]} />
+      <color attach="background" args={[env.sky.background]} />
+      <fog attach="fog" args={[env.fog.color, fogNear, fogFar]} />
+      <ambientLight
+        intensity={env.light.ambient.intensity}
+        color={env.light.ambient.color}
+      />
+      <hemisphereLight
+        args={[
+          env.light.hemisphere.sky,
+          env.light.hemisphere.ground,
+          env.light.hemisphere.intensity,
+        ]}
+      />
       {/*
         REVERTED to the single following cascade.
 
@@ -1294,9 +1319,17 @@ function RaceWorld({
       <SunLight sim={sim} q={q} />
       <ShaderWarmup />
       <AdaptiveResolution />
-      <directionalLight position={[-40, 22, 40]} intensity={0.65} color="#88b8e8" />
+      <directionalLight
+        position={env.light.fill.dir}
+        intensity={env.light.fill.intensity}
+        color={env.light.fill.color}
+      />
       {q.tier !== "low" && (
-        <directionalLight position={[20, 12, 30]} intensity={0.3} color="#ffd0a0" />
+        <directionalLight
+          position={env.light.rim.dir}
+          intensity={env.light.rim.intensity}
+          color={env.light.rim.color}
+        />
       )}
       {q.tier !== "low" && <GpuDetailDriver />}
       <TerrainCullDriver />
@@ -1306,7 +1339,7 @@ function RaceWorld({
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.25, 0]} receiveShadow>
         <planeGeometry args={[900, 900]} />
         <meshStandardMaterial
-          color="#c8a070"
+          color={env.surfaces.sand}
           roughness={1}
           metalness={0}
           emissive="#8a6038"

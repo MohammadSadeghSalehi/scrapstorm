@@ -7,6 +7,7 @@ import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 import { qualityManager } from "../quality";
+import { getActiveEnvironment } from "../environments";
 
 function hdriUrl(): string {
   const tier = qualityManager.get().tier;
@@ -82,7 +83,16 @@ export function EnvLighting() {
     if (!qualityManager.get().hdriEnv) {
       const grad = makeGradientEnv(gl);
       scene.environment = grad;
-      scene.environmentIntensity = 0.55;
+      /*
+       * Scaled by the circuit's envIntensity — the single most load-bearing
+       * line in the environment work. The image-based light is a DAYLIGHT sky,
+       * and at full strength it re-lights a furnace-lit night pit as an
+       * afternoon: every key-light, fog and grade change is overpowered by an
+       * ambient term that never changed. A night circuit sets this near zero
+       * and gets its light from its own rig instead.
+       */
+      scene.environmentIntensity =
+        0.55 * getActiveEnvironment().light.envIntensity;
       return () => {
         if (scene.environment === grad) scene.environment = null;
         grad.dispose();
@@ -109,8 +119,10 @@ export function EnvLighting() {
           envTex = rt.texture;
           scene.environment = envTex;
           const tier = qualityManager.get().tier;
+          // Same reasoning as the gradient path above.
           scene.environmentIntensity =
-            tier === "high" ? 1.1 : tier === "medium" ? 0.85 : 0.6;
+            (tier === "high" ? 1.1 : tier === "medium" ? 0.85 : 0.6) *
+            getActiveEnvironment().light.envIntensity;
           texture.dispose();
         },
         undefined,

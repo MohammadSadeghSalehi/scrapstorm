@@ -21,12 +21,20 @@ import { getTrackEpoch } from "../../track";
 import { clonePbrPack, isPbrLibraryReady } from "../webgl2/textureLibrary";
 import { getMaxAnisotropy } from "../webgl2/configure";
 import { qualityManager } from "../quality";
+import { getActiveEnvironment } from "../environments";
 import { buildDriftRibbon } from "./driftRibbon";
 import { reportDensity, triCount } from "./stats";
 
 function buildMaterial(): THREE.MeshStandardMaterial {
   const q = qualityManager.get();
-  const pack = isPbrLibraryReady() ? clonePbrPack("sand", 1, 1) : null;
+  const env = getActiveEnvironment();
+  /*
+   * The drift wears the same tiled pack as the terrain it is drifting off, not
+   * a fixed sand pack. That is the whole job of this strip: it is the visual
+   * join between the desert and the tarmac, and a sand-textured join on a slag
+   * pit is a strip of desert laid over a slag pit.
+   */
+  const pack = isPbrLibraryReady() ? clonePbrPack(env.terrain.pack, 1, 1) : null;
   const aniso = Math.min(getMaxAnisotropy(), q.anisotropy || 4);
   for (const t of [pack?.map, pack?.normalMap]) {
     if (t) {
@@ -37,7 +45,7 @@ function buildMaterial(): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     map: pack?.map ?? null,
     normalMap: q.tier === "low" ? null : (pack?.normalMap ?? null),
-    color: "#d8b585",
+    color: env.surfaces.vergeDrift,
     vertexColors: true,
     transparent: true,
     // A decal must not write depth or it starts occluding the cars that drive

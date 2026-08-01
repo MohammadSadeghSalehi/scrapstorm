@@ -15,9 +15,11 @@ import type { EffectComposer as EffectComposerImpl } from "postprocessing";
 import { BlendFunction } from "postprocessing";
 import * as THREE from "three";
 import { qualityManager } from "./quality";
-import { GradeEffect } from "./GradeEffect";
+import { GradeEffect, type GradeOptions } from "./GradeEffect";
 import { MotionBlurEffect } from "./MotionBlurEffect";
 import { FrameProfiler } from "./FrameProfiler";
+import { getActiveEnvironment } from "./environments";
+import { getTrackEpoch } from "../track";
 
 /**
  * The grade replaces the HueSaturation + BrightnessContrast pair it supersedes:
@@ -26,12 +28,18 @@ import { FrameProfiler } from "./FrameProfiler";
  * equally. The CDL + split-tone gives separate control over shadows and
  * highlights, which is where the look actually comes from.
  *
- * One instance, memoised — rebuilding an Effect recompiles the composer shader.
+ * One instance, memoised on the PRESET — rebuilding an Effect recompiles the
+ * composer shader, so this must not be keyed on anything that changes per
+ * frame. It is keyed on the grade object identity, which is a module-level
+ * singleton per circuit, so it rebuilds exactly once per track change and never
+ * during a race.
  */
-const Grade = forwardRef<GradeEffect>(function Grade(_props, ref) {
-  const effect = useMemo(() => new GradeEffect(), []);
-  return <primitive ref={ref} object={effect} dispose={null} />;
-});
+const Grade = forwardRef<GradeEffect, { options: Required<GradeOptions> }>(
+  function Grade({ options }, ref) {
+    const effect = useMemo(() => new GradeEffect(options), [options]);
+    return <primitive ref={ref} object={effect} dispose={null} />;
+  },
+);
 
 /**
  * Kept mounted at every non-low tier even when the strength is zero: adding or
@@ -63,6 +71,9 @@ export function PostFX({
   const high = q.tier === "high";
   const low = q.tier === "low";
   const sn = Math.min(1, Math.max(0, speedNorm));
+  const epoch = getTrackEpoch();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const post = useMemo(() => getActiveEnvironment().post, [epoch]);
 
   const composer = useRef<EffectComposerImpl>(null);
 
@@ -85,26 +96,43 @@ export function PostFX({
     (hit ? 0.012 * (0.3 + 0.7 * ramp) : 0);
   const blurSwirl = drifting ? 0.22 * ramp : 0;
 
-  const bloomIntensity = low
-    ? boost
-      ? 0.72
-      : 0.42 + sn * 0.14
-    : high
+  /*
+   * Bloom and vignette take a per-environment BIAS, not a per-environment
+   * value.
+   *
+   * The speed, boost and hit terms are gameplay feedback and have to behave
+   * identically everywhere — a driver learns what a boost looks like once. What
+   * differs by circuit is the baseline: a smelter with fire in frame wants more
+   * bloom than a dust storm, where nothing blooms because nothing is bright
+   * enough to. Adding an offset preserves the gameplay response and moves the
+   * floor, which is the only part that is an art decision.
+   */
+  const bloomIntensity = Math.max(
+    0,
+    (low
       ? boost
-        ? 1.45
-        : 0.82 + sn * 0.28 + (drifting ? 0.15 : 0)
-      : boost
-        ? 1.05
-        : 0.6 + sn * 0.2;
+        ? 0.72
+        : 0.42 + sn * 0.14
+      : high
+        ? boost
+          ? 1.45
+          : 0.82 + sn * 0.28 + (drifting ? 0.15 : 0)
+        : boost
+          ? 1.05
+          : 0.6 + sn * 0.2) + post.bloomBias,
+  );
 
   const threshold = low ? 0.7 : high ? (boost ? 0.42 : 0.5) : 0.58;
-  const vignette = high
-    ? hit
-      ? 0.48
-      : 0.18 + sn * 0.12
-    : hit
-      ? 0.38
-      : 0.14 + sn * 0.08;
+  const vignette = Math.max(
+    0,
+    (high
+      ? hit
+        ? 0.48
+        : 0.18 + sn * 0.12
+      : hit
+        ? 0.38
+        : 0.14 + sn * 0.08) + post.vignetteBias,
+  );
 
   return (
     <EffectComposer
@@ -184,7 +212,7 @@ export function PostFX({
       ) : (
         <></>
       )}
-      <Grade />
+      <Grade options={post.grade} />
       <SMAA />
     </EffectComposer>
   );

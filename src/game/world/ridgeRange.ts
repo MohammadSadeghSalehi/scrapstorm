@@ -53,6 +53,35 @@ export type RangeOpts = {
   sharpness?: number;
   /** Metres of world per texture tile, vertically. 0 disables the detail map. */
   tileM?: number;
+  /**
+   * Noise octaves. 6 is the desert default.
+   *
+   * This is the difference between a mountain and a spoil heap, and it is not
+   * the same lever as `sharpness`. Sharpness decides how CREASED a landform is;
+   * octaves decide how many SCALES of feature it has. Erosion is what puts
+   * detail at every scale, so a landform that was never eroded — a tip, a slag
+   * heap, anything poured rather than weathered — has three or four octaves and
+   * looks wrong with six no matter how the creasing is tuned.
+   */
+  octaves?: number;
+  /**
+   * Strength of the mesh-smoothing pass, 0..1. 0.32 is the desert default.
+   *
+   * Raise it for rounded, tipped landforms; lower it for crags. Note this
+   * relaxes the sampled GRID, not the noise: it can take points off summits
+   * that no amount of octave tuning will, because a summit one quad wide is a
+   * spike however gentle the function underneath it.
+   */
+  relax?: number;
+  /**
+   * Sedimentary band thickness in metres. 7.5 is the desert default; 0 turns
+   * strata off entirely.
+   *
+   * Off is the right answer for anything that is spoil rather than bedrock —
+   * there are no bedding planes in a heap of waste, and strata on one is the
+   * clearest possible tell that it is the desert range wearing a new palette.
+   */
+  bandHeight?: number;
 };
 
 /**
@@ -65,7 +94,12 @@ export type RangeOpts = {
  * erosion does to a real range. Plain fBm gives rolling dunes — correct for the
  * desert floor, wrong for a mountain.
  */
-function ridgeField(x: number, z: number, seed: number): number {
+function ridgeField(
+  x: number,
+  z: number,
+  seed: number,
+  octaves: number,
+): number {
   // Domain warp first: without it the ridges run in visibly straight lines
   // along the noise lattice axes.
   const wx = x + perlin2(x * 0.5 + seed * 3.1, z * 0.5) * 1.3;
@@ -76,7 +110,7 @@ function ridgeField(x: number, z: number, seed: number): number {
   let amp = 1;
   let freq = 1;
   let prev = 1;
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < octaves; i++) {
     let n = 1 - Math.abs(perlin2(wx * freq + seed * 17.3, wz * freq - seed * 9.1));
     // n*n creases the fold; mixing back toward the unsquared value softens it.
     // At full strength every octave adds another hard crest and the range ends
@@ -157,6 +191,8 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
   const haze = new THREE.Color(o.haze);
   const tmp = new THREE.Color();
   const sharp = o.sharpness ?? 0.55;
+  const octaves = Math.max(1, Math.min(8, Math.round(o.octaves ?? 6)));
+  const bandHeight = o.bandHeight ?? 7.5;
 
   // Pass 1: sample the field into a grid so it can be relaxed before it
   // becomes geometry.
@@ -169,14 +205,16 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
         (Math.cos(ang) * R) / o.featureSize,
         (Math.sin(ang) * R) / o.featureSize,
         o.seed,
+        octaves,
       );
       // Exponent > 1 pushes mass into the valleys and leaves isolated summits;
       // 1.7 was steep enough that the flanks fell away almost vertically.
       hN[r * cols + a] = Math.pow(f, 1 + sharp);
     }
   }
-  // 0.55 rounded the summits so far they read as sand dunes rather than rock.
-  relaxHeights(hN, cols, rows, 0.32);
+  // 0.55 rounded the summits so far they read as sand dunes rather than rock —
+  // which is why a spoil heap asks for exactly that.
+  relaxHeights(hN, cols, rows, Math.min(1, Math.max(0, o.relax ?? 0.32)));
 
   // Pass 2: place vertices from the relaxed field.
   for (let r = 0; r < rows; r++) {
@@ -247,14 +285,16 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
        * smoothed: real bedding planes are abrupt: it is the sharp edge between
        * layers that the eye reads as rock rather than as dirt.
        */
-      const bandWarp = perlin2(x / 140, z / 140) * 3.2;
-      const bandY = (o.baseY + h + bandWarp) / 7.5;
-      const band = Math.floor(bandY);
-      // Deterministic per-band tone so a band keeps its colour all the way
-      // round the ring instead of shimmering between neighbours.
-      const bandTone = ((Math.sin(band * 12.9898) * 43758.5453) % 1 + 1) % 1;
-      const bandMix = 0.16 + bandTone * 0.2;
-      tmp.lerp(bandTone > 0.5 ? high : low, bandMix * 0.5);
+      if (bandHeight > 0) {
+        const bandWarp = perlin2(x / 140, z / 140) * 3.2;
+        const bandY = (o.baseY + h + bandWarp) / bandHeight;
+        const band = Math.floor(bandY);
+        // Deterministic per-band tone so a band keeps its colour all the way
+        // round the ring instead of shimmering between neighbours.
+        const bandTone = ((Math.sin(band * 12.9898) * 43758.5453) % 1 + 1) % 1;
+        const bandMix = 0.16 + bandTone * 0.2;
+        tmp.lerp(bandTone > 0.5 ? high : low, bandMix * 0.5);
+      }
 
       /*
        * Large-scale mineral variation. Without it the whole range is one

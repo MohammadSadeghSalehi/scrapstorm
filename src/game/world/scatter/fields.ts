@@ -9,6 +9,8 @@
 import * as THREE from "three";
 import { driftGeometry, rockGeometry, scrubGeometry } from "./geometry";
 import { scatterPoints, type ScatterPoint } from "./placement";
+import { getActiveEnvironment } from "../environments";
+import type { ScatterLayerDef, Vec3 } from "../environments";
 import type { ScatterItem } from "./layerData";
 
 const EULER = new THREE.Euler();
@@ -22,16 +24,44 @@ const S = new THREE.Vector3();
  * Deliberately not `THREE.Color.lerp`: these multiply the material colour
  * rather than replacing it, and values above 1 are wanted at the bright end.
  */
-function tint(
-  lo: [number, number, number],
-  hi: [number, number, number],
-  t: number,
-): THREE.Color {
+function tint(lo: Vec3, hi: Vec3, t: number): THREE.Color {
   return new THREE.Color(
     lo[0] + (hi[0] - lo[0]) * t,
     lo[1] + (hi[1] - lo[1]) * t,
     lo[2] + (hi[2] - lo[2]) * t,
   );
+}
+
+/**
+ * Per-instance tint from a layer's environment ramp, or nothing.
+ *
+ * `undefined` is not the same as a [1,1,1] ramp: `packLayer` only allocates the
+ * per-instance colour buffer — and with it the instanced colour attribute the
+ * shader then has to read — if any item in the layer carries a colour at all.
+ * A layer that does not want variation should cost nothing for not wanting it.
+ */
+function rampTint(layer: ScatterLayerDef, t: number): THREE.Color | undefined {
+  if (!layer.lo || !layer.hi) return undefined;
+  return tint(layer.lo, layer.hi, t);
+}
+
+/**
+ * Candidates per track sample, after the environment's density multiplier.
+ *
+ * Density is applied to the CANDIDATE COUNT rather than as a prefix of the
+ * finished list, because these presets go above 1 as well as below it — a
+ * scrapyard genuinely wants more wind-blown scrap than the desert does, and you
+ * cannot take a 2.2x prefix of a list. Rounding to a whole candidate count is
+ * fine: the field is rejection-sampled anyway, so the realised density is
+ * approximate by construction.
+ *
+ * Returns 0 for a density of 0, which drops the layer entirely. That is
+ * deliberate and it is not the same as a very small density: a handful of
+ * surviving desert tufts in a slag pit reads as a bug, not as sparse planting.
+ */
+function perSampleFor(base: number, density: number): number {
+  if (density <= 0) return 0;
+  return Math.max(1, Math.round(base * density));
 }
 
 /**
@@ -117,6 +147,18 @@ export type ScatterFields = {
 };
 
 export function buildScatterFields(): ScatterFields {
+  /*
+   * Density and tint come from the environment; PLACEMENT does not.
+   *
+   * The clearance rules in placement.ts are a safety property — nothing here
+   * has a collider, so anything overlapping drivable surface is something the
+   * player drives straight through — and an environment is an art decision. Art
+   * decisions do not get to move the band the field is allowed to occupy. All
+   * an environment can do is ask for more or fewer candidates inside it, and
+   * change what colour they are.
+   */
+  const env = getActiveEnvironment().scatter;
+
   const geometries = {
     rock: rockGeometry(),
     scrub: scrubGeometry(),
@@ -135,17 +177,17 @@ export function buildScatterFields(): ScatterFields {
    */
   const outcrops = scatterPoints({
     seed: 0x77c3a1,
-    perSample: 1,
+    perSample: perSampleFor(1, env.rock.density),
     near: 12,
     far: 128,
     radius: 2.0 * 0.9 * fpRock,
     bias: 0.85,
     jitter: 18,
-  }).slice(0, 120);
+  }).slice(0, Math.round(120 * env.rock.density));
 
   const gravel = scatterPoints({
     seed: 0x1a2b3c,
-    perSample: 5,
+    perSample: perSampleFor(5, env.rock.density),
     near: 0.6,
     far: 46,
     radius: 0.4 * 0.85 * fpRock,
@@ -163,7 +205,7 @@ export function buildScatterFields(): ScatterFields {
         sink: 0.34,
         tilt: 0.16,
         limit: 300,
-        color: tint([0.66, 0.62, 0.58], [1.06, 0.99, 0.88], p.c),
+        color: rampTint(env.rock, p.c),
       };
     }),
     ...instancesFrom(gravel, fpRock, (p) => {
@@ -177,7 +219,7 @@ export function buildScatterFields(): ScatterFields {
         sink: 0.3,
         tilt: 0.22,
         limit: 150,
-        color: tint([0.7, 0.66, 0.6], [1.08, 1.0, 0.9], p.c),
+        color: rampTint(env.rock, p.c),
       };
     }),
   ];
@@ -185,7 +227,7 @@ export function buildScatterFields(): ScatterFields {
   const scrub = instancesFrom(
     scatterPoints({
       seed: 0x33f1d0,
-      perSample: 8,
+      perSample: perSampleFor(8, env.scrub.density),
       near: 0.4,
       far: 34,
       radius: 0.32 * 0.8 * fpScrub,
@@ -203,7 +245,7 @@ export function buildScatterFields(): ScatterFields {
         sink: 0.08,
         tilt: 0.12,
         limit: 105,
-        color: tint([0.72, 0.78, 0.56], [1.05, 0.97, 0.72], p.c),
+        color: rampTint(env.scrub, p.c),
       };
     },
   );
@@ -211,7 +253,7 @@ export function buildScatterFields(): ScatterFields {
   const drift = instancesFrom(
     scatterPoints({
       seed: 0x5be271,
-      perSample: 2,
+      perSample: perSampleFor(2, env.drift.density),
       near: 0.5,
       far: 26,
       radius: 0.85 * fpDrift,
@@ -231,6 +273,7 @@ export function buildScatterFields(): ScatterFields {
         sink: 0.03,
         tilt: 0.1,
         limit: 140,
+        color: rampTint(env.drift, p.c),
       };
     },
   );

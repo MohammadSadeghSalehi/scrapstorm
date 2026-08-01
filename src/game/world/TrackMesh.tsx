@@ -20,6 +20,8 @@ import {
   type RoadBuildResult,
 } from "./culling";
 import { RoadsideFurniture, ScatterField, VergeDrift } from "./scatter";
+import { getActiveEnvironment } from "./environments";
+import type { SurfaceDef } from "./environments";
 
 /**
  * Metres of road covered by one tile of the asphalt / gravel packs.
@@ -56,7 +58,15 @@ function trackMetrics(samples: TrackSample[]): { length: number; width: number }
   };
 }
 
-function makeYardMaterial(): THREE.MeshStandardMaterial {
+/**
+ * Hazard-zone yard fill.
+ *
+ * Tinted per environment for the same reason as everything else here: the
+ * surfaces immediately beside the road are the largest continuous areas in the
+ * frame after the sky, and leaving them desert-tan under a night sky is the
+ * single most obvious way for a re-lit circuit to still read as the desert.
+ */
+function makeYardMaterial(surfaces: SurfaceDef): THREE.MeshStandardMaterial {
   const q = qualityManager.get();
   const aniso = Math.min(getMaxAnisotropy(), q.anisotropy || 8);
   if (isPbrLibraryReady()) {
@@ -74,7 +84,7 @@ function makeYardMaterial(): THREE.MeshStandardMaterial {
         normalMap: q.tier !== "low" ? rock.normalMap : null,
         aoMap: q.tier !== "low" ? rock.aoMap : null,
         aoMapIntensity: 1.05,
-        color: "#5a4834",
+        color: surfaces.yard,
         roughness: 0.92,
         metalness: 0.02,
         normalScale: new THREE.Vector2(0.95, 0.95),
@@ -88,7 +98,7 @@ function makeYardMaterial(): THREE.MeshStandardMaterial {
   }
   return createProcMaterial("dirt", {
     repeat: [0.04, 0.04],
-    color: "#3d3226",
+    color: surfaces.yard,
     normalScale: 0.45,
     ao: false,
     gpuDetail: true,
@@ -170,6 +180,8 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
   const tier = qualityManager.get().tier;
   const pbrKey = isPbrLibraryReady() ? "pbr" : "proc";
   const epoch = trackEpoch ?? getTrackEpoch();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const surfaces = useMemo(() => getActiveEnvironment().surfaces, [epoch]);
 
   const ribbon = useMemo(() => {
     const result = buildTrackRibbon(TRACK_SAMPLES.slice());
@@ -205,7 +217,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
         roughnessMap: asp.roughnessMap,
         aoMap: asp.aoMap,
         aoMapIntensity: 1.15,
-        color: "#5a564e",
+        color: surfaces.road,
         // Dry tarmac still has a specular lobe. At 0.82 the road was matte at
         // every sun angle; the roughness map now supplies the variation on top
         // of this, and attachRoadWear pulls the wheel grooves far lower still.
@@ -233,7 +245,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
     } else {
       road = createProcMaterial("asphalt", {
         repeat: [roadRepeatU, roadRepeatV],
-        color: "#4a4844",
+        color: surfaces.road,
         normalScale: 0.55,
         ao: true,
         gpuDetail: true,
@@ -270,7 +282,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
           normalMap: pack.normalMap,
           roughnessMap: pack.roughnessMap,
           aoMap: pack.aoMap,
-          color: "#8a7355",
+          color: surfaces.apron,
           roughness: 0.9,
           metalness: 0.04,
           vertexColors: true,
@@ -279,7 +291,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       } else {
         apron = createProcMaterial("dirt", {
           repeat: [apronRepeatU, apronRepeatV],
-          color: "#6b5a45",
+          color: surfaces.apron,
           normalScale: 0.5,
           ao: true,
           gpuDetail: true,
@@ -304,7 +316,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
         roughnessMap: sandP.roughnessMap,
         aoMap: sandP.aoMap,
         aoMapIntensity: 1.0,
-        color: "#c8a47a",
+        color: surfaces.sand,
         roughness: 0.95,
         metalness: 0.02,
         envMapIntensity: 0.45,
@@ -317,7 +329,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
         ao: true,
         gpuDetail: true,
         detailScale: 12,
-        color: "#c4a06a",
+        color: surfaces.sand,
       });
     }
 
@@ -325,10 +337,16 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       road,
       apron,
       sand,
-      yard: makeYardMaterial(),
-      stripe: new THREE.MeshBasicMaterial({ color: "#f0d878", toneMapped: false }),
+      yard: makeYardMaterial(surfaces),
+      // toneMapped stays false: lane paint is a reference white and should not
+      // be pulled around by the exposure curve. It is still tinted per
+      // environment — paint under a sodium furnace is not paint at noon.
+      stripe: new THREE.MeshBasicMaterial({
+        color: surfaces.stripe,
+        toneMapped: false,
+      }),
     };
-  }, [tier, pbrKey]);
+  }, [tier, pbrKey, surfaces]);
 
   const markers = useMemo(() => EDGE_MARKERS.slice(), [epoch]);
   const s0 = TRACK_SAMPLES[0] ?? { x: 0, y: 0, z: 0, yaw: 0, width: 26 };

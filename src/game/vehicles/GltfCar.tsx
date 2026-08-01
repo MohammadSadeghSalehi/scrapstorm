@@ -14,31 +14,83 @@ import { attachVehicleDeformer } from "../world/damage/meshDeform";
 import { isPbrLibraryReady } from "../world/webgl2/textureLibrary";
 import { TIRE_RADIUS } from "../tires";
 
-/** Class → custom mesh (user-authored). Shared by player and AI. */
-const MODEL_URL: Record<VehicleClassId, string> = {
-  interceptor: "/assets/meshes/custom/SM_MeshGen_WastelandCustomCar.glb",
-  trickster: "/assets/meshes/custom/SM_MeshGen_CustomWidebodyHatchback.glb",
-  bruiser: "/assets/meshes/custom/SM_MeshGen_DesertCombatVehicle.glb",
+/**
+ * Class → the meshes that class can be built from.
+ *
+ * This was one mesh per class, so a fifteen-rival ladder fielded three
+ * silhouettes. The generated cars are appended as VARIANTS rather than
+ * replacing anything: same handling, same class identity, different bodywork,
+ * which is how a grid reads as a field of individuals instead of three cars
+ * copied five times.
+ *
+ * Index 0 is the class's canonical car — it is what the player gets and what
+ * the garage shows, so the class stays recognisable no matter what the AI is
+ * driving.
+ */
+const MODEL_VARIANTS: Record<VehicleClassId, string[]> = {
+  interceptor: [
+    "/assets/meshes/custom/SM_MeshGen_WastelandCustomCar.glb",
+    "/assets/meshes/custom/SM_MeshGen_WastelandBattleCar.glb",
+  ],
+  trickster: [
+    "/assets/meshes/custom/SM_MeshGen_CustomWidebodyHatchback.glb",
+    "/assets/meshes/custom/SM_MeshGen_ArmoredBattleCar.glb",
+  ],
+  bruiser: [
+    "/assets/meshes/custom/SM_MeshGen_DesertCombatVehicle.glb",
+    "/assets/meshes/custom/SM_MeshGen_ArmoredTankTruck.glb",
+  ],
 };
+
+/** Canonical mesh per class — player, garage, and anything without an id. */
+const MODEL_URL: Record<VehicleClassId, string> = {
+  interceptor: MODEL_VARIANTS.interceptor[0]!,
+  trickster: MODEL_VARIANTS.trickster[0]!,
+  bruiser: MODEL_VARIANTS.bruiser[0]!,
+};
+
+/**
+ * Stable variant choice from the vehicle id.
+ *
+ * Deliberately a hash rather than a counter or a random draw: the same rival
+ * must arrive in the same car every time you race them, across sessions and
+ * regardless of grid order or how many cars are in the field. A counter would
+ * reshuffle the whole grid when one entrant changed, and a random draw would
+ * mean a rival you have raced ten times shows up in a different car on the
+ * eleventh.
+ */
+function variantFor(classId: VehicleClassId, vehicleId?: string): string {
+  const list = MODEL_VARIANTS[classId];
+  if (!vehicleId || list.length < 2) return list[0]!;
+  let h = 2166136261;
+  for (let i = 0; i < vehicleId.length; i++) {
+    h ^= vehicleId.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return list[(h >>> 0) % list.length]!;
+}
 
 /**
  * Decimated variants for AI cars (scripts/build-vehicle-lods.mjs).
  *
- * The authored meshes are 96-105k triangles each. That is fine for the hero
- * car filling the frame, but a 4-car grid rendering all of them at full
- * density spent ~400k tris/frame on vehicles — most of it on cars a few dozen
- * pixels tall. lod1 is ~25k (-75%) and holds the same bounding box, so the
- * geometric facing rules resolve identically.
+ * The three original meshes are 96-105k triangles each; lod1 is ~25k (-75%)
+ * and holds the same bounding box, so the geometric facing rules resolve
+ * identically.
  *
- * Falls back to the full mesh if the LOD has not been generated, so a fresh
- * checkout without the build step still runs.
+ * The generated cars have NO usable LOD. They are surface reconstructions made
+ * of thousands of disconnected shells, and meshoptimizer preserves component
+ * count — measured, they floor at ~30k triangles no matter what ratio or error
+ * is requested, so lod1 and lod2 came out within 20 triangles of each other.
+ * They ship as a single ~34k level, which is already a third of an original
+ * hero mesh, and they are mapped to themselves here so the AI path does not
+ * 404 looking for a level that cannot exist.
  */
-const AI_URL: Record<VehicleClassId, string> = {
-  interceptor:
+const AI_URL: Record<string, string> = {
+  "/assets/meshes/custom/SM_MeshGen_WastelandCustomCar.glb":
     "/assets/meshes/custom/lod/SM_MeshGen_WastelandCustomCar.lod1.glb",
-  trickster:
+  "/assets/meshes/custom/SM_MeshGen_CustomWidebodyHatchback.glb":
     "/assets/meshes/custom/lod/SM_MeshGen_CustomWidebodyHatchback.lod1.glb",
-  bruiser:
+  "/assets/meshes/custom/SM_MeshGen_DesertCombatVehicle.glb":
     "/assets/meshes/custom/lod/SM_MeshGen_DesertCombatVehicle.lod1.glb",
 };
 
@@ -1170,8 +1222,19 @@ export function GltfVehicleMesh({
     };
 
     const tryLoad = async () => {
-      const full = MODEL_URL[vehicle.classId];
-      const primary = hero ? full : AI_URL[vehicle.classId];
+      /*
+       * The player and the garage always get the class's canonical car so the
+       * class stays recognisable; AI entrants get a variant chosen from their
+       * id. Passing `id` rather than `vehicle.id` matters for the decoy, which
+       * carries the id of the car it impersonates — a decoy in different
+       * bodywork would give the trick away instantly.
+       */
+      const full = hero
+        ? MODEL_URL[vehicle.classId]
+        : variantFor(vehicle.classId, id);
+      // Keyed by URL now, and a generated car has no usable LOD, so this falls
+      // through to the full mesh rather than 404ing on a level that cannot exist.
+      const primary = hero ? full : (AI_URL[full] ?? full);
       try {
         const tpl = await loadTemplate(primary);
         mount(tpl, primary);
