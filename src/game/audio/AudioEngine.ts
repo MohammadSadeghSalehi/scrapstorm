@@ -28,6 +28,8 @@ import {
   type EngineInput,
 } from "./engineModel";
 import { TyreBed, type TyreInput } from "./tyreModel";
+import { BrakeBed, type BrakeInput } from "./brakeModel";
+import { VoBudget, VO_TIER } from "./voBudget";
 import { SpatialField } from "./spatial";
 import {
   ReverbRack,
@@ -72,51 +74,86 @@ function jitter(n = 0.08) {
   return 1 + (Math.random() * 2 - 1) * n;
 }
 
-/** Per-track trim so the beds sit at comparable loudness. */
+/**
+ * Per-track trim so the bounces sit at comparable loudness.
+ *
+ * These are matched by ear against each other, NOT against the rest of the mix
+ * — the music bus volume is what places the soundtrack as a whole. Getting that
+ * backwards (trimming an individual track because it was quiet under the
+ * engine) is how a soundtrack ends up with one track that is right and six that
+ * are wrong in different directions.
+ */
 function musicTrackVolume(id: MusicId) {
   return id === "race_heat"
-    ? 0.55
-    : id === "victory"
-      ? 0.7
-      : id === "defeat"
-        ? 0.62
-        : 0.5;
+    ? 0.62
+    : id === "race_intensity"
+      ? 0.6
+      : id === "final_lap"
+        ? 0.64
+        : id === "victory"
+          ? 0.72
+          : id === "defeat"
+            ? 0.64
+            : 0.56;
 }
 
 /**
- * Announcer barge-in ranking. A line only interrupts a line of *lower* rank;
- * anything equal or below is dropped rather than queued (see `playVoice`).
+ * What each recorded line is worth. THIS is the editorial decision the VO cut
+ * is made of — the budget in voBudget.ts is only the machinery that enforces it.
  *
- * Rival chatter sits at rank 1 deliberately: a taunt is flavour, and the one
- * thing worse than not hearing it is hearing it over the final-lap call.
+ * Every line is still here, still shipped, still triggered from the same place
+ * in the driver. Promoting a line back up this table is all it takes to hear it
+ * again; nothing has been deleted.
+ *
+ * The rule used to place a line: would the player notice its absence, or only
+ * its presence? Green flag, final lap, a takedown they caused and the result of
+ * the heat are the four things a race announcer exists for. A lap counter the
+ * HUD already shows, a place change the HUD already shows, and a rival with an
+ * opinion about being overtaken are all things the player can see. They stay
+ * available for the quiet minutes and lose every contest against the rest.
  */
-const VOICE_PRIORITY: Record<VoiceId, number> = {
-  "grid-locked": 3,
-  green: 3,
-  "final-lap": 3,
-  win: 3,
-  loss: 3,
-  wreck: 2,
-  overtake: 2,
-  overtaken: 2,
-  "wreck-rival": 2,
-  "lap-1": 2,
-  "lap-2": 2,
-  "lap-3": 2,
-  "close-pack": 1,
-  "near-miss": 1,
-  "hit-1": 1,
-  "hit-2": 1,
-  "boost-1": 1,
-  "boost-2": 1,
-  "rival-taunt-1": 1,
-  "rival-taunt-2": 1,
-  "rival-taunt-3": 1,
-  "rival-hit-1": 1,
-  "rival-hit-2": 1,
-  "rival-wreck": 2,
-  "rival-pass": 1,
+const VOICE_TIER: Record<VoiceId, number> = {
+  // Cannot be missed.
+  green: VO_TIER.CRITICAL,
+  "final-lap": VO_TIER.CRITICAL,
+  win: VO_TIER.CRITICAL,
+  loss: VO_TIER.CRITICAL,
+  wreck: VO_TIER.CRITICAL,
+  // Something the player did, or the heat about to start.
+  "grid-locked": VO_TIER.MAJOR,
+  "wreck-rival": VO_TIER.MAJOR,
+  // Race state the player might have missed.
+  overtake: VO_TIER.NOTABLE,
+  overtaken: VO_TIER.NOTABLE,
+  // Routine and repeatable.
+  "lap-1": VO_TIER.COLOUR,
+  "lap-2": VO_TIER.COLOUR,
+  "lap-3": VO_TIER.COLOUR,
+  "hit-1": VO_TIER.COLOUR,
+  "hit-2": VO_TIER.COLOUR,
+  "boost-1": VO_TIER.COLOUR,
+  "boost-2": VO_TIER.COLOUR,
+  "near-miss": VO_TIER.COLOUR,
+  // Pure colour. First out of the door the moment anything else is happening.
+  "close-pack": VO_TIER.FLAVOUR,
+  "rival-taunt-1": VO_TIER.FLAVOUR,
+  "rival-taunt-2": VO_TIER.FLAVOUR,
+  "rival-taunt-3": VO_TIER.FLAVOUR,
+  "rival-hit-1": VO_TIER.FLAVOUR,
+  "rival-hit-2": VO_TIER.FLAVOUR,
+  "rival-wreck": VO_TIER.FLAVOUR,
+  "rival-pass": VO_TIER.FLAVOUR,
 };
+
+/**
+ * How far the music gets out of the way, by tier.
+ *
+ * The user asked for music forward, and a bed that dives 6 dB every time
+ * anything is said is not forward — it is a bed with holes in it. Only a line
+ * that had to be heard is allowed to move the music much; flavour barely
+ * touches it, which is affordable precisely because flavour is now rare.
+ */
+const VOICE_DUCK = [0.14, 0.2, 0.3, 0.42, 0.55];
 
 /**
  * Chatter variants share a cooldown key, so "hit-1"/"hit-2" can't ping-pong
@@ -139,26 +176,8 @@ const VOICE_GROUP: Partial<Record<VoiceId, string>> = {
   "rival-wreck": "rival",
 };
 
-/**
- * Seconds before a group may speak again.
- *
- * `rival` is long on purpose: a taunt that fires every time contact is made
- * stops being characterisation within about fifteen seconds and turns into a
- * soundboard.
- */
-const VOICE_COOLDOWN: Record<string, number> = {
-  hit: 8,
-  boost: 11,
-  lap: 3,
-  overtake: 10,
-  overtaken: 12,
-  wreck: 4,
-  "wreck-rival": 9,
-  "close-pack": 22,
-  "near-miss": 14,
-  rival: 19,
-};
-const VOICE_COOLDOWN_DEFAULT = 1.5;
+/** sim.ts emits gate crossings as `Lap <n>`; see feedEvent. */
+const LAP_MESSAGE = /^lap \d/i;
 
 /** Assumed line length while the mp3 is still decoding. */
 const VOICE_PROVISIONAL_LEN = 1.4;
@@ -179,6 +198,19 @@ export interface ContinuousInput {
   roughness: number;
   gear?: number;
   brake?: boolean;
+  /**
+   * 0..1 brake demand. Distinct from `brake`, which the engine uses only to
+   * know the driver has lifted; the pads care how hard.
+   */
+  brakePressure: number;
+  /** 0..1 deceleration actually being achieved. The *result* of braking. */
+  decel: number;
+  /** 0..1 how close the tyres are to locking under braking. */
+  lock: number;
+  /** 0..1 lateral slip angle. The continuous drift signal — see TyreBed. */
+  slipAngle: number;
+  /** 0..1 weight on the contact patches. */
+  load: number;
   dt: number;
 }
 
@@ -200,9 +232,20 @@ const TYRE_OFF: TyreInput = {
   speed01: 0,
   slip: 0,
   drifting: false,
-  brake: false,
+  slipAngle: 0,
+  load: 0,
+  brakePressure: 0,
   boost: false,
   offroad: 0,
+  roughness: 0.08,
+  dt: 1 / 60,
+};
+
+const BRAKE_OFF: BrakeInput = {
+  pressure: 0,
+  decel: 0,
+  speed01: 0,
+  lock: 0,
   roughness: 0.08,
   dt: 1 / 60,
 };
@@ -284,9 +327,11 @@ class AudioEngine {
 
   private engine: EngineVoice | null = null;
   private tyres: TyreBed | null = null;
+  private brakes: BrakeBed | null = null;
   /** Reused every frame — see updateContinuous. */
   private engineIn: EngineInput = { ...ENGINE_OFF };
   private tyreIn: TyreInput = { ...TYRE_OFF };
+  private brakeIn: BrakeInput = { ...BRAKE_OFF };
   private scrapeIn: ScrapeInput = {
     pressure: 0,
     slide: 0,
@@ -323,15 +368,23 @@ class AudioEngine {
    * 0.09 against 0.61 — about 17dB down, which is why the soundtrack was
    * inaudible under an engine and a gravel bed rather than merely quiet.
    *
-   * 0.6 squares to 0.36, which sits just under the sfx bed instead of beneath
-   * it. Anything that needs music out of the way during play — impacts, VO —
-   * already has a duck stage of its own and does not need the bed pre-buried.
+   * 0.6 → 0.36 fixed the "inaudible" part but landed the bed about 4.5 dB under
+   * the sfx sum, and it is still multiplied by the track trim (~0.55) and the
+   * intensity gain (0.78 at rest) before it reaches the bus. Measured against
+   * the beds it competes with — engine ~0.28, tyres ~0.22 at speed — that put
+   * the music at roughly half the level of the driving.
+   *
+   * 0.74 → 0.55 puts the soundtrack level with the sfx bed rather than under
+   * it, which is what "music forward" means for a bed the player is supposed to
+   * be driving to. It is affordable now because the things that used to pull it
+   * down — a duck on every impact, a duck on every announcer line — have been
+   * cut back to the events that earn one (VOICE_DUCK, and the impact gate in
+   * playImpact). The limiter catches the rest.
    */
-  private volumes = { master: 0.88, music: 0.6, sfx: 0.78, ui: 0.58, vo: 0.95 };
+  private volumes = { master: 0.88, music: 0.74, sfx: 0.78, ui: 0.58, vo: 0.95 };
 
   private lastEventAt = 0;
   private lastEventMsg = "";
-  private lastGear = 0;
   private lastImpactAt = 0;
   /** Per-kind gates for sim-emitted cues (see playCue). */
   private cueGate = new Map<string, number>();
@@ -354,7 +407,8 @@ class AudioEngine {
   /** Wall-clock (ctx time) the announcer is expected to stop talking. */
   private voBusyUntil = 0;
   private voToken = 0;
-  private voCooldowns = new Map<string, number>();
+  /** Rate/priority policy for the announcer. See voBudget.ts. */
+  private voBudget = new VoBudget();
 
   isUnlocked() {
     return this.unlocked;
@@ -468,6 +522,10 @@ class AudioEngine {
       );
       this.pendingClass = null;
       this.tyres = new TyreBed(this.ctx, [this.sfxBus, bedSend]);
+      // Brakes take the bed send like the tyres: they are a continuous voice,
+      // and a 2 s canyon tail on something that sounds for the whole length of
+      // a braking zone is a wash rather than a room.
+      this.brakes = new BrakeBed(this.ctx, [this.sfxBus, bedSend]);
 
       // Explosions bypass `spatialBus` and own their panners: the shared
       // one-shot pool is 12 voices with a 0.05 s minimum hold, and a detonation
@@ -660,10 +718,16 @@ class AudioEngine {
     if (Math.abs(x - this.musicIntensity) < 0.02) return;
     this.musicIntensity = x;
     const t = this.now();
-    // 2.2 kHz at rest is a definite "behind the action" filter without being an
-    // obvious effect; fully open is transparent.
-    this.musicTone.frequency.setTargetAtTime(2200 + x * x * 17000, t, 0.9);
-    this.musicGain.gain.setTargetAtTime(0.78 + x * 0.22, t, 0.9);
+    // The floor used to be 2.2 kHz, which is a *lot* of filter — enough that a
+    // quiet moment sounded like the soundtrack was playing in the next room.
+    // That was the right call when music sat 4.5 dB under everything and needed
+    // to stay out of the way; with the bed forward it reads as a fault. 4.2 kHz
+    // still darkens the track audibly without taking the arrangement away, and
+    // the curve is cubic rather than square so the last third of the race opens
+    // it decisively instead of gradually.
+    this.musicTone.frequency.setTargetAtTime(4200 + x * x * x * 15800, t, 0.75);
+    // Narrower range, higher floor: at this bus level a 22 % swing is a pump.
+    this.musicGain.gain.setTargetAtTime(0.87 + x * 0.13, t, 0.75);
   }
 
   stopMusic(fade = 0.4) {
@@ -707,46 +771,64 @@ class AudioEngine {
   }
 
   /**
+   * 0..1 how much is happening. Raises the bar a line has to clear — see the
+   * pressure rule in voBudget.ts. Called every frame; a plain field write.
+   */
+  setVoPressure(x: number) {
+    this.voBudget.setPressure(x);
+  }
+
+  /** New heat: the previous race's budget and cooldowns do not carry over. */
+  resetVoBudget() {
+    this.voBudget.reset();
+  }
+
+  /**
    * Announcer line. Loads `/assets/audio/vo/<id>.mp3` on first use.
    *
+   * This is a *request*, not a command: it is checked against the budget in
+   * voBudget.ts and is usually refused. See VOICE_TIER above for which lines are
+   * expected to survive that and why.
+   *
    * Overlap policy is barge-in, never a queue: race VO is only worth hearing
-   * while the moment is still on screen, so a higher-priority line cuts the
-   * current one (with a short de-click fade) and a same/lower-priority line is
-   * dropped outright rather than played seconds late.
+   * while the moment is still on screen, so a line late enough to be irrelevant
+   * is dropped rather than played seconds after the fact. What changed is that
+   * outranking the current line is no longer sufficient to cut it — see the
+   * interrupt rule in the budget.
    */
   playVoice(id: VoiceId) {
     if (!this.ctx || !this.unlocked || !this.voBus) return;
     const ctx = this.ctx;
     const t = this.now();
-    const prio = VOICE_PRIORITY[id] ?? 1;
+    const tier = VOICE_TIER[id] ?? VO_TIER.COLOUR;
     const group = VOICE_GROUP[id] ?? id;
-    if (t < (this.voCooldowns.get(group) ?? 0)) return;
-    if (t < this.voBusyUntil && prio <= this.voPriority) return;
-    this.voCooldowns.set(
-      group,
-      t + (VOICE_COOLDOWN[group] ?? VOICE_COOLDOWN_DEFAULT),
-    );
+    if (!this.voBudget.request(t, tier, group, this.voBusyUntil, this.voPriority))
+      return;
     // Claim the channel synchronously — the decode below is async, and two
     // events in the same frame must not both think they won.
-    this.voPriority = prio;
+    this.voPriority = tier;
     this.voBusyUntil = t + VOICE_PROVISIONAL_LEN;
     const token = ++this.voToken;
     void loadVoice(ctx, id)
       .then((buf) => {
         if (token !== this.voToken) return;
         // Missing mp3, or the first fetch took so long the moment is gone —
-        // release the channel rather than reacting to something the player has
-        // already forgotten. Race-critical calls (green/final lap/result) are
-        // still worth a late delivery.
-        if (!buf || (prio < 3 && this.now() - t > VOICE_STALE_AFTER)) {
+        // release the channel AND give the budget slot back, otherwise a file
+        // that does not exist quietly spends one of four lines a minute.
+        if (
+          !buf ||
+          (tier < VO_TIER.CRITICAL && this.now() - t > VOICE_STALE_AFTER)
+        ) {
+          this.voBudget.refund(t, group);
           this.voBusyUntil = 0;
           this.voPriority = 0;
           return;
         }
-        this.startVoice(id, prio, buf.duration);
+        this.startVoice(id, tier, buf.duration);
       })
       .catch(() => {
         if (token !== this.voToken) return;
+        this.voBudget.refund(t, group);
         this.voBusyUntil = 0;
         this.voPriority = 0;
       });
@@ -782,9 +864,11 @@ class AudioEngine {
         this.voPriority = 0;
       }
     };
-    // Hold the music under the whole line plus a beat of tail.
-    this.duckMusic(0.6, duration + 0.15);
-    this.reverb?.duck(0.55, duration + 0.1, t);
+    // Hold the music under the whole line plus a beat of tail — by tier, so the
+    // bed only really moves for the lines that had to be heard. See VOICE_DUCK.
+    const depth = VOICE_DUCK[Math.max(0, Math.min(4, prio))] ?? 0.42;
+    this.duckMusic(depth, duration + 0.15);
+    this.reverb?.duck(depth * 0.9, duration + 0.1, t);
   }
 
   /** Cut the current line with a 40 ms fade — long enough to avoid a click. */
@@ -906,6 +990,7 @@ class AudioEngine {
    */
   updateContinuous(opts: ContinuousInput) {
     if (!this.unlocked || !this.ctx || !this.engine || !this.tyres) return;
+    const brakes = this.brakes;
     const t = this.now();
     const racing =
       opts.phase === "racing" ||
@@ -941,14 +1026,16 @@ class AudioEngine {
     if (!racing) {
       this.engine.update(t, ENGINE_OFF);
       this.tyres.update(t, TYRE_OFF);
+      brakes?.silence(t);
       return;
     }
 
+    // The gear change no longer plays `gear.mp3`. A shift is an interruption of
+    // combustion followed by an exhaust bark, both of which belong inside the
+    // engine voice — see EngineVoice.upshift. Layering a generic sampled click
+    // on top of it put the shift in a different acoustic space from the engine
+    // it came out of, and cost a buffer source per shift.
     const gear = opts.gear ?? Math.min(5, Math.floor(sp * 5) + 1);
-    if (gear !== this.lastGear && sp > 0.15 && opts.throttle > 0.3) {
-      this.playSfx("gear");
-    }
-    this.lastGear = gear;
 
     const eng = this.engineIn;
     eng.active = true;
@@ -967,12 +1054,25 @@ class AudioEngine {
     ty.speed01 = sp;
     ty.slip = opts.slip;
     ty.drifting = opts.drifting;
-    ty.brake = !!opts.brake;
+    ty.slipAngle = opts.slipAngle;
+    ty.load = opts.load;
+    ty.brakePressure = opts.brakePressure;
     ty.boost = opts.boost;
     ty.offroad = opts.offroad;
     ty.roughness = opts.roughness;
     ty.dt = dt;
     this.tyres.update(t, ty);
+
+    if (brakes) {
+      const br = this.brakeIn;
+      br.pressure = opts.brakePressure;
+      br.decel = opts.decel;
+      br.speed01 = sp;
+      br.lock = opts.lock;
+      br.roughness = opts.roughness;
+      br.dt = dt;
+      brakes.update(t, br);
+    }
   }
 
   /**
@@ -1104,9 +1204,14 @@ class AudioEngine {
     this.explosions.fire(this.now(), x, y, z, energy, dist, kind, self);
     // Duck under the blast rather than letting the limiter do it — the limiter
     // would pull the *whole* mix, including the engine the player is steering by.
+    //
+    // The gate is high and the depth is modest on purpose. A combat racer has a
+    // detonation every few seconds; ducking the bed for all of them is not
+    // "getting out of the way", it is a soundtrack with a tremolo on it. Only a
+    // blast inside ~40 m moves the music at all now.
     const near = 1 - Math.min(1, dist / 90);
-    if (near > 0.25) {
-      this.duckMusic(0.25 + near * 0.35, 0.3 + near * 0.4, 0.02, 0.55);
+    if (near > 0.55) {
+      this.duckMusic(0.12 + near * 0.24, 0.2 + near * 0.28, 0.02, 0.5);
     }
   }
 
@@ -1238,9 +1343,10 @@ class AudioEngine {
           cue.self,
         );
         // Taking a hit on your own hull deserves the music out of the way; a
-        // rival trading paint across the pack does not.
-        if (cue.self && intensity > 0.9) {
-          this.duckMusic(0.28, 0.16, 0.02, 0.35);
+        // rival trading paint across the pack does not. Shallow and short — the
+        // hit itself is already the loudest thing in the frame.
+        if (cue.self && intensity > 1.2) {
+          this.duckMusic(0.16, 0.12, 0.02, 0.32);
         }
       } else {
         this.weapons.fire(t, weapon, cue.x, cue.y, cue.z, intensity, cue.self);
@@ -1443,10 +1549,12 @@ class AudioEngine {
     const now = performance.now();
     if (now - this.lastImpactAt < 45) return;
     this.lastImpactAt = now;
-    // Heavy metal reads better with the bed pulled out from under it; light
-    // scrapes are frequent enough that ducking them would pump the music.
-    if (intensity >= 1.1) {
-      this.duckMusic(Math.min(0.45, 0.2 + intensity * 0.16), 0.18, 0.03, 0.4);
+    // Only genuinely heavy metal moves the bed. Trading paint through a pack is
+    // a near-continuous stream of impacts at 1.1-ish, and ducking each one was
+    // the single biggest reason the soundtrack never settled: the music was
+    // being pumped by the same events that were already loud.
+    if (intensity >= 1.5) {
+      this.duckMusic(Math.min(0.3, 0.1 + intensity * 0.12), 0.14, 0.03, 0.38);
     }
     // Anything hard enough to dent gets the panel folding layered over the
     // recorded hit. The sample is the strike; the crumple is the structure
@@ -1457,38 +1565,39 @@ class AudioEngine {
     this.layeredHit(intensity);
   }
 
+  /**
+   * HUD feed line → sound.
+   *
+   * This used to keyword-match the *prose* of the message and fire a sound for
+   * whatever it found, which is why the mix felt like it was narrating itself.
+   * Two things were wrong with it:
+   *
+   *  1. Everything it matched already has a real, physically-driven sound. The
+   *     boost whoosh fires off `boostTimer`, the impact off `impactFlash`, the
+   *     detonation off `wreckTimer`, the shield off a combat cue. So a feed line
+   *     about an event the player had just heard played the event a second time,
+   *     a frame or two late, out of sync with its own picture.
+   *  2. It matched flavour text. missions/runtime.ts pushes rival radio and
+   *     story lines through the same event log — "Turbo lit." fired a nitro
+   *     ignition nobody had triggered, and any line containing the word "wreck"
+   *     detonated a full vehicle explosion on the spot, ducking the music with
+   *     it.
+   *
+   * The feed is TEXT. It gets the lap chime, because a lap crossing has no other
+   * sound of its own and the chime is the confirmation that the gate counted —
+   * and nothing else. Everything the sim actually did makes its own noise.
+   */
   feedEvent(msg: string, kind?: string) {
     if (!this.unlocked) return;
     const t = performance.now();
     if (msg === this.lastEventMsg && t - this.lastEventAt < 70) return;
     this.lastEventMsg = msg;
     this.lastEventAt = t;
-    const m = msg.toLowerCase();
-    if (m.includes("wreck") || m.includes("eliminated")) this.playSfx("wreck");
-    else if (m.includes("hit") || m.includes("ram") || m.includes("damage"))
-      this.playImpact(1.1);
-    else if (
-      m.includes("boost") ||
-      m.includes("turbo") ||
-      m.includes("overdrive")
-    )
-      this.playSfx("turbo");
-    else if (m.includes("mine")) this.playSfx("mine");
-    else if (
-      m.includes("shield") ||
-      m.includes("phase") ||
-      m.includes("plate") ||
-      m.includes("decoy")
-    )
-      this.playSfx("defense");
-    else if (m.includes("lap")) this.playUi("lap");
-    else if (
-      m.includes("finish") ||
-      m.includes("victory") ||
-      m.includes("p1")
-    )
-      this.playUi("finish");
-    else if (kind === "fire") this.playSfx("fire");
+    // The kind alone is not enough: missions/runtime.ts pushes its story lines
+    // with a `kind` chosen for their tone, and its last-lap radio line arrives
+    // as kind "lap" too. sim.ts emits gate crossings as `Lap <n>`, so requiring
+    // a digit is what separates the counter from a sentence about one.
+    if (kind === "lap" && LAP_MESSAGE.test(msg)) this.playUi("lap");
   }
 }
 

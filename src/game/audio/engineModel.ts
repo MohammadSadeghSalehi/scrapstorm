@@ -36,6 +36,16 @@
  *    all. A gain that simply follows `boost` cannot produce either.
  * 7. Transmission whine tracking engine speed (not road speed): straight-cut
  *    gear noise is tooth-mesh frequency, which is an input-shaft property.
+ * 8. Throttle *transients*, not just throttle level. Opening the throttle is an
+ *    event — the plate slams, the plenum gulps, the exhaust hardens, and the
+ *    engine takes the load — and none of that exists in a model that only reads
+ *    the current pedal position. This is the layer the player is actually
+ *    listening to when they decide the car feels fast, and it is why an engine
+ *    that is technically correct at every steady state can still feel inert.
+ * 9. Shifts as an ignition cut plus an exhaust bark, generated here rather than
+ *    played as a sample. A shift is a momentary interruption of combustion; the
+ *    dip and the bark are two halves of one event and a generic "gear.mp3"
+ *    click sits on top of the engine instead of inside it.
  */
 
 import { noiseOffset, sharedNoise } from "./noise";
@@ -134,7 +144,7 @@ export const ENGINE_PROFILES: Record<EngineClassId, EngineProfile> = {
     intakeLevel: 0.15,
     turboOrder: 15,
     turboQ: 12,
-    turboLevel: 0.06,
+    turboLevel: 0.075,
     spoolTime: 0.3,
     bovLevel: 0.05,
     whineHz: 340,
@@ -169,7 +179,7 @@ export const ENGINE_PROFILES: Record<EngineClassId, EngineProfile> = {
     intakeLevel: 0.17,
     turboOrder: 9,
     turboQ: 7,
-    turboLevel: 0.05,
+    turboLevel: 0.066,
     spoolTime: 0.72,
     bovLevel: 0.075,
     whineHz: 240,
@@ -205,7 +215,7 @@ export const ENGINE_PROFILES: Record<EngineClassId, EngineProfile> = {
     intakeLevel: 0.2,
     turboOrder: 12,
     turboQ: 9,
-    turboLevel: 0.085,
+    turboLevel: 0.105,
     spoolTime: 0.58,
     bovLevel: 0.13,
     whineHz: 290,
@@ -279,6 +289,33 @@ export class EngineVoice {
   private prevThrottle = 0;
   private lastBov = 0;
   private classId: EngineClassId = "interceptor";
+  /**
+   * 0..1 throttle-opening transient. Attacks instantly on a fast pedal movement
+   * and decays over ~250 ms.
+   *
+   * Held in JS and folded into the per-frame writes the layers already make,
+   * rather than scheduled as its own automation. Scheduling it would mean two
+   * sources of truth fighting over the same AudioParams — a `setTargetAtTime`
+   * from the steady-state mix landing on top of a transient envelope produces a
+   * different result every frame depending on which arrived last — and it would
+   * cost extra param writes on the frame the renderer is busiest.
+   */
+  private tipIn = 0;
+  /** How long full load has been held; the exhaust hardens as it goes on. */
+  private pull = 0;
+  /** 0..1 ignition-cut envelope during an upshift. */
+  private shiftCut = 0;
+  /**
+   * -1 means "no gear seen yet". The first active frame ADOPTS whatever gear
+   * the driver reports instead of treating it as a change: the voice is
+   * constructed at gear 1 but a heat can be entered (or restarted, or resumed
+   * from a pause) with the car already at speed in fifth, and barking a shift
+   * on the frame audio wakes up is a sound with no event behind it.
+   */
+  private prevGear = -1;
+  private lastShift = -1e9;
+  /** True once the voice has been written down for an inactive phase. */
+  private off = false;
 
   constructor(
     ctx: BaseAudioContext,
@@ -471,16 +508,39 @@ export class EngineVoice {
   update(t: number, s: EngineInput) {
     const p = this.profile;
     if (!s.active) {
+      this.overrun = 0;
+      this.spool = 0;
+      this.prevThrottle = 0;
+      this.tipIn = 0;
+      this.pull = 0;
+      this.shiftCut = 0;
+      this.prevGear = -1;
+      // The menu, the garage and the results screen all live here, sometimes
+      // for minutes. Shut the voice down once instead of re-scheduling five
+      // targets at zero on every frame of it.
+      if (this.off) return;
+      this.off = true;
       this.out.gain.setTargetAtTime(0, t, 0.09);
       this.gIntake.gain.setTargetAtTime(0, t, 0.09);
       this.gOver.gain.setTargetAtTime(0, t, 0.09);
       this.gTurbo.gain.setTargetAtTime(0, t, 0.09);
       this.gWhine.gain.setTargetAtTime(0, t, 0.09);
-      this.overrun = 0;
-      this.spool = 0;
-      this.prevThrottle = 0;
       return;
     }
+    this.off = false;
+
+    // Throttle *rate*, taken before prevThrottle is consumed by the blow-off
+    // test below. A pedal that goes 0 → 1 in 100 ms gives a rate of 10, so the
+    // 0.16 scale saturates the transient on any genuinely aggressive stab and
+    // leaves a feathered application producing almost nothing — which is the
+    // distinction the layer exists to make.
+    const thrRate = (s.throttle - this.prevThrottle) / Math.max(1e-4, s.dt);
+    const tipTarget = Math.max(0, Math.min(1, thrRate * 0.16));
+    this.tipIn =
+      tipTarget > this.tipIn
+        ? tipTarget
+        : this.tipIn * Math.max(0, 1 - s.dt * 4.2);
+    const tip = this.tipIn;
 
     // Standing revs: at rest the gear fraction is pinned at 0, so without this
     // the engine ignores the throttle entirely until the car is already moving.
@@ -504,6 +564,44 @@ export class EngineVoice {
     this.rpmCs.offset.setTargetAtTime((rpm * p.cylinders) / 120, t, 0.055);
 
     const load = Math.max(s.throttle, s.boost ? 1 : 0, s.drifting ? 0.6 : 0);
+
+    // Sustained pull. Rises while the engine is actually working (load AND
+    // revs) and falls quickly when it is not, so a long third-gear pull hardens
+    // and a series of stabs does not. Separate from `load` because load is
+    // instantaneous and this is the thing that makes acceleration feel like it
+    // has a duration.
+    const pullTarget = load * Math.min(1, 0.35 + rpm01 * 1.1);
+    this.pull +=
+      (pullTarget - this.pull) *
+      Math.min(1, s.dt * (pullTarget > this.pull ? 1.6 : 5));
+    const pull = this.pull;
+
+    // Upshift. `gear` comes from the driver, so a boundary the car sits on
+    // could otherwise chatter — hence the 0.28 s lockout as well as the load
+    // and rev gates. The cut is an envelope in JS for the same reason as
+    // `tipIn`; the bark is the only part that needs nodes.
+    if (this.prevGear < 0) {
+      this.prevGear = s.gear;
+    } else if (
+      s.gear > this.prevGear &&
+      rpm01 > 0.3 &&
+      load > 0.35 &&
+      t - this.lastShift > 0.28
+    ) {
+      this.lastShift = t;
+      this.shiftCut = 1;
+      this.upshift(t, load * (0.5 + rpm01 * 0.5));
+    } else if (s.gear < this.prevGear && t - this.lastShift > 0.28) {
+      this.lastShift = t;
+      // Downshift: no cut (there is no torque to interrupt), but the throttle
+      // blip that matches revs is a transient in its own right.
+      this.tipIn = Math.max(this.tipIn, 0.45 * load);
+    }
+    this.prevGear = s.gear;
+    // ~90 ms of interruption. Long enough to hear as a shift, short enough that
+    // a five-speed run up a straight does not sound like a stutter.
+    this.shiftCut *= Math.max(0, 1 - s.dt * 11);
+    const cut = this.shiftCut;
     // Overrun only exists with revs on the clock and a closed throttle. Slewed
     // in JS (not just on the param) because the crackle rate reads the same
     // value and a stepped target would make the crackle burst in clumps.
@@ -562,26 +660,55 @@ export class EngineVoice {
       0.045,
     );
     // Off-throttle the combustion harmonics fall away, they do not just get
-    // quieter — the noise layers below take over the same energy.
-    this.oscTrim.gain.setTargetAtTime((1 - over * 0.55) * p.trim, t, 0.06);
-
-    this.plate.frequency.setTargetAtTime(
-      p.plateClosed + load * (p.plateOpen - p.plateClosed) - over * 180,
+    // quieter — the noise layers below take over the same energy. The shift cut
+    // rides on top: combustion genuinely stops for the duration of an upshift,
+    // so this is a hole in the harmonic stack, not a fade.
+    this.oscTrim.gain.setTargetAtTime(
+      (1 - over * 0.55) * (1 - cut * 0.82) * p.trim,
       t,
-      0.05,
+      cut > 0.01 ? 0.012 : 0.06,
+    );
+
+    // Throttle plate. The transient overshoots the steady-state opening: the
+    // plate is a physical flap and it arrives before the cylinders have caught
+    // up with the air, which is the "gasp" at the front of a stab.
+    this.plate.frequency.setTargetAtTime(
+      p.plateClosed +
+        load * (p.plateOpen - p.plateClosed) +
+        tip * (p.plateOpen - p.plateClosed) * 0.35 -
+        over * 180 -
+        cut * 420,
+      t,
+      tip > 0.05 ? 0.018 : 0.05,
     );
     // Exhaust resonance is load dependent: a pipe with more gas moving through
     // it resonates harder. A fixed pipe gain is why the previous engine sounded
-    // the same at part throttle and wide open.
-    this.pipe.gain.setTargetAtTime(p.pipeGain * (0.55 + load * 0.75), t, 0.07);
+    // the same at part throttle and wide open. `pull` adds the extra half of it
+    // that only arrives once the engine has been working for a moment.
+    this.pipe.gain.setTargetAtTime(
+      p.pipeGain * (0.55 + load * 0.6 + pull * 0.35),
+      t,
+      0.07,
+    );
     this.pipe.Q.setTargetAtTime(p.pipeQ * (0.8 + load * 0.45), t, 0.09);
     this.body.gain.setTargetAtTime(p.bodyGain * (0.7 + load * 0.5), t, 0.08);
-    this.rasp.gain.setTargetAtTime(1 + load * rpm01 * p.raspMax, t, 0.08);
-
-    this.gIntake.gain.setTargetAtTime(
-      (0.02 + load * p.intakeLevel) * (0.3 + s.speed01 * 0.9),
+    // Rasp is the hard edge. Steady-state it needs load *and* revs; the tip-in
+    // term lets it bite the instant the throttle opens, before the revs are
+    // there to earn it — which is exactly what a real engine does.
+    this.rasp.gain.setTargetAtTime(
+      1 + load * rpm01 * p.raspMax + tip * p.raspMax * 0.45,
       t,
-      0.05,
+      tip > 0.05 ? 0.02 : 0.08,
+    );
+
+    // Induction. The tip-in term is the plenum gulp: a slug of air pulled in
+    // the moment the plate opens, well before the steady-state term catches up.
+    // It is scaled by revs because an engine at idle cannot swallow much.
+    this.gIntake.gain.setTargetAtTime(
+      (0.02 + load * p.intakeLevel + tip * p.intakeLevel * (0.5 + rpm01)) *
+        (0.3 + s.speed01 * 0.9),
+      t,
+      tip > 0.05 ? 0.015 : 0.05,
     );
     this.gOver.gain.setTargetAtTime(over * 0.075 * (0.4 + rpm01), t, 0.07);
     // Whistle level follows stored pressure, and the band follows engine speed
@@ -609,13 +736,20 @@ export class EngineVoice {
       0.06,
     );
 
+    // Master level. `tip` gives the stab its own step in loudness — the reason
+    // a naive engine feels flat under acceleration is that its level is a
+    // function of speed, which by definition has not changed yet at the instant
+    // the player asks for it. The cut takes it back out during a shift.
     const level =
-      0.05 +
-      s.speed01 * 0.13 +
-      load * 0.13 +
-      rpm01 * 0.05 +
-      (s.boost ? 0.09 : 0);
-    this.out.gain.setTargetAtTime(level, t, 0.04);
+      (0.05 +
+        s.speed01 * 0.13 +
+        load * 0.13 +
+        rpm01 * 0.05 +
+        pull * 0.035 +
+        tip * 0.045 +
+        (s.boost ? 0.09 : 0)) *
+      (1 - cut * 0.45);
+    this.out.gain.setTargetAtTime(level, t, cut > 0.01 ? 0.012 : 0.04);
 
     // Exhaust crackle. Poisson-ish against dt so the rate is frame-rate
     // independent, plus a hard floor between bursts so a 240 Hz frame cannot
@@ -659,6 +793,50 @@ export class EngineVoice {
     };
     src.start(t, noiseOffset(buf, dur));
     src.stop(t + dur + 0.01);
+  }
+
+  /**
+   * Upshift bark: the unburnt charge lighting in the pipe when combustion
+   * resumes after the cut.
+   *
+   * Deliberately scheduled to land at the END of the ignition cut rather than at
+   * its start. That ordering is the whole event — a bark on the leading edge
+   * reads as a gearbox clunk, and the same three nodes placed 60 ms later read
+   * as an engine. Two nodes plus a gain, released by `onended`, at most one
+   * every 280 ms.
+   */
+  private upshift(t: number, force: number) {
+    const ctx = this.ctx;
+    const p = this.profile;
+    const buf = sharedNoise(ctx);
+    const at = t + 0.06;
+    const dur = 0.05 + force * 0.05;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    // Voiced through the exhaust pipe's own resonance so the bark belongs to
+    // the same object as the rest of the engine.
+    bp.frequency.setValueAtTime(p.pipeHz * 5.5 + Math.random() * 300, at);
+    bp.frequency.exponentialRampToValueAtTime(p.pipeHz * 2.2, at + dur);
+    bp.Q.value = 1.8 + p.crackle * 0.5;
+    const g = ctx.createGain();
+    const peak = (0.035 + force * 0.075) * p.crackle;
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(peak, at + 0.006);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.out);
+    src.onended = () => {
+      try {
+        g.disconnect();
+      } catch {
+        /* already torn down */
+      }
+    };
+    src.start(at, noiseOffset(buf, dur));
+    src.stop(at + dur + 0.01);
   }
 
   /**

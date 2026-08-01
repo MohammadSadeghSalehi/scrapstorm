@@ -50,7 +50,29 @@ const CONT: ContinuousInput = {
   roughness: 0.08,
   gear: 1,
   brake: false,
+  brakePressure: 0,
+  decel: 0,
+  lock: 0,
+  slipAngle: 0,
+  load: 0,
   dt: 1 / 60,
+};
+
+/**
+ * Drift state the concurrent physics work may publish.
+ *
+ * Read defensively rather than added to `VehicleState`: types.ts is owned
+ * elsewhere and the audio pass must not depend on that work having landed. When
+ * one of these appears it is used; until then the fallbacks below reconstruct
+ * the same quantities from `lateral`, `speed` and the tyre array, which is
+ * strictly worse (see the report) but is never wrong about whether the car is
+ * sideways.
+ */
+type DriftExtras = {
+  /** Slip angle in RADIANS. Consumed directly; see the read site. */
+  driftAngle?: number;
+  /** 0..1 committed-slide amount, if physics ends up owning the envelope. */
+  driftIntensity?: number;
 };
 
 /** Reused every frame — see the file header. */
@@ -114,7 +136,6 @@ export function AudioDriver({
   const prevCd = useRef(-1);
   const prevWreck = useRef(0);
   const prevImpact = useRef(0);
-  const prevDrift = useRef(false);
   const prevLap = useRef(0);
   const prevPos = useRef(0);
   const voFlip = useRef(0);
@@ -181,10 +202,23 @@ export function AudioDriver({
 
     const def = VEHICLE_CLASSES[player.classId];
     const tires = player.tires;
+    // One pass over the wheels for all three tyre signals. `long` is the
+    // longitudinal component and is what a locking wheel looks like; `slip` is
+    // the combined magnitude, and `compress` is how much weight is on the patch.
     let slip = 0;
+    let longSlip = 0;
+    let load = 0;
     if (tires && tires.length) {
-      for (let i = 0; i < tires.length; i++) slip += tires[i]!.slip;
-      slip /= tires.length;
+      for (let i = 0; i < tires.length; i++) {
+        const tr = tires[i]!;
+        slip += tr.slip;
+        longSlip += tr.long < 0 ? -tr.long : tr.long;
+        load += tr.compress;
+      }
+      const inv = 1 / tires.length;
+      slip *= inv;
+      longSlip *= inv;
+      load *= inv;
     }
     const inp = lastInput.current;
     const drifting = inp ? isDrifting(player, inp) : player.driftMeter > 0.25;
@@ -192,6 +226,42 @@ export function AudioDriver({
     const sp = Math.abs(player.speed) / Math.max(1, def.maxSpeed);
     const gear = Math.min(5, Math.floor(sp * 5) + 1);
     const braking = !!(inp?.brake && !drifting && Math.abs(player.speed) > 10);
+
+    // --- brake signals ------------------------------------------------------
+    // Pedal is binary in the input, so the *pressure* the pads hear is inferred
+    // from what braking is achieving. `uiAccel` is physics' own smoothed
+    // longitudinal acceleration, so this is the actual deceleration rather than
+    // a second integration of speed that could disagree with the car.
+    //
+    // Normalised against roughly what the car can produce: `accel × brakeMul`.
+    // A fixed divisor would make the bruiser (accel 2.35) permanently quieter
+    // under braking than the interceptor for no reason the player can see.
+    const decel = braking
+      ? Math.min(1, Math.max(0, -player.uiAccel) / (def.accel * 2.4))
+      : 0;
+    // Held pressure has a floor: standing on the pedal at low speed produces
+    // almost no deceleration but the pads are still fully clamped, and that is
+    // exactly the case where squeal is most obvious.
+    const brakePressure = braking ? Math.max(0.4, decel) : 0;
+    // Lock-up: longitudinal slip while the brakes are on. Squared-ish gate so
+    // the ABS judder is reserved for genuinely over-braking rather than being
+    // on any time a wheel moves relative to the road.
+    const lock = braking ? Math.min(1, Math.max(0, longSlip - 0.25) * 2.4) : 0;
+
+    // --- drift signals ------------------------------------------------------
+    // Slip angle: how far the car's velocity vector is from where it points.
+    // physics.ts publishes `lateral` in the vehicle frame, so this is exact and
+    // needs no reconstruction from world velocity. Normalised against 30° —
+    // a genuinely committed slide, not the maximum the model allows.
+    // `driftIntensity` (0..1) wins if physics owns the envelope; `driftAngle` is
+    // taken as RADIANS, which is the only reading of that name that cannot be
+    // ambiguous — see the report for the exact contract asked for. Either way
+    // the fallback below produces the same quantity from fields that exist now.
+    const dx = player as typeof player & DriftExtras;
+    const angleRad =
+      dx.driftAngle ??
+      Math.atan2(Math.abs(player.lateral), Math.max(4, Math.abs(player.speed)));
+    const slipAngle = Math.min(1, (dx.driftIntensity ?? angleRad / 0.52));
 
     const racing =
       st.phase === "racing" || st.phase === "countdown" || st.phase === "paused";
@@ -216,6 +286,14 @@ export function AudioDriver({
     CONT.offroad = player.offroadAmount;
     CONT.gear = gear;
     CONT.brake = braking;
+    CONT.brakePressure = brakePressure;
+    CONT.decel = decel;
+    CONT.lock = lock;
+    CONT.slipAngle = slipAngle;
+    // Tyre compression sits around 0.16 static and ~0.9 fully loaded; rescaled
+    // here so the audio layers see a 0..1 that means "weight on the patch"
+    // rather than a suspension travel figure.
+    CONT.load = Math.max(0, Math.min(1, (load - 0.12) * 1.6));
     CONT.dt = delta;
     audioEngine.updateContinuous(CONT);
 
@@ -271,7 +349,14 @@ export function AudioDriver({
           if (v.wreckTimer > 0.5 && pw <= 0) {
             audioEngine.explode(v.x, v.y + 0.6, v.z, 1.3, "vehicle", false);
             audioEngine.crowdSurge(1.1);
-            if (d2 < 6400) audioEngine.playVoice("wreck-rival");
+            // The takedown call is now reserved for a takedown the PLAYER made.
+            // `lastHitBy` is recorded on the victim and expires, so this is real
+            // attribution rather than the old "any car died within 80 m" test —
+            // which called a takedown every time two bots collided nearby, and
+            // is exactly the kind of line the announcer had no business saying.
+            if (v.lastHitBy === player.id) {
+              audioEngine.playVoice("wreck-rival");
+            }
           }
           PREV_WRECK[slot4] = v.wreckTimer;
         }
@@ -356,9 +441,40 @@ export function AudioDriver({
         ? 0.85
         : 0;
     audioEngine.updateAmbience(racing || st.phase === "finished", heat, delta);
-    audioEngine.setMusicIntensity(
-      st.phase === "racing" ? 0.35 + heat * 0.65 : 1,
+    // Musical intensity is deliberately NOT the crowd's heat.
+    //
+    // The crowd reacts to spectacle; the score should follow the *stakes*. Race
+    // progress is the biggest term — a soundtrack that peaks whenever the player
+    // happens to be near a car has no shape over three laps, and shape is the
+    // whole reason to have an arrangement that opens up. Damage is in there
+    // because a heat you are barely surviving is not a quiet one, and it is the
+    // one input the crowd cannot see.
+    const progress =
+      st.lapCount > 0 ? Math.min(1, player.lap / Math.max(1, st.lapCount)) : 0;
+    const hurt = 1 - Math.max(0, Math.min(1, player.health / Math.max(1, player.maxHealth)));
+    const drama = Math.min(
+      1,
+      progress * 0.4 +
+        pressure * 0.3 +
+        sp * 0.15 +
+        hurt * 0.2 +
+        (player.position === 1 ? 0.1 : 0),
     );
+    audioEngine.setMusicIntensity(
+      st.phase === "racing"
+        ? 0.3 + drama * 0.7
+        : // The grid is a build-up, so it is deliberately NOT wide open. This
+          // used to pass 1 for every non-racing phase, which meant the music
+          // was at its most open on the countdown and then *closed down* the
+          // instant the lights went out — the transition was backwards, and it
+          // is the reason the green flag never felt like a release.
+          st.phase === "countdown"
+          ? 0.42
+          : 1,
+    );
+    // Same number gates the announcer: the busier the race, the more a line has
+    // to be worth. See voBudget.ts.
+    audioEngine.setVoPressure(racing ? drama : 0);
 
     drainAudioCues(onCue);
 
@@ -371,6 +487,10 @@ export function AudioDriver({
         // miss the first detonation of every car that died last time.
         glassLeft.current = 2;
         lapVo.current = 0;
+        // The budget is a rolling window, so a restart moments after a finish
+        // would otherwise start the new heat with the previous one's result
+        // call still counted against it and the grid call silenced.
+        audioEngine.resetVoBudget();
         for (let i = 0; i < MAX_TRACKED; i++) {
           PREV_WRECK[i] = 0;
           PREV_DIST2[i] = 1e9;
@@ -475,10 +595,13 @@ export function AudioDriver({
     }
     prevBoost.current = player.boostTimer;
 
-    if (drifting && !prevDrift.current && Math.abs(player.speed) > 18) {
-      audioEngine.playSfx("drift");
-    }
-    prevDrift.current = drifting;
+    // No drift one-shot here any more. `drift_squeal.mp3` fired on the rising
+    // edge of the flag, which put a fixed 400 ms recording at the front of a
+    // slide whose own bed then faded in underneath it — two attacks, one event,
+    // and the sample stayed the same length whether the slide lasted a corner
+    // or a straight. TyreBed now owns both the break-away transient and the
+    // sustain, driven by the slip angle rather than by the flag, so a slide the
+    // player did not ask for (a hit, a kerb, sand) also sounds like one.
 
     if (player.impactFlash > 0.2 && prevImpact.current <= 0.12) {
       audioEngine.playImpact(0.7 + player.impactFlash * 2);
@@ -552,10 +675,16 @@ export function audioOnInputEdge(
   classId: VehicleClassId,
 ) {
   if (!audioEngine.isUnlocked()) return;
-  // firePrimary / useDefense / useUltimate are deliberately *not* handled here
-  // any more. They now come out of combat.ts, which is the only place that
-  // knows the action actually happened — off the input edge the player heard a
-  // shot every time they pressed the button, cooldown or not.
+  // Nothing is played off the input edge any more.
+  //
+  // firePrimary / useDefense / useUltimate moved to combat.ts, which is the only
+  // place that knows the action actually happened — off the input edge the
+  // player heard a shot every time they pressed the button, cooldown or not.
+  // Boost was the last survivor of that pattern and had exactly the same fault:
+  // pressing it with an empty meter lit a nitro ignition that no car was
+  // getting. The frame loop already fires it off the `boostTimer` edge, which
+  // is the boost actually starting.
+  void prev;
+  void next;
   void classId;
-  if (next.boost && !prev?.boost) audioEngine.playSfx("boost");
 }

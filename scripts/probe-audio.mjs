@@ -39,12 +39,14 @@ const MODULES = [
   "reverb.ts",
   "engineModel.ts",
   "tyreModel.ts",
+  "brakeModel.ts",
   "spatial.ts",
   "explosion.ts",
   "impactModel.ts",
   "weaponModel.ts",
   "crowd.ts",
   "music.ts",
+  "voBudget.ts",
   "cues.ts",
 ];
 
@@ -326,7 +328,34 @@ function main() {
   const { CrowdBed } = load("crowd.js");
   const { SpatialField, OPPONENT_STRIDE } = load("spatial.js");
   const { TyreBed } = load("tyreModel.js");
+  const { BrakeBed } = load("brakeModel.js");
   const { musicStateFor } = load("music.js");
+  const { VoBudget, VO_TIER, VO_BUDGET } = load("voBudget.js");
+
+  /** Reused tyre-bed input; every field is required, so build it in one place. */
+  const tyreIn = (over = {}) => ({
+    active: true,
+    speed01: 0.8,
+    slip: 0.3,
+    drifting: false,
+    slipAngle: 0,
+    load: 0.5,
+    brakePressure: 0,
+    boost: false,
+    offroad: 0,
+    roughness: 0.3,
+    dt: 1 / 60,
+    ...over,
+  });
+  const brakeIn = (over = {}) => ({
+    pressure: 0,
+    decel: 0,
+    speed01: 0.7,
+    lock: 0,
+    roughness: 0.1,
+    dt: 1 / 60,
+    ...over,
+  });
 
   /* --- explosions ------------------------------------------------------- */
   section("explosions");
@@ -603,6 +632,131 @@ function main() {
     );
     check("blow-off fires when a spooled turbo sees a closed throttle", spooled > 0);
     check("blow-off does not fire at idle", idle === 0, `nodes ${idle}`);
+
+    // --- throttle transient -------------------------------------------------
+    // Opening the throttle has to sound different from already being on it.
+    // This is the difference between an engine that responds and one that is
+    // merely correct at every steady state, and it is invisible to any test
+    // that only samples the model at equilibrium.
+    const intakeAfter = (frames) => {
+      const c = new StubContext();
+      const gains = [];
+      const og = c.createGain.bind(c);
+      c.createGain = () => {
+        const n = og();
+        gains.push(n);
+        return n;
+      };
+      const e = new EngineVoice(c, [c.createGain()], "interceptor");
+      // Settle at part throttle, then stab it.
+      for (let i = 0; i < 60; i++) {
+        e.update(i / 60, { ...input, throttle: 0.15, gearFrac: 0.4, speed01: 0.4 });
+      }
+      for (let i = 60; i < 60 + frames; i++) {
+        e.update(i / 60, { ...input, throttle: 1, gearFrac: 0.4, speed01: 0.4 });
+      }
+      return gains.map((g) => g.gain.events.at(-1)?.[2] ?? 0);
+    };
+    const stab = intakeAfter(1);
+    const settled = intakeAfter(90);
+    let transient = false;
+    for (let i = 0; i < Math.min(stab.length, settled.length); i++) {
+      if (settled[i] > 1e-6 && stab[i] > settled[i] * 1.25) transient = true;
+    }
+    check(
+      "opening the throttle overshoots the steady-state mix",
+      transient,
+      "no layer is louder on the stab than at the same throttle held",
+    );
+
+    // …and a feathered application must not produce the transient at all,
+    // otherwise it is just a level offset with extra steps.
+    const c3 = new StubContext();
+    const g3 = [];
+    const og3 = c3.createGain.bind(c3);
+    c3.createGain = () => {
+      const n = og3();
+      g3.push(n);
+      return n;
+    };
+    const e4 = new EngineVoice(c3, [c3.createGain()], "interceptor");
+    for (let i = 0; i < 60; i++) {
+      e4.update(i / 60, { ...input, throttle: 0.15, gearFrac: 0.4, speed01: 0.4 });
+    }
+    // 0 → 1 over two full seconds: same destination, no event.
+    for (let i = 0; i < 120; i++) {
+      e4.update((60 + i) / 60, {
+        ...input,
+        throttle: 0.15 + (i / 120) * 0.85,
+        gearFrac: 0.4,
+        speed01: 0.4,
+      });
+    }
+    const feathered = g3.map((g) => g.gain.events.at(-1)?.[2] ?? 0);
+    let overshotOnFeather = false;
+    for (let i = 0; i < Math.min(feathered.length, settled.length); i++) {
+      if (settled[i] > 1e-6 && feathered[i] > settled[i] * 1.25) {
+        overshotOnFeather = true;
+      }
+    }
+    check(
+      "feathering the throttle produces no stab transient",
+      !overshotOnFeather,
+    );
+
+    // --- shifts -------------------------------------------------------------
+    // The bark must land AFTER the ignition cut starts. A bark on the leading
+    // edge is a gearbox clunk; the same three nodes 60 ms later are an engine.
+    const c4 = new StubContext();
+    const srcs = [];
+    const obs = c4.createBufferSource.bind(c4);
+    c4.createBufferSource = () => {
+      const n = obs();
+      srcs.push(n);
+      return n;
+    };
+    const e5 = new EngineVoice(c4, [c4.createGain()], "trickster");
+    const pulling = { ...input, throttle: 1, gearFrac: 0.85, speed01: 0.8, gear: 2 };
+    for (let i = 0; i < 30; i++) e5.update(i / 60, pulling);
+    srcs.length = 0;
+    const shiftAt = 30 / 60;
+    e5.update(shiftAt, { ...pulling, gear: 3 });
+    // The bark is the only voice scheduled ahead of the frame it was requested
+    // on — the overrun crackle starts immediately. Identifying it by that
+    // property rather than by counting sources keeps the test honest when a
+    // random crackle happens to land on the same frame.
+    const barks = (list, at) => list.filter((s) => s.started > at + 0.02);
+    check(
+      "an upshift generates an exhaust bark",
+      barks(srcs, shiftAt).length === 1,
+      `${srcs.length} sources, ${barks(srcs, shiftAt).length} scheduled ahead`,
+    );
+    check(
+      "the bark lands after the cut has started, not on its leading edge",
+      barks(srcs, shiftAt).length === 1 &&
+        barks(srcs, shiftAt)[0].started - shiftAt < 0.15,
+      barks(srcs, shiftAt).length
+        ? `started +${(barks(srcs, shiftAt)[0].started - shiftAt).toFixed(3)}s`
+        : "",
+    );
+
+    // Coasting through a gear boundary is not a shift worth hearing. (The
+    // engine IS allowed to crackle here — it is on the overrun — so the test
+    // asks specifically for a scheduled-ahead bark.)
+    const c5 = new StubContext();
+    const srcs5 = [];
+    const obs5 = c5.createBufferSource.bind(c5);
+    c5.createBufferSource = () => {
+      const n = obs5();
+      srcs5.push(n);
+      return n;
+    };
+    const e6 = new EngineVoice(c5, [c5.createGain()], "trickster");
+    const coasting = { ...input, throttle: 0, gearFrac: 0.5, speed01: 0.5, gear: 2 };
+    for (let i = 0; i < 30; i++) e6.update(i / 60, coasting);
+    srcs5.length = 0;
+    e6.update(0.5, { ...coasting, gear: 3 });
+    check("a gear change off the throttle is silent", barks(srcs5, 0.5).length === 0);
   }
 
   /* --- beds ------------------------------------------------------------- */
@@ -625,17 +779,7 @@ function main() {
     for (let i = 0; i < 600; i++) {
       const t = i / 60;
       scrape.update(t, { pressure: 0.6, slide: 0.7, metal: 1, dt: 1 / 60 });
-      tyres.update(t, {
-        active: true,
-        speed01: 0.8,
-        slip: 0.3,
-        drifting: false,
-        brake: false,
-        boost: false,
-        offroad: 0,
-        roughness: 0.3,
-        dt: 1 / 60,
-      });
+      tyres.update(t, tyreIn());
       crowd.update(t, 1, 0.7, 1 / 60);
       field.updateListener(t, 0, 1, 0, 0, 0, -1, 0, 1, 0);
       field.updateOpponents(t, 1 / 60, opp, 3);
@@ -691,6 +835,377 @@ function main() {
       "crowd swell has no short period",
       uniq > samples.length * 0.8,
       `${uniq}/${samples.length} distinct`,
+    );
+  }
+
+  /* --- braking ----------------------------------------------------------- */
+  section("braking");
+  {
+    // Silence must be free. The car is not braking for most of a lap, and a bed
+    // that keeps writing "go to zero" 120 times a second is exactly the kind of
+    // cost this project cannot afford on the main thread.
+    const ctx = new StubContext();
+    const bed = new BrakeBed(ctx, [ctx.createGain()]);
+    for (let i = 0; i < 120; i++) bed.update(i / 60, brakeIn());
+    paramWrites = 0;
+    for (let i = 120; i < 240; i++) bed.update(i / 60, brakeIn());
+    check(
+      "an un-braked brake bed writes no AudioParams at all",
+      paramWrites === 0,
+      `${paramWrites} writes`,
+    );
+
+    // Steady braking must not allocate. The dive is gated on the envelope being
+    // low, so it fires once per application and not once per second.
+    const ctx2 = new StubContext();
+    const b2 = new BrakeBed(ctx2, [ctx2.createGain()]);
+    const hard = brakeIn({ pressure: 1, decel: 0.8, speed01: 0.6, lock: 0.2 });
+    for (let i = 0; i < 60; i++) b2.update(i / 60, hard); // let the dive fire
+    created = 0;
+    for (let i = 60; i < 660; i++) b2.update(i / 60, hard);
+    check(
+      "600 frames of sustained braking allocate no nodes",
+      created === 0,
+      `created ${created}`,
+    );
+
+    // Run a steady braking case and pull the two voices out by walking the
+    // graph from their oscillators — squealOsc → bandpass → peaking → gSqueal,
+    // and absLfo → absDepth. Indexing into a creation-order array would silently
+    // start measuring the wrong node the moment a layer is added.
+    const brakeCase = (over) => {
+      const c = new StubContext();
+      const oscs = [];
+      const oo = c.createOscillator.bind(c);
+      c.createOscillator = () => {
+        const n = oo();
+        oscs.push(n);
+        return n;
+      };
+      const b = new BrakeBed(c, [c.createGain()]);
+      const inp = brakeIn({ pressure: 1, decel: 0.9, ...over });
+      for (let i = 0; i < 240; i++) b.update(i / 60, inp);
+      const saw = oscs.find((o) => o.type === "sawtooth");
+      const tri = oscs.find((o) => o.type === "triangle");
+      const gSqueal = saw.outs[0].outs[0].outs[0];
+      const absDepth = tri.outs[0];
+      return {
+        hz: saw.frequency.events.at(-1)[2],
+        squeal: gSqueal.gain.events.at(-1)[2],
+        abs: absDepth.gain.events.at(-1)[2],
+      };
+    };
+
+    // Squeal is a low-speed phenomenon. `level = pressure × speed` is the naive
+    // version and it puts the loudest squeal at 90 m/s, which never happens.
+    const slow = brakeCase({ speed01: 0.12, lock: 0 });
+    const fast = brakeCase({ speed01: 0.95, lock: 0 });
+    check(
+      "pad squeal is loudest at low speed, not at maximum speed",
+      slow.squeal > fast.squeal * 1.5 && slow.squeal > 0,
+      `${slow.squeal.toExponential(2)} slow vs ${fast.squeal.toExponential(2)} fast`,
+    );
+
+    // Pad frequency must NOT track road speed — it is a rotor mode. A squeal
+    // that sweeps with the car is a siren.
+    check(
+      "pad squeal frequency is a fixed rotor mode, not a speed sweep",
+      Math.abs(slow.hz - fast.hz) / slow.hz < 0.05,
+      `${slow.hz.toFixed(0)} Hz vs ${fast.hz.toFixed(0)} Hz`,
+    );
+
+    // ABS judder has to be driven by lock, and be absent without it.
+    const locked = brakeCase({ speed01: 0.5, lock: 1 });
+    const gripping = brakeCase({ speed01: 0.5, lock: 0 });
+    check(
+      "ABS judder engages on lock and is silent without it",
+      locked.abs > 1e-4 && gripping.abs === 0,
+      `${locked.abs.toExponential(2)} locked vs ${gripping.abs} gripping`,
+    );
+
+    // The release is an event of its own. Without it the bed simply stops, and
+    // stopping is the one thing a physical object never does.
+    const ctx3 = new StubContext();
+    const b3 = new BrakeBed(ctx3, [ctx3.createGain()]);
+    for (let i = 0; i < 60; i++) {
+      b3.update(i / 60, brakeIn({ pressure: 1, decel: 0.8, speed01: 0.5 }));
+    }
+    created = 0;
+    for (let i = 60; i < 70; i++) {
+      b3.update(i / 60, brakeIn({ pressure: 0, decel: 0, speed01: 0.5 }));
+    }
+    check("lifting off the brakes fires a release", created > 0, `${created} nodes`);
+  }
+
+  /* --- drift voice -------------------------------------------------------- */
+  section("drift");
+  {
+    // A slide must BUILD, not switch. One frame of full drift may not already
+    // be at the steady-state level.
+    const ctx = new StubContext();
+    const gains = [];
+    const og = ctx.createGain.bind(ctx);
+    ctx.createGain = () => {
+      const n = og();
+      gains.push(n);
+      return n;
+    };
+    const bed = new TyreBed(ctx, [ctx.createGain()]);
+    const sliding = tyreIn({ drifting: true, slipAngle: 0.9, slip: 0.8, load: 0.8 });
+    bed.update(0, sliding);
+    const first = bed.getSlide();
+    for (let i = 1; i < 60; i++) bed.update(i / 60, sliding);
+    const steady = bed.getSlide();
+    check(
+      "the slide envelope builds rather than switching on",
+      first < steady * 0.35 && steady > 0.5,
+      `${first.toFixed(3)} → ${steady.toFixed(3)}`,
+    );
+
+    // …and RELEASES. Dropping the flag must not take the bed to zero on the
+    // frame the key comes up.
+    const straight = tyreIn({ drifting: false, slipAngle: 0, slip: 0, load: 0.5 });
+    bed.update(1, straight);
+    const justAfter = bed.getSlide();
+    for (let i = 1; i < 40; i++) bed.update(1 + i / 60, straight);
+    const later = bed.getSlide();
+    check(
+      "the slide releases over a tail instead of cutting",
+      justAfter > steady * 0.85 && later < justAfter * 0.6,
+      `${justAfter.toFixed(3)} → ${later.toFixed(3)}`,
+    );
+
+    // Squeal pitch tracks sliding velocity: the same angle at two speeds is not
+    // the same sound.
+    const pitchAt = (slipAngle, speed01) => {
+      const c = new StubContext();
+      const oscs = [];
+      const oo = c.createOscillator.bind(c);
+      c.createOscillator = () => {
+        const n = oo();
+        oscs.push(n);
+        return n;
+      };
+      const b = new TyreBed(c, [c.createGain()]);
+      const inp = tyreIn({ drifting: true, slipAngle, slip: 0.8, load: 0.8, speed01, roughness: 0.08 });
+      for (let i = 0; i < 180; i++) b.update(i / 60, inp);
+      return oscs[0].frequency.events.at(-1)[2];
+    };
+    const small = pitchAt(0.25, 0.6);
+    const big = pitchAt(0.95, 0.6);
+    const fastBig = pitchAt(0.95, 1);
+    check(
+      "squeal pitch rises with slip angle",
+      big > small * 1.15,
+      `${small.toFixed(0)} Hz → ${big.toFixed(0)} Hz`,
+    );
+    check(
+      "the same angle at higher speed is a higher squeal",
+      fastBig > big,
+      `${big.toFixed(0)} Hz → ${fastBig.toFixed(0)} Hz`,
+    );
+
+    // A long slide must not keep allocating; the break-away is an edge, not a
+    // state, and its rate limit has to hold.
+    const ctx2 = new StubContext();
+    const b2 = new TyreBed(ctx2, [ctx2.createGain()]);
+    for (let i = 0; i < 120; i++) b2.update(i / 60, sliding);
+    created = 0;
+    for (let i = 120; i < 720; i++) b2.update(i / 60, sliding);
+    check(
+      "600 frames of sustained drift allocate no nodes",
+      created === 0,
+      `created ${created}`,
+    );
+
+    // A parked game (menu, garage, results) must not keep writing the bed down
+    // once it has already arrived at silence. These phases last minutes.
+    const ctx4 = new StubContext();
+    const b4 = new TyreBed(ctx4, [ctx4.createGain()]);
+    const eng4 = new EngineVoice(ctx4, [ctx4.createGain()], "bruiser");
+    const offTyre = tyreIn({ active: false });
+    const offEng = {
+      active: false,
+      speed01: 0,
+      throttle: 0,
+      brake: false,
+      boost: false,
+      drifting: false,
+      gear: 1,
+      gearFrac: 0,
+      dt: 1 / 60,
+    };
+    for (let i = 0; i < 30; i++) {
+      b4.update(i / 60, offTyre);
+      eng4.update(i / 60, offEng);
+    }
+    paramWrites = 0;
+    for (let i = 30; i < 130; i++) {
+      b4.update(i / 60, offTyre);
+      eng4.update(i / 60, offEng);
+    }
+    check(
+      "a stopped engine and tyre bed write nothing on the menu",
+      paramWrites === 0,
+      `${paramWrites} writes over 100 frames`,
+    );
+
+    // And straight-line driving must not pay for the drift layers at all.
+    const ctx3 = new StubContext();
+    const b3 = new TyreBed(ctx3, [ctx3.createGain()]);
+    const cruise = tyreIn({ slip: 0, slipAngle: 0, offroad: 0 });
+    for (let i = 0; i < 240; i++) b3.update(i / 60, cruise);
+    paramWrites = 0;
+    for (let i = 240; i < 300; i++) b3.update(i / 60, cruise);
+    const perFrame = paramWrites / 60;
+    check(
+      "cruising does not write the slide layers every frame",
+      perFrame < 9,
+      `${perFrame.toFixed(1)} writes/frame`,
+    );
+  }
+
+  /* --- announcer budget --------------------------------------------------- */
+  section("announcer budget");
+  {
+    const b = new VoBudget();
+    check(
+      "a critical line is never refused on a cold budget",
+      b.request(0, VO_TIER.CRITICAL, "green", 0, 0),
+    );
+    // The floor rises with every line spoken, so flavour loses immediately.
+    check(
+      "flavour is refused once anything else has spoken",
+      !b.request(30, VO_TIER.FLAVOUR, "rival", 0, 0),
+    );
+    check(
+      "a critical line still lands in a busy window",
+      b.request(30, VO_TIER.CRITICAL, "final-lap", 0, 0),
+    );
+
+    // Window budget: non-critical lines run out; critical ones cannot.
+    const b2 = new VoBudget();
+    let spoken = 0;
+    // Distinct groups (so cooldowns cannot be doing the work) at 7 s apart, all
+    // inside one window. Eight chances, four allowed.
+    const tries = 8;
+    for (let i = 0; i < tries; i++) {
+      if (b2.request(i * 7, VO_TIER.NOTABLE, `g${i}`, 0, 0)) spoken += 1;
+    }
+    check(
+      "non-critical lines are capped inside the rolling window",
+      spoken <= VO_BUDGET.maxPerWindow && spoken > 0,
+      `${spoken} of ${tries} requests inside ${VO_BUDGET.windowSeconds}s`,
+    );
+    check(
+      "the result of the race is not subject to the cap",
+      b2.request(160, VO_TIER.CRITICAL, "win", 0, 0),
+    );
+
+    // Interruption is a privilege. A MAJOR line outranks a COLOUR one, but a
+    // NOTABLE one may not cut it even though it also outranks it.
+    const b3 = new VoBudget();
+    check(
+      "a NOTABLE line does not interrupt a lower-tier line that is sounding",
+      !b3.request(100, VO_TIER.NOTABLE, "overtake", 102, VO_TIER.COLOUR),
+    );
+    const b4 = new VoBudget();
+    check(
+      "a CRITICAL line does interrupt",
+      b4.request(100, VO_TIER.CRITICAL, "final-lap", 102, VO_TIER.COLOUR),
+    );
+    const b5 = new VoBudget();
+    check(
+      "nothing interrupts a line of its own tier",
+      !b5.request(100, VO_TIER.CRITICAL, "win", 102, VO_TIER.CRITICAL),
+    );
+
+    // Pressure raises the floor: the busier the race, the more a line must be
+    // worth. Same signal the music intensity reads.
+    const b6 = new VoBudget();
+    b6.setPressure(1);
+    check(
+      "a busy race silences colour on its own",
+      !b6.request(0, VO_TIER.COLOUR, "lap", 0, 0),
+    );
+    const b7 = new VoBudget();
+    b7.setPressure(0);
+    check(
+      "the same line lands in a quiet race",
+      b7.request(0, VO_TIER.COLOUR, "lap", 0, 0),
+    );
+
+    // A line that never became audio must give its slot back, or one missing
+    // mp3 silences the announcer for a minute.
+    const b8 = new VoBudget();
+    b8.request(0, VO_TIER.NOTABLE, "overtake", 0, 0);
+    b8.refund(0, "overtake");
+    check(
+      "a refunded line costs nothing",
+      b8.recentCount(0) === 0 && b8.request(0.1, VO_TIER.NOTABLE, "overtake", 0, 0),
+    );
+
+    // Group cooldowns are the defence against repetition specifically.
+    const b9 = new VoBudget();
+    b9.request(0, VO_TIER.MAJOR, "wreck-rival", 0, 0);
+    check(
+      "the same group cannot repeat inside its cooldown",
+      !b9.request(20, VO_TIER.MAJOR, "wreck-rival", 0, 0),
+    );
+
+    // A restart must not inherit the previous heat's budget.
+    const b10 = new VoBudget();
+    for (let i = 0; i < 4; i++) b10.request(i * 8, VO_TIER.NOTABLE, `g${i}`, 0, 0);
+    b10.reset();
+    check(
+      "resetting clears the window so a new heat starts fresh",
+      b10.recentCount(40) === 0,
+    );
+
+    // The whole point of the exercise: a realistic three-lap heat.
+    const b11 = new VoBudget();
+    const heat = [
+      [0, VO_TIER.MAJOR, "grid-locked"],
+      [3, VO_TIER.CRITICAL, "green"],
+      [12, VO_TIER.FLAVOUR, "rival"],
+      [18, VO_TIER.COLOUR, "hit"],
+      [24, VO_TIER.NOTABLE, "overtake"],
+      [31, VO_TIER.FLAVOUR, "close-pack"],
+      [38, VO_TIER.COLOUR, "lap"],
+      [45, VO_TIER.COLOUR, "boost"],
+      [52, VO_TIER.FLAVOUR, "rival"],
+      [61, VO_TIER.COLOUR, "hit"],
+      [70, VO_TIER.MAJOR, "wreck-rival"],
+      [78, VO_TIER.COLOUR, "lap"],
+      [86, VO_TIER.NOTABLE, "overtaken"],
+      [95, VO_TIER.CRITICAL, "final-lap"],
+      [104, VO_TIER.FLAVOUR, "rival"],
+      [112, VO_TIER.COLOUR, "hit"],
+      [120, VO_TIER.CRITICAL, "win"],
+    ];
+    b11.setPressure(0.45);
+    const said = [];
+    for (const [t, tier, group] of heat) {
+      if (b11.request(t, tier, group, 0, 0)) said.push(group);
+    }
+    console.log(`  heat speaks: ${said.join(", ")}`);
+    check(
+      "a two-minute heat speaks a handful of lines, not seventeen",
+      said.length <= 8 && said.length >= 4,
+      `${said.length} of ${heat.length}`,
+    );
+    check(
+      "everything that must be heard is heard",
+      said.includes("green") &&
+        said.includes("final-lap") &&
+        said.includes("win") &&
+        said.includes("wreck-rival"),
+      said.join(", "),
+    );
+    check(
+      "no rival chatter survives a busy heat",
+      !said.includes("rival") && !said.includes("close-pack"),
+      said.join(", "),
     );
   }
 
@@ -785,6 +1300,7 @@ function main() {
     const eng = new EngineVoice(ctx, [bed], "bruiser");
     const tyres = new TyreBed(ctx, [bed]);
     const scrape = new ScrapeBed(ctx, [bed]);
+    const brakes = new BrakeBed(ctx, [bed]);
     const crowd = new CrowdBed(ctx, [bed]);
     const field = new SpatialField(ctx, bed, 12);
     const opp = new Float32Array(3 * OPPONENT_STRIDE);
@@ -805,26 +1321,18 @@ function main() {
       gearFrac: 0.6,
       dt: 1 / 60,
     };
-    const tyreIn = {
-      active: true,
-      speed01: 0.7,
-      slip: 0.2,
-      drifting: false,
-      brake: false,
-      boost: false,
-      offroad: 0,
-      roughness: 0.2,
-      dt: 1 / 60,
-    };
-    // Contact bed idle, which is the common case — the car is not scraping for
-    // the overwhelming majority of frames.
+    const tyres2 = tyreIn({ speed01: 0.7, slip: 0.2, roughness: 0.2 });
+    // Contact and brake beds idle, which is the common case — the car is
+    // neither scraping nor braking for the overwhelming majority of frames.
     const scrapeIn = { pressure: 0, slide: 0.7, metal: 1, dt: 1 / 60 };
+    const brakes2 = brakeIn();
 
     const frame = (i) => {
       const t = i / 60;
       eng.update(t, engIn);
-      tyres.update(t, tyreIn);
+      tyres.update(t, tyres2);
       scrape.update(t, scrapeIn);
+      brakes.update(t, brakes2);
       crowd.update(t, 0, 0.5, 1 / 60);
       field.updateListener(t, i * 0.1, 1, 0, 0, 0, -1, 0, 1, 0);
       field.updateOpponents(t, 1 / 60, opp, 3);
