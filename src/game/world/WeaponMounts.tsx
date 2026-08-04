@@ -157,34 +157,24 @@ type Shape = "turret" | "launcher" | "rocket" | "mine";
  */
 function loadoutOf(v: VehicleState, heavyAllowed: boolean): Partial<Record<Shape, Slot[]>> {
   const key = variantKey(v.classId, v.id);
-  if (v.classId === "bruiser") {
-    const heavy: Partial<Record<Shape, Slot[]>> = !heavyAllowed
-      ? {}
-      : key === "ArmoredTankTruck"
-        ? { turret: [{ right: 0, on: "deck", back: 0.5, lift: -0.18 }] }
-        : { launcher: [{ right: 0, on: "deck", back: 0.5, lift: -0.12 }] };
-    return {
-      ...heavy,
-      rocket: [
-        { right: -0.62, on: "tail", back: 1.35, lift: 0.02, faceForward: true },
-        { right: 0.62, on: "tail", back: 1.35, lift: 0.02, faceForward: true },
-      ],
-    };
-  }
-  if (v.classId === "interceptor") {
-    return {
-      rocket: [
-        { right: -0.4, on: "deck", back: 0.75, lift: 0.0, faceForward: true },
-        { right: 0.4, on: "deck", back: 0.75, lift: 0.0, faceForward: true },
-      ],
-    };
-  }
-  return {
-    mine: [
-      { right: -0.46, on: "tail", back: 1.25, lift: -0.06 },
-      { right: 0.46, on: "tail", back: 1.25, lift: -0.06 },
-    ],
-  };
+  /*
+   * ONLY THE LAUNCHER. No decorative rockets or mines bolted to the bodywork.
+   *
+   * Loose rounds were racked on the deck and the tail so every class carried
+   * visible ordnance. That is the wrong idea: a rocket is a thing that exists
+   * in flight, and welding a copy of it to the car makes the projectile read as
+   * scenery that happened to come loose rather than as something you fired. It
+   * also meant the SAME mesh was on screen twice during a shot, which is the
+   * fastest way to make a weapon feel fake.
+   *
+   * What stays is the hardware a weapon is fired FROM — a turret and a launcher
+   * are permanent fixtures and belong on the silhouette. The round itself is
+   * spawned by combat.ts and lives only while it is flying.
+   */
+  if (v.classId !== "bruiser" || !heavyAllowed) return {};
+  return key === "ArmoredTankTruck"
+    ? { turret: [{ right: 0, on: "deck", back: 0.5, lift: -0.18 }] }
+    : { launcher: [{ right: 0, on: "deck", back: 0.5, lift: -0.12 }] };
 }
 
 const SHAPES: readonly Shape[] = ["turret", "launcher", "rocket", "mine"];
