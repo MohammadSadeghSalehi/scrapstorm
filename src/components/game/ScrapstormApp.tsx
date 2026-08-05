@@ -803,14 +803,49 @@ export function ScrapstormApp() {
     id: CutsceneId;
     then: () => void;
   } | null>(null);
+  /** Remaining clips in the current run, played in order before `then`. */
+  const cutQueue = useRef<CutsceneId[]>([]);
+  const cutThen = useRef<() => void>(() => {});
 
-  const playCutscene = useCallback((id: CutsceneId, then: () => void) => {
-    if (hasSeenCutscene(id)) {
+  /**
+   * Play a SEQUENCE of clips, then continue.
+   *
+   * A sequence rather than a single slot because the moments stack: the first
+   * race of a career is the cold open, then the rival card, then the grid. Each
+   * is a separate authored clip and each is separately skippable, so a player
+   * who skips one still gets the next rather than the whole run collapsing.
+   *
+   * Already-seen one-shots are filtered out HERE rather than skipped at play
+   * time, so a queue of three that reduces to one still runs cleanly and a
+   * queue that reduces to nothing continues immediately with no black frame.
+   */
+  const playCutscenes = useCallback((ids: CutsceneId[], then: () => void) => {
+    const queue = ids.filter((id) => !hasSeenCutscene(id));
+    if (queue.length === 0) {
       then();
       return;
     }
-    setCutscene({ id, then });
+    cutQueue.current = queue.slice(1);
+    cutThen.current = then;
+    setCutscene({ id: queue[0]!, then });
   }, []);
+
+  const advanceCutscene = useCallback(() => {
+    const next = cutQueue.current.shift();
+    if (next) {
+      setCutscene({ id: next, then: cutThen.current });
+      return;
+    }
+    const go = cutThen.current;
+    cutThen.current = () => {};
+    setCutscene(null);
+    go();
+  }, []);
+
+  const playCutscene = useCallback(
+    (id: CutsceneId, then: () => void) => playCutscenes([id], then),
+    [playCutscenes],
+  );
 
   const beginRace = useCallback(
     (def: MissionDef | null) => {
@@ -906,7 +941,26 @@ export function ScrapstormApp() {
            * begun yet, which is exactly what a cold open is for. It is a
            * one-shot, so hasSeenCutscene short-circuits it on every later race.
            */
-          playCutscene("cold-open", () => {
+          /*
+           * The pre-race run, in narrative order: how you got here, who you are
+           * racing, then the grid you are sitting on.
+           *
+           * cold-open and antagonist are one-shots and drop out of the queue
+           * once seen, so an ordinary race after the first is just the rival
+           * card and the grid — and a free-play race with no rival is the grid
+           * alone. rank 1 is Marrow, whose own clip replaces the generic card
+           * rather than adding to it; meeting him should not look like meeting
+           * anyone else.
+           *
+           * All of this is held BEFORE setPhase("countdown"), because that flip
+           * is what mounts the world — a clip played after it covers a
+           * countdown already running, and skipping would find the lights on 1.
+           */
+          const rival = def?.rivalId ?? null;
+          const pre: CutsceneId[] = ["cold-open"];
+          if (rival) pre.push(rival === "marrow" ? "antagonist" : "rival");
+          pre.push("grid");
+          playCutscenes(pre, () => {
             sim.setPhase("countdown");
           });
           lastHit.current = 999;
@@ -1164,7 +1218,10 @@ export function ScrapstormApp() {
       {!inRace && (shellPhase === "menu" || shellPhase === "garage") && (
         <CutsceneLoop
           id={shellPhase === "garage" ? "garage" : "menu-loop"}
-          opacity={0.4}
+          // Was 0.4, which read as a stain behind the panels rather than as
+          // footage. The menu panels carry their own dark backing, so the
+          // backdrop can sit much higher without costing any legibility.
+          opacity={0.85}
         />
       )}
 
@@ -1206,11 +1263,7 @@ export function ScrapstormApp() {
       {cutscene && (
         <Cutscene
           id={cutscene.id}
-          onDone={() => {
-            const go = cutscene.then;
-            setCutscene(null);
-            go();
-          }}
+          onDone={advanceCutscene}
         />
       )}
 

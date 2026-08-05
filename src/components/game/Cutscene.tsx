@@ -74,12 +74,22 @@ export function Cutscene({
   id,
   onDone,
   maxWaitMs = 4000,
-  letterbox = true,
+  letterbox = false,
 }: {
   id: CutsceneId;
   onDone: () => void;
   /** Give up waiting for playable data and continue. */
   maxWaitMs?: number;
+  /**
+   * Fit the whole frame inside the screen, showing bars, instead of filling it.
+   *
+   * Off by default. These clips are generated at whatever aspect the model
+   * produced, and `object-contain` renders a 1:1 clip as a small square adrift
+   * in a 16:9 screen — which reads as a broken overlay rather than a cutscene,
+   * and looks nothing like the game it is cutting to. Filling the screen and
+   * cropping the overflow is the right trade for a full-bleed beat; the subject
+   * is centred in every one of these, so nothing important leaves frame.
+   */
   letterbox?: boolean;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
