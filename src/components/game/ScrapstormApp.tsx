@@ -65,6 +65,7 @@ import { MenuOverlay } from "./Menus";
 import { RaceLoadingScreen } from "./RaceLoadingScreen";
 import { CareerBoard, MissionBrief, MissionResults, StoryCard } from "./CareerMenus";
 import type { HudSlice, MissionHud } from "./GameHUD";
+import { Cutscene, CutsceneLoop, hasSeenCutscene, type CutsceneId } from "./Cutscene";
 
 type GameSimulation = import("@/game/sim").GameSimulation;
 type InputController = import("@/game/input").InputController;
@@ -526,7 +527,22 @@ export function ScrapstormApp() {
         saveMeta(paid);
         setMeta(paid);
         sim.state.scrapEarned = drained.scrap;
-        setMissionResult({ def, summary, award });
+        /*
+         * The result clip plays BEFORE the results card, not behind it.
+         *
+         * Both want the screen, and a card over a video is a composite nobody
+         * designed. Holding the card until the clip finishes also means the
+         * skip path and the natural end land in the same place — the card —
+         * which is what stops a skipped victory from feeling like a bug.
+         *
+         * A mission is won when its objectives resolved complete — which is
+         * NOT the same as finishing first, since a survival or escort run can
+         * be won from any place. Neither clip is a one-shot: winning and losing
+         * are the two things that happen most.
+         */
+        playCutscene(summary.outcome === "complete" ? "victory" : "defeat", () => {
+          setMissionResult({ def, summary, award });
+        });
         if (award.beats.length > 0) setBeatQueue(award.beats);
         // The world goes back to free play immediately; the results screen is
         // reading a snapshot, not a live directive.
@@ -774,6 +790,28 @@ export function ScrapstormApp() {
    * assets are ready and immediately before the countdown, or the grid is named
    * after the previous race.
    */
+  /*
+   * The clip currently on screen, and what happens when it finishes.
+   *
+   * A single slot rather than a queue: two cutscenes wanting the screen at once
+   * is a design mistake, not a case to handle, and a queue would quietly hide
+   * it. The continuation is stored WITH the clip so a skip and a natural end
+   * take exactly the same path — the commonest cutscene bug is a skip that
+   * forgets to do what the clip was covering for.
+   */
+  const [cutscene, setCutscene] = useState<{
+    id: CutsceneId;
+    then: () => void;
+  } | null>(null);
+
+  const playCutscene = useCallback((id: CutsceneId, then: () => void) => {
+    if (hasSeenCutscene(id)) {
+      then();
+      return;
+    }
+    setCutscene({ id, then });
+  }, []);
+
   const beginRace = useCallback(
     (def: MissionDef | null) => {
       haptic("boost");
@@ -858,7 +896,19 @@ export function ScrapstormApp() {
             missionDefRef.current = null;
           }
           radioRef.current = [];
-          sim.setPhase("countdown");
+          /*
+           * The cold open plays BEFORE the countdown starts, not over it.
+           *
+           * The world mount is triggered by the phase flip to "countdown" (see
+           * raceGate), so a clip played after it would be covering a countdown
+           * that is already running down — the player would skip it and find
+           * the lights on 1. Held here, the clip is dead time the race has not
+           * begun yet, which is exactly what a cold open is for. It is a
+           * one-shot, so hasSeenCutscene short-circuits it on every later race.
+           */
+          playCutscene("cold-open", () => {
+            sim.setPhase("countdown");
+          });
           lastHit.current = 999;
           rewardApplied.current = false;
           lastHudSig.current = "";
@@ -1104,6 +1154,20 @@ export function ScrapstormApp() {
         />
       ) : null}
 
+      {/*
+        Menu and garage backdrops. Behind the vignette and every overlay, and
+        never mounted during a race — a decoded 7 MB video decoding alongside
+        the render loop is main-thread cost for something nobody is looking at.
+        CutsceneLoop fails silently, so a missing file yields a plain menu
+        rather than a broken one.
+      */}
+      {!inRace && (shellPhase === "menu" || shellPhase === "garage") && (
+        <CutsceneLoop
+          id={shellPhase === "garage" ? "garage" : "menu-loop"}
+          opacity={0.4}
+        />
+      )}
+
       <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(10,10,11,0.55)_100%)]" />
 
       {!careerOverlay && (
@@ -1134,6 +1198,22 @@ export function ScrapstormApp() {
         open. Rendering both would leave the garage's pointer targets live
         underneath a full-screen panel.
       */}
+      {/*
+        Above every other layer, including the pause menu and the results card.
+        A cutscene that something else can draw over is worse than no cutscene:
+        the player sees a broken composite rather than a beat.
+      */}
+      {cutscene && (
+        <Cutscene
+          id={cutscene.id}
+          onDone={() => {
+            const go = cutscene.then;
+            setCutscene(null);
+            go();
+          }}
+        />
+      )}
+
       {missionResult ? (
         <MissionResults
           def={missionResult.def}
