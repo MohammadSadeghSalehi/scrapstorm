@@ -97,20 +97,28 @@ export const HANDLING = {
  * steering, including a lane change at 30km/h) or a switch (drift the instant
  * you turn hard, which is a car that cannot be driven).
  *
- *   LOAD  = |steer| x speedRatio / grip
+ *   LOAD  = |steer| x speedRatio / (grip x slideBias)
  *
  * One expression of "how hard a corner, how fast, in what car". speedRatio is
  * per-class so it means the same thing in a Bruiser as an Interceptor, and
- * dividing by `grip` means the number that decides this is the SAME number the
- * rest of the physics already uses — including the tyre-temperature multiplier
- * and the off-road penalty. Cold tyres and a sand excursion break away early
- * for free, which is exactly right and cost nothing to arrange.
+ * dividing by the LIVE `grip` means the number that decides this is the SAME
+ * number the rest of the physics already uses — including the tyre-temperature
+ * multiplier and the off-road penalty. Cold tyres and a sand excursion break
+ * away early for free, which is exactly right and cost nothing to arrange.
+ *
+ * `slideBias` (VehicleClassDef) is the part `grip` could not say. Breaking away
+ * late and cornering fast are different properties and a heavy car wants
+ * opposite answers to them: while they shared one number the Bruiser had to
+ * hold the best cornering grip in the game in order to be the hardest to
+ * unstick, and it duly won half of every measured race. The thresholds below
+ * are the ones this model was authored against and are unchanged; only the way
+ * they are reached is.
  *
  * Class-by-class, the steering x speed product needed to reach `breakLoad`:
  *
- *   trickster  grip 0.62  →  0.38   (full lock at 38% of Vmax — built to slide)
- *   interceptor grip 0.88 →  0.55
- *   bruiser    grip 0.96  →  0.60   (hardest to unstick, as advertised)
+ *   trickster  0.88 x 0.70  →  0.38   (full lock at 38% of Vmax — built to slide)
+ *   interceptor 0.90 x 1.00 →  0.56
+ *   bruiser    0.82 x 1.18  →  0.60   (hardest to unstick, as advertised)
  *
  * ── the hold ─────────────────────────────────────────────────────────
  *

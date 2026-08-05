@@ -424,13 +424,24 @@ export function aiInput(
     (0.74 + (0.5 - prof.patience) * 0.3 + (prof.pace - 0.5) * 0.16);
   input.throttle = !erring && cornerTight && Math.abs(v.speed) > liftSpeed ? 0.55 : 1;
 
-  if (v.classId === "trickster" && cornerTight && Math.abs(v.speed) > 14) {
-    input.brake = !erring && Math.abs(dyaw) > 0.38;
-    input.steering = Math.max(-1, Math.min(1, dyaw * (erring ? 1.6 : 2.7)));
-    input.throttle = 0.85;
-  } else {
-    input.brake = !erring && veryTight && Math.abs(v.speed) > def.maxSpeed * 0.8;
-  }
+  /*
+   * There used to be a Trickster-only corner branch here, and it is gone.
+   *
+   * It did two things. It stood on the brakes at |dyaw| > 0.38 and held 85%
+   * throttle through every tight corner — a workaround for a class whose
+   * cornering grip was 0.62. That grip is now 0.88 (classes.ts: the slide moved
+   * to `slideBias`), so all the workaround did was brake for corners the car
+   * could take flat. Measured, that reflex alone was most of the Trickster's
+   * hole: removing it took the class from 4.75 laps in a fixed window to 5.35
+   * against the other two at 6.05, and from a 1.4% win rate to 16.7%
+   * (scripts/balance-classes.mjs).
+   *
+   * The second thing was a raised steering gain, 2.7 instead of 2.4, which was
+   * dead code and worth saying so: `cornerTight` is |dyaw| > 0.48, and 0.48
+   * times even the BASE gain already saturates the ±1 clamp. Every value from
+   * 2.2 to 2.9 measured bit-identical.
+   */
+  input.brake = !erring && veryTight && Math.abs(v.speed) > def.maxSpeed * 0.8;
 
   /*
    * Blocker brake-check. Rate limited to once every four seconds and only above

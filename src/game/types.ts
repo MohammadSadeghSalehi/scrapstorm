@@ -56,6 +56,16 @@ export interface VehicleClassDef {
   accel: number;
   turnRate: number;
   grip: number;
+  /**
+   * How hard this chassis is to UNSTICK, independent of how fast it corners.
+   *
+   * `grip` alone had to mean both, and the two want opposite things from a
+   * heavy car: a hauler understeers (low cornering grip) but does not snap
+   * sideways (high breakaway threshold). Multiplies the denominator of the
+   * grip-drift load in physics.stepGripDrift — >1 is harder to slide, <1 is
+   * built to. See DRIFT in balance.ts.
+   */
+  slideBias: number;
   mass: number;
   health: number;
   primaryCooldown: number;

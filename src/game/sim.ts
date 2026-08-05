@@ -88,16 +88,32 @@ const runtime = new Map<string, VehicleRuntime>();
  * rather than a different distance per road. If a future circuit ever changes
  * that, this is the constant that has to become metres.
  */
-const GRID_ROWS = 4;
-/** Samples between grid rows. ~9.4m — over two car lengths. */
+/**
+ * Two abreast, two deep. A four-car single file spread the field over 28m of
+ * road and put P4 far enough back that the start was decided before anyone
+ * touched a corner; two rows of two is a start line, and it puts the player's
+ * only front-row company where they can be seen and hit.
+ */
+const GRID_ROWS = 2;
+const GRID_COLS = 2;
+/** Samples between grid rows. ~9.4m — over two Bruiser lengths (halfL 1.95). */
 const GRID_ROW_SAMPLES = 3;
 /**
- * Sample index of the LAST row. Pole sits `(GRID_ROWS - 1) * GRID_ROW_SAMPLES`
- * further on, which puts the front of the grid exactly where the old back-to-
- * front layout put its leading car — so the length of lap one is unchanged.
+ * Sample index of the REAR row. The front row therefore lands on sample 11,
+ * exactly where the previous four-row ladder put pole, so the length of lap one
+ * is unchanged and every authored pace target still means what it measured.
+ *
+ * Both rows stay inside worldProps' GRID_CLEAR (>= 8 samples, and 6% of the
+ * sample count on every circuit in the catalogue, which is more), so the launch
+ * straight is still swept of barrels and verge posts.
  */
-const GRID_REAR_SAMPLE = 2;
-/** Metres either side of the centreline. Fits the 24m narrowest start line. */
+const GRID_REAR_SAMPLE = 8;
+/**
+ * Metres either side of the centreline, so the two cars in a row sit 6.8m
+ * apart. Measured (scripts/balance-grid.mjs): 4.36m of air between the widest
+ * pair of bodies, and 6.38m from the outer flank to the road edge on the
+ * narrowest start line in the catalogue (Cinder Bowl, 22m).
+ */
 const GRID_LANE_M = 3.4;
 
 /**
@@ -304,17 +320,21 @@ function makeVehicle(
    * AHEAD of the car it called P1. Pole was the back of the grid.
    *
    * Slot 0 now takes the FRONT row and the rows walk backwards, so the reported
-   * order and the physical order are the same thing. Lanes alternate sides
-   * instead of running diagonally across the road, which is what a grid looks
-   * like and also keeps every car within half a road width of the centreline on
-   * the narrowest circuit in the catalogue (Rustline, 24m at the line).
+   * order and the physical order are the same thing.
+   *
+   * Slots fill left-then-right within a row: 0 and 1 share the front row, 2 and
+   * 3 the rear. Pole takes the LEFT lane (`col === 0` → -1) purely so the
+   * player, who is always slot 0, starts on the same side of the road every
+   * race and can learn where their mirror is.
    */
   const S = getTrackSamples();
-  const row = Math.min(GRID_ROWS - 1, Math.max(0, gridIndex));
+  const slot = Math.min(GRID_ROWS * GRID_COLS - 1, Math.max(0, gridIndex));
+  const row = Math.floor(slot / GRID_COLS);
+  const col = slot % GRID_COLS;
   const startIdx =
     GRID_REAR_SAMPLE + (GRID_ROWS - 1 - row) * GRID_ROW_SAMPLES;
   const sample = S[Math.min(startIdx, S.length - 1)] ?? S[0]!;
-  const lane = (row % 2 === 0 ? -1 : 1) * GRID_LANE_M;
+  const lane = (col === 0 ? -1 : 1) * GRID_LANE_M;
   const rx = Math.cos(sample.yaw);
   const rz = -Math.sin(sample.yaw);
   const x = showcase ? SHOWCASE.x : sample.x + rx * lane;

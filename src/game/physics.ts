@@ -209,7 +209,12 @@ function stepGripDrift(
   }
 
   // How far past the tyres' limit the corner being asked for is. See DRIFT.
-  const load = (mag * speedRatio) / Math.max(0.3, grip);
+  // `slideBias` separates "does not snap sideways" from "corners fast" — the
+  // Bruiser wants the first and not the second, and one grip number cannot say
+  // both. See VehicleClassDef.slideBias.
+  const load =
+    (mag * speedRatio) /
+    Math.max(0.3, grip * VEHICLE_CLASSES[v.classId].slideBias);
   const over = load / DRIFT.breakLoad - 1;
   const holdMul = v.isPlayer ? 1 : DRIFT.aiHoldMul;
   const needed =
@@ -395,8 +400,36 @@ export function stepVehicle(
     maxSpeed *= 1.18;
     accel *= 1.12;
   }
+  /*
+   * The Trickster's abilities did nothing to its car, and that was a balance
+   * hole rather than a style choice.
+   *
+   * combat.ts gives the Bruiser 1.6s of boost with its salvo and the
+   * Interceptor 2.2s with its lock, on top of the multipliers above. The
+   * Trickster's ultimate lays mines behind it and its defence spawns a decoy —
+   * both entirely other-facing, so every time the Trickster spent a meter the
+   * other two were converting theirs into ground. Measured, that was most of
+   * the class's remaining pace deficit under fire: with the field's weapons
+   * cold it ran within 3% of the Interceptor, with them live it lost 10%, and
+   * that gap is the only thing these three lines close.
+   *
+   * The trim it gets is ROTATION rather than top speed, which is the only shape
+   * that does not turn it into a slower Interceptor: laying a trap and leaving
+   * through a corner nobody else can take is the class's whole sentence.
+   */
+  if (v.ultimateActive > 0 && v.classId === "trickster") {
+    turnRate *= 1.34;
+    accel *= 1.3;
+    maxSpeed *= 1.08;
+  }
   if (v.defenseActive > 0 && v.classId === "interceptor") {
     maxSpeed *= 1.08;
+  }
+  if (v.defenseActive > 0 && v.classId === "trickster") {
+    // The decoy runs for 3.2s — the longest defence in the game — so this is
+    // deliberately the smallest trim of the three.
+    turnRate *= 1.12;
+    maxSpeed *= 1.04;
   }
 
   if (input.boost) {
