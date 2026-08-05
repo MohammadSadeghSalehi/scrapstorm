@@ -88,9 +88,28 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     grip: 0.9,
     slideBias: 1.0,
     mass: 0.74,
-    health: 100,
+    /*
+     * Raised from 100. The opening laps were cooking cars before the field had
+     * spread out — four entrants trading paint in a bunched pack is the most
+     * contact-dense part of any race, and a hull tuned for a settled midfield
+     * cannot survive it. Ratios between the classes are preserved, so nothing
+     * in the balance sweep moves; everything simply lasts longer.
+     */
+    health: 145,
     primaryCooldown: 0.2,
-    primaryDamage: 12,
+    /*
+     * Damage rises WITH hull, but not as fast.
+     *
+     * A blanket hull raise is not neutral: it lengthens every fight, and a
+     * longer fight is worth less than a faster lap. Measured, +45% hull alone
+     * took the bruiser — the class that wins by fighting — from 34.5% to 13% on
+     * Ash Spire and blew the three-way spread out to 23.6 points.
+     *
+     * Scaling damage by +30% against hull's +45% leaves net time-to-kill about
+     * 12% longer, which is the durability that was asked for, without quietly
+     * converting the game into a pure pace contest.
+     */
+    primaryDamage: 16,
     primarySpeed: 110,
     // Longest reach in the game. Being able to open fire before anyone else can
     // answer is what the thin hull is buying.
@@ -127,13 +146,13 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     grip: 0.82,
     slideBias: 1.18,
     mass: 1.55,
-    health: 148,
+    health: 215,
     // Slow, heavy, and it hurts: one hit is worth two Interceptor bolts. But
     // 42 DPS against the Interceptor's 60 and half the reach — the Bruiser is
     // not the damage class, it is the class that is still there at the flag.
     // Dropping this from 34 at 0.48s is what took its win rate from 51% to 35%.
     primaryCooldown: 0.62,
-    primaryDamage: 26,
+    primaryDamage: 34,
     primarySpeed: 78,
     primaryRange: 36,
     defenseCooldown: 5.4,
@@ -172,9 +191,9 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     grip: 0.88,
     slideBias: 0.7,
     mass: 0.95,
-    health: 132,
+    health: 192,
     primaryCooldown: 0.28,
-    primaryDamage: 16,
+    primaryDamage: 21,
     primarySpeed: 82,
     primaryRange: 54,
     defenseCooldown: 5.6,

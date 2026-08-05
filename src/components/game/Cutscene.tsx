@@ -103,6 +103,20 @@ export function Cutscene({
     onDone();
   }, [id, onDone]);
 
+  /*
+   * Re-arm on a new clip even if this instance is reused.
+   *
+   * The call site keys by id so this should never fire, but a one-shot guard
+   * that silently survives into the next clip is exactly the bug that hung the
+   * game: the second clip in a sequence became unskippable and never reported
+   * done. Cheap to make the component correct on its own terms rather than
+   * relying on every caller remembering the key.
+   */
+  useEffect(() => {
+    done.current = false;
+    setReady(false);
+  }, [id]);
+
   useEffect(() => {
     // Any key, any click. Deliberately not a labelled button: the prompt is
     // rendered separately so the input surface is the whole screen.

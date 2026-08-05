@@ -178,11 +178,26 @@ export function ProjectilesView({ projectiles }: { projectiles: Projectile[] }) 
       dummy.updateMatrix();
       mesh.setMatrixAt(n, dummy.matrix);
 
-      const tint = PROJ_TINT[PROJ_ORDER[k]!];
+      /*
+       * Per-shot tint wins over the kind default.
+       *
+       * Two classes fire the same missile mesh, so the round has to carry its
+       * own colour: the interceptor's swarm is cold blue against the bruiser's
+       * near-white heavy round. Reading it off the projectile keeps this
+       * renderer plain-data — it never has to resolve an owner to a class.
+       */
+      const kind = PROJ_TINT[PROJ_ORDER[k]!];
+      const tint = p.tint
+        ? [
+            ((p.tint >> 16) & 0xff) / 255,
+            ((p.tint >> 8) & 0xff) / 255,
+            (p.tint & 0xff) / 255,
+          ]
+        : kind;
       // Per-shot brightness jitter: identical tracers stacked in a burst is the
       // clearest tell that they came out of a loop.
       const b = 0.86 + hash01(seed ^ 0x9e37) * 0.3;
-      color.setRGB(tint[0] * b, tint[1] * b, tint[2] * b);
+      color.setRGB(tint[0]! * b, tint[1]! * b, tint[2]! * b);
       mesh.setColorAt(n, color);
       counts[k] = n + 1;
     }

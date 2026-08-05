@@ -1262,6 +1262,14 @@ export function ScrapstormApp() {
       */}
       {cutscene && (
         <Cutscene
+          /*
+           * KEYED BY ID. Without this React reuses the same instance when only
+           * the id changes, so Cutscene's internal "already finished" guard
+           * stays true from the previous clip — the second clip in a sequence
+           * could never end or be skipped, and the race never started. Keying
+           * forces a fresh mount per clip, which is what a new clip is.
+           */
+          key={cutscene.id}
           id={cutscene.id}
           onDone={advanceCutscene}
         />

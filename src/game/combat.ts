@@ -449,9 +449,37 @@ export function tryPrimary(
   }
 
   if (v.classId === "interceptor") {
+    /*
+     * A PAIR OF MICRO-MISSILES, not bolts.
+     *
+     * The interceptor is the default class, so its ordinary shot is the weapon
+     * most players will ever see, and a pair of glowing tracers is the most
+     * generic thing a combat racer can fire. It launches the same authored
+     * rocket the bruiser does, at half the size and twice the rate — a swarm
+     * against the bruiser's single heavy round, which is the class difference
+     * expressed in the weapon rather than only in a damage number.
+     *
+     * Guidance is weaker still than the bruiser's: these arm late and turn
+     * slowly, so a salvo corrects a near miss and cannot rescue a bad one.
+     */
+    let mark: VehicleState | null = null;
+    let best = def.primaryRange * def.primaryRange;
+    for (const o of vehicles) {
+      if (o.id === v.id || !o.alive || o.wreckTimer > 0) continue;
+      const dx = o.x - v.x;
+      const dz = o.z - v.z;
+      // Ahead of the nose only — a missile that turns around to chase whoever
+      // is behind you looks like a feature right up until it kills you.
+      if (dx * aimX + dz * aimZ <= 0) continue;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < best) {
+        best = d2;
+        mark = o;
+      }
+    }
     for (const side of [-0.32, 0.32]) {
       projectiles.push({
-        id: uid("bolt"),
+        id: uid("mm"),
         ownerId: v.id,
         x: v.x + aimX * 1.6 + rx * side,
         y: v.y + 0.55,
@@ -461,9 +489,17 @@ export function tryPrimary(
         vz: aimZ * def.primarySpeed,
         life: def.primaryRange / def.primarySpeed,
         damage: dmg * 0.55,
-        kind: "bolt",
+        kind: "missile",
         bounce: 0,
         radius: 0.3,
+        seek: v.lockTargetId ?? mark?.id,
+        armTime: 0.28,
+        /*
+         * Cold blue exhaust, against the bruiser's orange. Two classes firing
+         * the same mesh need to be tellable apart at a glance — in a four-car
+         * pack the colour of what is coming at you IS the warning.
+         */
+        tint: 0x4fc3ff,
       });
     }
   } else if (v.classId === "bruiser") {

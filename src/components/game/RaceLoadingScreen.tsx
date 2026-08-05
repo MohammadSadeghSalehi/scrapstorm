@@ -14,6 +14,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { getRaceGate, subscribeRaceGate, type RaceGateSnapshot } from "@/game/world/raceGate";
+import { CutsceneLoop } from "./Cutscene";
 
 /**
  * How long before we admit this is taking a while.
@@ -49,31 +50,92 @@ export function RaceLoadingScreen() {
 
   const building = gate.phase === "world";
 
+  /*
+   * Five steps, abstracted.
+   *
+   * The label was the raw internal step name, which tells a player nothing and
+   * changes whenever the load order is retuned. These are the five things that
+   * are actually happening, in order, and the pill row shows WHERE IN THE RUN
+   * you are — which is the information a progress bar alone cannot carry.
+   */
+  const STEPS = ["Surfaces", "Machines", "Terrain", "Dressing", "Warming"];
+  const stepIndex = Math.min(
+    STEPS.length - 1,
+    Math.floor((gate.pct / 100) * STEPS.length),
+  );
+
   return (
-    <div className="pointer-events-auto absolute inset-0 z-[60] flex items-center justify-center bg-bg/80 backdrop-blur-sm">
-      <div className="w-full max-w-xs px-6 text-center">
-        <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-muted">
-          {building ? "Warming the grid" : "Preparing race"}
-        </p>
-        <p className="mt-1 font-display text-lg font-semibold text-fg">
-          {gate.label}
-        </p>
-        <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-white/10">
-          <div
-            className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
-            style={{ width: `${Math.max(4, gate.pct)}%` }}
-          />
-        </div>
-        <div className="mt-2 flex items-baseline justify-between text-[0.65rem] text-muted">
-          <span>
-            {building
-              ? "Compiling and uploading"
-              : slow
-                ? "Still downloading — large packs"
-                : "Loading up front so the race runs clean"}
+    <div className="pointer-events-auto absolute inset-0 z-[60] overflow-hidden">
+      {/*
+        The clip runs FULL BLEED with no scrim over it.
+        It was behind `bg-bg/80 backdrop-blur-sm`, which is the right treatment
+        for a panel that has to stay readable over live gameplay and the wrong
+        one for a loading screen, where the footage IS the screen. Legibility
+        now comes from the readout having its own backing, not from dimming
+        everything behind it.
+      */}
+      <CutsceneLoop id="grid" opacity={1} />
+
+      {/* Just enough gradient in the top-right to seat the readout — a corner
+          wash rather than a full-screen mask. */}
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_55%_45%_at_88%_10%,rgba(8,6,5,0.82),transparent_70%)]" />
+
+      <div className="absolute right-6 top-5 w-[19rem] max-w-[calc(100vw-3rem)]">
+        <div className="flex items-baseline justify-between">
+          <p className="font-display text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-amber-400/90">
+            {building ? "Warming the grid" : "Preparing race"}
+          </p>
+          <span className="font-mono text-sm tabular-nums text-amber-300">
+            {gate.pct}%
           </span>
-          <span className="font-mono tabular-nums">{gate.pct}%</span>
         </div>
+
+        {/* Segmented rather than continuous: a bar that only fills tells you how
+            far, and a bar that also lights up in stages tells you what is left. */}
+        <div className="mt-2 flex gap-[3px]">
+          {STEPS.map((label, i) => (
+            <div
+              key={label}
+              className={`h-[3px] flex-1 overflow-hidden rounded-full ${
+                i < stepIndex ? "bg-amber-500" : "bg-white/12"
+              }`}
+            >
+              {i === stepIndex && (
+                <div
+                  className="h-full rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)] transition-[width] duration-300"
+                  style={{
+                    width: `${Math.max(6, ((gate.pct / 100) * STEPS.length - i) * 100)}%`,
+                  }}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-2 flex justify-between text-[0.58rem] uppercase tracking-[0.12em]">
+          {STEPS.map((label, i) => (
+            <span
+              key={label}
+              className={
+                i === stepIndex
+                  ? "text-amber-300"
+                  : i < stepIndex
+                    ? "text-stone-400"
+                    : "text-stone-600"
+              }
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+
+        <p className="mt-2 text-right text-[0.62rem] text-stone-400">
+          {building
+            ? "Compiling and uploading"
+            : slow
+              ? "Still downloading — large packs"
+              : "Loading up front so the race runs clean"}
+        </p>
       </div>
     </div>
   );

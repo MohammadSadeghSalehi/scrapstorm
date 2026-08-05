@@ -187,6 +187,16 @@ export interface Projectile {
   damage: number;
   kind: "bolt" | "cannon" | "disc" | "missile";
   /**
+   * Per-shot colour override, 0xRRGGBB. Undefined uses the kind's default.
+   *
+   * Two classes now fire the same missile mesh, and in a four-car pack the
+   * colour of what is coming at you IS the warning — the interceptor's swarm
+   * has to be tellable from the bruiser's single heavy round at a glance.
+   * Carried on the projectile rather than derived from the owner's class so the
+   * renderer stays plain-data and never has to look a vehicle up.
+   */
+  tint?: number;
+  /**
    * Homing target, missiles only.
    *
    * An id rather than a reference so the projectile stays plain data that can
