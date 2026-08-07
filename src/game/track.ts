@@ -1,5 +1,9 @@
 import type { CheckpointGate, SurfaceInfo, SurfaceKind, TrackSample } from "./types";
 import { sampleDuneField, sampleRockMask } from "./world/terrainHeight";
+import {
+  getTerrainProfile,
+  setActiveTerrainProfile,
+} from "./world/terrainProfiles";
 
 /**
  * The two launch circuits — and deliberately ONLY those.
@@ -785,9 +789,45 @@ function ctrlsFor(id: AnyTrackId): Ctrl[] {
   return CTRLS[id] ?? ASH_SPIRE;
 }
 
+/**
+ * Bounding-box centre of a sample list, and the furthest sample from it.
+ *
+ * The radial landforms (a crater rim, a pit wall) have to be placed relative to
+ * the racing surface, not at a world constant: the six circuits' centres are
+ * 300m apart and their reach differs by a factor of three, so a rim radius that
+ * encloses Cinder Bowl would sit inside the Dead Mile's back straight.
+ */
+function circuitAnchor(samples: TrackSample[]) {
+  if (!samples.length) return { cx: 18, cz: 54, extent: 168 };
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const s of samples) {
+    if (s.x < minX) minX = s.x;
+    if (s.x > maxX) maxX = s.x;
+    if (s.z < minZ) minZ = s.z;
+    if (s.z > maxZ) maxZ = s.z;
+  }
+  const cx = (minX + maxX) * 0.5;
+  const cz = (minZ + maxZ) * 0.5;
+  let extent = 0;
+  for (const s of samples) {
+    const d = Math.hypot(s.x - cx, s.z - cz);
+    if (d > extent) extent = d;
+  }
+  return { cx, cz, extent };
+}
+
 function rebuild(id: AnyTrackId) {
   const ctrls = ctrlsFor(id);
   const samples = buildSamples(ctrls);
+  /*
+   * Point the height field at this circuit BEFORE anything settles onto it.
+   *
+   * `buildSceneryFrom` -> `settleScenery` evaluates duneProfile inside this
+   * same call, so a profile pushed after it would place 23 pieces of scenery on
+   * the previous circuit's landform and leave them buried in, or hovering over,
+   * the new one.
+   */
+  setActiveTerrainProfile(id, circuitAnchor(samples));
   const length = samples[samples.length - 1]?.s
     ? samples[samples.length - 1]!.s +
       Math.hypot(
@@ -1096,6 +1136,19 @@ export function duneProfile(
   dist: number,
   half: number,
 ): number {
+  /*
+   * The amplitudes are per-circuit, the BANDS are not.
+   *
+   * A crater rim and a playa need wildly different metres of relief, but the
+   * three distance bands — dead-flat corridor, berm roll-off, open ground — are
+   * a gameplay contract, not art: they are what guarantees a car never clips
+   * terrain at the edge of the tarmac and what every placement site assumes
+   * when it settles an object. So the shape of the curve is fixed here and only
+   * its scale comes from the table. Ash Spire's entries are the literals this
+   * function used to carry, so its ground is unchanged.
+   */
+  const p = getTerrainProfile();
+
   // Asphalt + tight shoulder: dead flat so cars never clip dunes
   const roadPad = half + 2.5;
   if (dist <= roadPad) {
@@ -1109,19 +1162,26 @@ export function duneProfile(
     // Soft roll-off berm
     const t = (dist - roadPad) / Math.max(0.01, apron - roadPad);
     const s = t * t * (3 - 2 * t);
-    return roadY + (dune * 1.2 + rock * 0.35) * s;
+    return roadY + (dune * p.bermDune + rock * p.bermRock) * s;
   }
 
   if (dist < deep) {
     const t = (dist - apron) / Math.max(0.01, deep - apron);
     const s = t * t * (3 - 2 * t);
-    const hNear = 1.0;
-    const hFar = 1.1 + dune * 14 + rock * 3;
+    /*
+     * `hNear` tracks `base` rather than staying at the literal 1.0 it used to
+     * be. On a circuit whose open ground sits LOWER than one metre — the playa
+     * does, deliberately — a fixed 1.0 makes the mid band start above where it
+     * ends, so the ground dips as it leaves the verge and then climbs back.
+     * Clamped rather than substituted so Ash Spire (base 1.1) still gets 1.0.
+     */
+    const hNear = Math.min(1.0, p.base);
+    const hFar = p.base + dune * p.midDune + rock * p.midRock;
     return roadY + hNear + (hFar - hNear) * s;
   }
 
-  // Far desert — full procedural dunes (taller for horizon drama)
-  return roadY + 1.1 + dune * 16 + rock * 3.5;
+  // Open ground — the full landform, and the circuit's silhouette.
+  return roadY + p.base + dune * p.farDune + rock * p.farRock;
 }
 
 export function isOnTrack(

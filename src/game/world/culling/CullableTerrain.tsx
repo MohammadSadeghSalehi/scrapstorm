@@ -4,7 +4,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { SCENERY, getGroundHeight } from "../../track";
+import { SCENERY, getGroundHeight, getScenery, getTrackEpoch } from "../../track";
+import { terrainPatch } from "../terrainGeometry";
 import { createProcMaterial } from "../procmat";
 import {
   loadPhModel,
@@ -66,18 +67,38 @@ export function CullableSandTiles({
   material: THREE.Material;
 }) {
   const tier = qualityManager.get().tier;
-  const tileSize = tier === "low" ? 80 : tier === "high" ? 48 : 64;
+  const epoch = getTrackEpoch();
+  const nominalTile = tier === "low" ? 80 : tier === "high" ? 48 : 64;
 
   const tiles = useMemo(
-    () =>
-      buildGroundTiles({
-        centerX: 20,
-        centerZ: 40,
-        halfExtent: 340,
+    () => {
+      /*
+       * Follow the heightfield rather than carrying a second copy of where it
+       * is. This was `(20, 40)` at a 340m half-extent — Ash Spire's patch —
+       * while the Dead Mile's patch is centred 250m away and 442m across, so
+       * the underlay it is meant to back sat off to one side of it and ran out
+       * before the terrain did.
+       */
+      const patch = terrainPatch();
+      const halfExtent = Math.max(340, patch.span * 0.5 + 60);
+      /*
+       * Tile size scales WITH the extent so the tile COUNT is unchanged. These
+       * are per-tile draw calls behind a sphere cull; growing the underlay at a
+       * fixed tile size would have quietly doubled them on the long circuits,
+       * which is the sort of thing that shows up as a frame-time regression
+       * nobody can attribute.
+       */
+      const tileSize = nominalTile * (halfExtent / 340);
+      return buildGroundTiles({
+        centerX: patch.cx,
+        centerZ: patch.cz,
+        halfExtent,
         tileSize,
         y: -2.8,
-      }),
-    [tileSize],
+      });
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nominalTile, epoch],
   );
 
   useEffect(() => {
@@ -569,7 +590,12 @@ async function buildSceneryBatches(
 }
 
 export function CullableScenery() {
-  const items = useMemo(() => SCENERY, []);
+  const sceneryEpoch = getTrackEpoch();
+  // getScenery(), and keyed on the epoch: SCENERY is an `export let` whose
+  // array identity is REPLACED on every track change, so a useMemo with an
+  // empty dep list held the previous circuit's items forever.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const items = useMemo(() => getScenery(), [sceneryEpoch]);
   const mats = useMemo(() => {
     const rust = createProcMaterial("rust", {
       color: "#a16207",

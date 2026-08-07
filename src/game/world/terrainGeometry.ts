@@ -33,14 +33,36 @@
  * that `HeightmapTerrain` can import this module without a cycle.
  */
 import * as THREE from "three";
-import { TRACK_SAMPLES, duneProfile, getSurfaceAt } from "../track";
+/*
+ * getTrackSamples(), NOT the TRACK_SAMPLES binding.
+ *
+ * `export let` is live under real ESM, so importing the binding works in the
+ * browser — but jiti transpiles to CJS and snapshots the namespace property at
+ * module init, so every headless check of this module measured ash_spire's
+ * patch bounds no matter which circuit was active. It looked like a passing
+ * test: six different circuits, six identical spans, no error. AGENTS.md 4.
+ */
+import { duneProfile, getSurfaceAt, getTrackSamples } from "../track";
 import { sampleDuneField, sampleRockMask } from "./terrainHeight";
 import { SLICE_MS, gateNow, yieldToBrowser } from "./raceGate";
 import type { EnvironmentDef } from "./environments";
 
+/**
+ * Centre and side length of the heightfield patch, in world metres.
+ *
+ * Exported because anything that has to sit UNDER or AROUND the patch has to
+ * agree with it. The flat sand underlay used to carry its own hardcoded
+ * (20, 40) / 340m — Ash Spire's numbers — so on the two long circuits the
+ * underlay was smaller than, and offset from, the terrain it was supposed to
+ * back. A second copy of this is a second thing to forget to move.
+ */
+export function terrainPatch() {
+  return trackCenter();
+}
+
 function trackCenter() {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-  for (const s of TRACK_SAMPLES) {
+  for (const s of getTrackSamples()) {
     if (s.x < minX) minX = s.x;
     if (s.x > maxX) maxX = s.x;
     if (s.z < minZ) minZ = s.z;
@@ -90,11 +112,12 @@ const cellKey = (cx: number, cz: number) => cx * 73856093 + cz * 19349663;
  */
 /** Exported so mesh-vs-physics agreement can be asserted, not assumed. */
 export function buildTrackField(): TrackField {
-  const n = TRACK_SAMPLES.length;
+  const samples = getTrackSamples();
+  const n = samples.length;
   const segs: Seg[] = [];
   for (let i = 0; i < n; i++) {
-    const a = TRACK_SAMPLES[i]!;
-    const b = TRACK_SAMPLES[(i + 1) % n]!;
+    const a = samples[i]!;
+    const b = samples[(i + 1) % n]!;
     const dx = b.x - a.x;
     const dz = b.z - a.z;
     segs.push({

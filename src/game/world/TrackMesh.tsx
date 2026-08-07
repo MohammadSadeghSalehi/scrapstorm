@@ -1,10 +1,17 @@
 import { useMemo } from "react";
 import * as THREE from "three";
-import { EDGE_MARKERS, TRACK_SAMPLES, getTrackEpoch } from "../track";
+// Accessors, not the `export let` bindings — see terrainGeometry.ts.
+import { getEdgeMarkers, getTrackEpoch, getTrackSamples } from "../track";
 import { createProcMaterial } from "./procmat";
 import { qualityManager } from "./quality";
 import { HeightmapTerrain } from "./HeightmapTerrain";
-import { clonePbrPack, isPbrLibraryReady } from "./webgl2/textureLibrary";
+import {
+  clonePbrPack,
+  isPbrLibraryReady,
+  preloadPbrLibrary,
+  type PbrPackId,
+} from "./webgl2/textureLibrary";
+import { getTerrainProfile, type TerrainProfile } from "./terrainProfiles";
 import { attachGpuDetail } from "./shaders/gpuDetail";
 import { attachRoadWear } from "./shaders/roadWear";
 import { getMaxAnisotropy } from "./webgl2/configure";
@@ -24,8 +31,8 @@ import { Setpieces } from "./setpieces";
 import { getActiveEnvironment } from "./environments";
 import type { SurfaceDef } from "./environments";
 
-/**
- * Metres of road covered by one tile of the asphalt / gravel packs.
+/*
+ * ON TEXTURE REPEATS HERE — read before changing one.
  *
  * The ribbon's UVs are normalised, not world-scaled: u runs 0..1 over the whole
  * circuit and v runs 0..1 across the tarmac (see roadSegments.pushQuad). A
@@ -35,12 +42,80 @@ import type { SurfaceDef } from "./environments";
  * highlight anywhere. Deriving the repeat from real track metres restores the
  * texel density the packs were authored at, and costs nothing per frame: it is
  * the same number of fetches, just at a different mip level.
+ *
+ * Now per-circuit (`terrainProfiles.ts`), because tile size is half of what
+ * says which material this is: slab concrete is cast in bays several metres
+ * across and asphalt aggregate is centimetres, so the same photo at the same
+ * tiling reads as the same road however it is tinted.
  */
-const ROAD_TILE_M = 5.5;
-const APRON_TILE_M = 3.5;
 
 /** Mirrors `apronW` in culling/roadSegments.ts — the apron strip is 5.5m wide. */
 const APRON_WIDTH_M = 5.5;
+
+/**
+ * Point a material at a PBR pack, or report that the pack is not resident yet.
+ *
+ * WHY THE RETURN VALUE MATTERS. `isPbrLibraryReady()` goes true when the four
+ * CRITICAL packs land — asphalt, sand, dirt, metal. `concrete`, `gravel`,
+ * `rock` and `rust` are DEFERRED and arrive up to a second later. Every call
+ * site here used to gate on that predicate and then ask for a deferred pack, so
+ * `clonePbrPack` returned null and the surface silently fell back: the gravel
+ * apron became dirt, the rock yard became procedural noise. Nothing logged,
+ * nothing looked broken, and the two circuits that most needed a distinct
+ * ground were exactly the two that never got one.
+ *
+ * The fix is HeightmapTerrain's, which already hit this: apply what is resident
+ * now, then re-apply behind `preloadPbrLibrary()` once the whole library is in.
+ */
+function applyPack(
+  mat: THREE.MeshStandardMaterial,
+  id: PbrPackId,
+  repeatU: number,
+  repeatV: number,
+  opts: { aoIntensity?: number; normalOnLow?: boolean } = {},
+): boolean {
+  const pack = clonePbrPack(id, repeatU, repeatV);
+  if (!pack) return false;
+  const q = qualityManager.get();
+  const aniso = Math.min(getMaxAnisotropy(), q.anisotropy || 8);
+  for (const t of [pack.map, pack.normalMap, pack.roughnessMap, pack.aoMap]) {
+    if (!t) continue;
+    t.anisotropy = aniso;
+    t.needsUpdate = true;
+  }
+  const wantNormal = q.tier !== "low" || opts.normalOnLow === true;
+  mat.map = pack.map;
+  mat.roughnessMap = pack.roughnessMap;
+  mat.normalMap = wantNormal ? pack.normalMap : null;
+  mat.aoMap = q.tier !== "low" ? pack.aoMap : null;
+  if (mat.aoMap) mat.aoMapIntensity = opts.aoIntensity ?? 1.1;
+  mat.needsUpdate = true;
+  return true;
+}
+
+/**
+ * Apply the circuit's pack now if it is loaded, and again when it lands.
+ *
+ * `epoch` is captured, not read at resolve time: the promise can settle after
+ * the player has already changed circuit, and dressing a disposed Ash Spire
+ * road with the Foundry's concrete is both wasted work and a way to get one
+ * frame of the wrong surface if the material happens to be shared.
+ */
+function applyPackWhenReady(
+  mat: THREE.MeshStandardMaterial,
+  id: PbrPackId,
+  repeatU: number,
+  repeatV: number,
+  epoch: number,
+  opts: { aoIntensity?: number; normalOnLow?: boolean } = {},
+): boolean {
+  if (applyPack(mat, id, repeatU, repeatV, opts)) return true;
+  void preloadPbrLibrary().then(() => {
+    if (getTrackEpoch() !== epoch) return;
+    applyPack(mat, id, repeatU, repeatV, opts);
+  });
+  return false;
+}
 
 /** Circuit length and mean tarmac width, in metres, for texture repeats. */
 function trackMetrics(samples: TrackSample[]): { length: number; width: number } {
@@ -67,44 +142,44 @@ function trackMetrics(samples: TrackSample[]): { length: number; width: number }
  * frame after the sky, and leaving them desert-tan under a night sky is the
  * single most obvious way for a re-lit circuit to still read as the desert.
  */
-function makeYardMaterial(surfaces: SurfaceDef): THREE.MeshStandardMaterial {
+function makeYardMaterial(
+  surfaces: SurfaceDef,
+  prof: TerrainProfile,
+  epoch: number,
+): THREE.MeshStandardMaterial {
   const q = qualityManager.get();
-  const aniso = Math.min(getMaxAnisotropy(), q.anisotropy || 8);
-  if (isPbrLibraryReady()) {
-    const rock = clonePbrPack("rock", 0.035, 0.035);
-    if (rock) {
-      for (const t of [rock.map, rock.normalMap, rock.roughnessMap, rock.aoMap]) {
-        if (t) {
-          t.anisotropy = aniso;
-          t.needsUpdate = true;
-        }
-      }
-      const mat = new THREE.MeshStandardMaterial({
-        map: rock.map,
-        roughnessMap: rock.roughnessMap,
-        normalMap: q.tier !== "low" ? rock.normalMap : null,
-        aoMap: q.tier !== "low" ? rock.aoMap : null,
-        aoMapIntensity: 1.05,
-        color: surfaces.yard,
-        roughness: 0.92,
-        metalness: 0.02,
-        normalScale: new THREE.Vector2(0.95, 0.95),
-        envMapIntensity: 0.45,
-      });
-      if (q.gpuDetail > 0.2) {
-        attachGpuDetail(mat, { kind: "dirt", detailScale: 9, quality: q });
-      }
-      return mat;
-    }
-  }
-  return createProcMaterial("dirt", {
-    repeat: [0.04, 0.04],
+  const mat = new THREE.MeshStandardMaterial({
     color: surfaces.yard,
-    normalScale: 0.45,
-    ao: false,
-    gpuDetail: true,
-    detailScale: 9,
+    roughness: 0.92,
+    metalness: 0.02,
+    normalScale: new THREE.Vector2(0.95, 0.95),
+    envMapIntensity: 0.45,
   });
+  const r = prof.yardRepeat;
+  if (
+    !applyPackWhenReady(mat, prof.yardPack, r, r, epoch, { aoIntensity: 1.05 })
+  ) {
+    /*
+     * A procedural stand-in for the frame or two before the pack lands. It is
+     * NOT the final look and must not be left as one: `dirt` is a critical pack
+     * so the recipe is always available, whereas the yard's real pack (rock on
+     * the dune circuits, rust in the scrapyards) is deferred.
+     */
+    const tmp = createProcMaterial("dirt", {
+      repeat: [r, r],
+      color: surfaces.yard,
+      normalScale: 0.45,
+      ao: false,
+      gpuDetail: false,
+    });
+    mat.map = tmp.map;
+    mat.normalMap = tmp.normalMap;
+    mat.roughnessMap = tmp.roughnessMap;
+  }
+  if (q.gpuDetail > 0.2) {
+    attachGpuDetail(mat, { kind: "dirt", detailScale: 9, quality: q });
+  }
+  return mat;
 }
 
 /**
@@ -185,7 +260,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
   const surfaces = useMemo(() => getActiveEnvironment().surfaces, [epoch]);
 
   const ribbon = useMemo(() => {
-    const result = buildTrackRibbon(TRACK_SAMPLES.slice());
+    const result = buildTrackRibbon(getTrackSamples().slice());
     if (typeof window !== "undefined") {
       window.__roadRibbon = {
         mode: result.mode,
@@ -198,63 +273,78 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
 
   const mats = useMemo(() => {
     const aniso = Math.min(getMaxAnisotropy(), qualityManager.get().anisotropy || 8);
-    const track = trackMetrics(TRACK_SAMPLES);
-    const roadRepeatU = track.length / ROAD_TILE_M;
-    const roadRepeatV = track.width / ROAD_TILE_M;
-    let road: THREE.MeshStandardMaterial;
-    const asp = isPbrLibraryReady()
-      ? clonePbrPack("asphalt", roadRepeatU, roadRepeatV)
-      : null;
-    if (asp) {
-      for (const t of [asp.map, asp.normalMap, asp.roughnessMap, asp.aoMap]) {
-        if (t) {
-          t.anisotropy = aniso;
-          t.needsUpdate = true;
-        }
-      }
-      road = new THREE.MeshStandardMaterial({
-        map: asp.map,
-        normalMap: asp.normalMap,
-        roughnessMap: asp.roughnessMap,
-        aoMap: asp.aoMap,
-        aoMapIntensity: 1.15,
-        color: surfaces.road,
-        // Dry tarmac still has a specular lobe. At 0.82 the road was matte at
-        // every sun angle; the roughness map now supplies the variation on top
-        // of this, and attachRoadWear pulls the wheel grooves far lower still.
-        roughness: 0.72,
-        metalness: 0.06,
-        vertexColors: true,
-        // The normal map was effectively unused while the pack was stretched
-        // over the whole circuit. At real tiling it carries the aggregate, so
-        // hold it just under 1 or the surface boils at speed.
-        normalScale: new THREE.Vector2(0.9, 0.9),
-        envMapIntensity: 0.9,
-      });
-      // Attach wear before the LoD detail. onBeforeCompile chains call prev
-      // first, so gpuDetail's injection ends up *above* the wear block in the
-      // final shader — the lane targets therefore clamp the LoD noise instead
-      // of the noise smearing the ruts back to a uniform roughness.
-      attachRoadWear(road);
-      if (qualityManager.get().gpuDetail > 0.15) {
-        attachGpuDetail(road, {
-          kind: "asphalt",
-          detailScale: 14,
-          quality: qualityManager.get(),
+    const track = trackMetrics(getTrackSamples());
+    /*
+     * Which MATERIAL each surface is, per circuit. Colour still comes from the
+     * environment — that is the split: `surfaces` tints, `prof` decides what is
+     * being tinted. A slag haul road and a sand-scoured desert road are not the
+     * same photo at two exposures, and the tile size, roughness and normal
+     * strength are what say so.
+     */
+    const prof = getTerrainProfile();
+
+    const roadRepeatU = track.length / prof.roadTileM;
+    const roadRepeatV = track.width / prof.roadTileM;
+
+    const road = new THREE.MeshStandardMaterial({
+      color: surfaces.road,
+      // Dry tarmac still has a specular lobe. At 0.82 the road was matte at
+      // every sun angle; the roughness map supplies the variation on top of
+      // this and attachRoadWear pulls the wheel grooves far lower still. The
+      // value is per-circuit now: ash-scoured asphalt has lost its lobe and
+      // poured slab never had asphalt's in the first place.
+      roughness: prof.roadRoughness,
+      metalness: prof.roadMetalness,
+      vertexColors: true,
+      // At real tiling the normal map carries the aggregate, so hold it near 1
+      // or the surface boils at speed. Broken asphalt goes above it; ash-filled
+      // asphalt and smooth slab go well below.
+      normalScale: new THREE.Vector2(prof.roadNormalScale, prof.roadNormalScale),
+      envMapIntensity: 0.9,
+    });
+    /*
+     * The road keeps its normal map even on the low tier. It is the surface
+     * that fills the frame and the one the wear shader writes against; dropping
+     * it there was never the low tier's saving, the terrain and scatter were.
+     */
+    const roadReady = applyPackWhenReady(
+      road,
+      prof.roadPack,
+      roadRepeatU,
+      roadRepeatV,
+      epoch,
+      { aoIntensity: 1.15, normalOnLow: true },
+    );
+    if (!roadReady) {
+      // Asphalt is a CRITICAL pack and a procedural recipe, so there is always
+      // something to stand in with while a concrete road is still in flight.
+      if (!applyPack(road, "asphalt", roadRepeatU, roadRepeatV, {
+        aoIntensity: 1.15,
+        normalOnLow: true,
+      })) {
+        const tmp = createProcMaterial("asphalt", {
+          repeat: [roadRepeatU, roadRepeatV],
+          color: surfaces.road,
+          normalScale: 0.55,
+          ao: true,
+          gpuDetail: false,
         });
+        road.map = tmp.map;
+        road.normalMap = tmp.normalMap;
+        road.roughnessMap = tmp.roughnessMap;
       }
-    } else {
-      road = createProcMaterial("asphalt", {
-        repeat: [roadRepeatU, roadRepeatV],
-        color: surfaces.road,
-        normalScale: 0.55,
-        ao: true,
-        gpuDetail: true,
+    }
+    // Attach wear before the LoD detail. onBeforeCompile chains call prev
+    // first, so gpuDetail's injection ends up *above* the wear block in the
+    // final shader — the lane targets therefore clamp the LoD noise instead
+    // of the noise smearing the ruts back to a uniform roughness.
+    attachRoadWear(road);
+    if (qualityManager.get().gpuDetail > 0.15) {
+      attachGpuDetail(road, {
+        kind: "asphalt",
         detailScale: 14,
+        quality: qualityManager.get(),
       });
-      road.roughness = 0.72;
-      road.vertexColors = true;
-      attachRoadWear(road);
     }
 
     let apron: THREE.MeshStandardMaterial;
@@ -262,43 +352,28 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       // Same normalised-UV story as the road: the apron's v spans its 5.5m
       // width, so its repeat has to be derived from metres too or the gravel
       // is one smeared tile the length of the circuit.
-      const apronRepeatU = track.length / APRON_TILE_M;
-      const apronRepeatV = APRON_WIDTH_M / APRON_TILE_M;
-      const grav = isPbrLibraryReady()
-        ? clonePbrPack("gravel", apronRepeatU, apronRepeatV)
-        : null;
-      const dirt = isPbrLibraryReady()
-        ? clonePbrPack("dirt", apronRepeatU, apronRepeatV)
-        : null;
-      const pack = grav ?? dirt;
-      if (pack) {
-        for (const t of [pack.map, pack.normalMap, pack.roughnessMap, pack.aoMap]) {
-          if (t) {
-            t.anisotropy = aniso;
-            t.needsUpdate = true;
-          }
-        }
-        apron = new THREE.MeshStandardMaterial({
-          map: pack.map,
-          normalMap: pack.normalMap,
-          roughnessMap: pack.roughnessMap,
-          aoMap: pack.aoMap,
-          color: surfaces.apron,
-          roughness: 0.9,
-          metalness: 0.04,
-          vertexColors: true,
-          envMapIntensity: 0.55,
-        });
-      } else {
-        apron = createProcMaterial("dirt", {
+      const apronRepeatU = track.length / prof.apronTileM;
+      const apronRepeatV = APRON_WIDTH_M / prof.apronTileM;
+      apron = new THREE.MeshStandardMaterial({
+        color: surfaces.apron,
+        roughness: 0.9,
+        metalness: 0.04,
+        vertexColors: true,
+        envMapIntensity: 0.55,
+      });
+      if (
+        !applyPackWhenReady(apron, prof.apronPack, apronRepeatU, apronRepeatV, epoch)
+      ) {
+        const tmp = createProcMaterial("dirt", {
           repeat: [apronRepeatU, apronRepeatV],
           color: surfaces.apron,
           normalScale: 0.5,
           ao: true,
-          gpuDetail: true,
-          detailScale: 10,
+          gpuDetail: false,
         });
-        apron.vertexColors = true;
+        apron.map = tmp.map;
+        apron.normalMap = tmp.normalMap;
+        apron.roughnessMap = tmp.roughnessMap;
       }
     }
 
@@ -338,7 +413,7 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       road,
       apron,
       sand,
-      yard: makeYardMaterial(surfaces),
+      yard: makeYardMaterial(surfaces, prof, epoch),
       // toneMapped stays false: lane paint is a reference white and should not
       // be pulled around by the exposure curve. It is still tinted per
       // environment — paint under a sodium furnace is not paint at noon.
@@ -347,10 +422,10 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
         toneMapped: false,
       }),
     };
-  }, [tier, pbrKey, surfaces]);
+  }, [tier, pbrKey, surfaces, epoch]);
 
-  const markers = useMemo(() => EDGE_MARKERS.slice(), [epoch]);
-  const s0 = TRACK_SAMPLES[0] ?? { x: 0, y: 0, z: 0, yaw: 0, width: 26 };
+  const markers = useMemo(() => getEdgeMarkers().slice(), [epoch]);
+  const s0 = getTrackSamples()[0] ?? { x: 0, y: 0, z: 0, yaw: 0, width: 26 };
   const startYaw = s0.yaw ?? 0;
 
   return (
