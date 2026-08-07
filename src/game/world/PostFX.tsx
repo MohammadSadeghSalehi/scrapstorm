@@ -34,8 +34,8 @@ import { qualityManager } from "./quality";
 import { GradeEffect, type GradeOptions } from "./GradeEffect";
 import { MotionBlurEffect } from "./MotionBlurEffect";
 import { FrameProfiler } from "./FrameProfiler";
-import { getActiveEnvironment } from "./environments";
-import { getTrackEpoch } from "../track";
+import { getActiveEnvironment, getEnvironmentEpoch } from "./environments";
+import { getWeather } from "./weather/conditions";
 
 /** What the race feeds the post chain, mutated in place — never a new object. */
 export type PostFxInputs = {
@@ -193,6 +193,10 @@ function PostFxDriver({
   inputs,
   effects,
   blur,
+  grade,
+  gradeOffset,
+  baseOffset,
+  lightningPeriod,
   bloomBias,
   vignetteBias,
   high,
@@ -201,12 +205,65 @@ function PostFxDriver({
   inputs: RefObject<PostFxInputs>;
   effects: Effects;
   blur: RefObject<MotionBlurEffect | null>;
+  grade: RefObject<GradeEffect | null>;
+  /** Scratch vector, owned by the caller. Never allocate in a frame callback. */
+  gradeOffset: THREE.Vector3;
+  /** The grade's authored offset, which the flash is added to. */
+  baseOffset: THREE.Vector3;
+  lightningPeriod: number;
   bloomBias: number;
   vignetteBias: number;
   high: boolean;
   low: boolean;
 }) {
-  useFrame(() => {
+  /*
+   * Lightning, as three floats a frame.
+   *
+   * Deliberately NOT a light. Adding a directional light for the flash means it
+   * exists — and is uploaded, and is iterated by every lit material's shader —
+   * for the 99.7% of the time it is dark, which is exactly the "one more light
+   * per environment" cost the whole EnvironmentDef contract is written to
+   * forbid. A flash is a change in EXPOSURE, and the grade's `offset` is
+   * already a per-frame-writable uniform, so this costs one uniform write.
+   *
+   * What it cannot do is cast a shadow or put a highlight on one side of the
+   * car. That is the honest limitation; it is worth a light.
+   */
+  const strike = useRef({ next: 2 + Math.random() * 4, flash: 0, sub: 0 });
+
+  useFrame((_state, dt) => {
+    if (lightningPeriod > 0 && grade.current) {
+      const s = strike.current;
+      s.next -= dt;
+      if (s.next <= 0) {
+        s.flash = 1;
+        // Real lightning is a train of return strokes, not one flash. Two is
+        // enough to read as lightning rather than as a dropped frame.
+        s.sub = Math.random() < 0.6 ? 1 : 0;
+        s.next = lightningPeriod * (0.55 + Math.random() * 0.9);
+      }
+      if (s.flash > 0) {
+        s.flash = Math.max(0, s.flash - dt * 6.5);
+        if (s.flash <= 0 && s.sub > 0) {
+          s.sub = 0;
+          s.flash = 0.55;
+        }
+      }
+      // Squared, so the tail is a fast dark-out rather than a slow fade — a
+      // linear decay reads as someone turning a dimmer up and down.
+      const f = s.flash * s.flash * 0.16;
+      /*
+       * ADDED to the grade's own offset, into a scratch vector this component
+       * owns. Writing an absolute value would throw away the storm grade's
+       * lifted blacks for the whole race, and mutating `post.grade.offset`
+       * directly would corrupt a module-level preset singleton shared by every
+       * circuit that names it — the same trap GradeEffect's constructor clones
+       * to avoid.
+       */
+      gradeOffset.set(baseOffset.x + f, baseOffset.y + f, baseOffset.z + f * 1.15);
+      grade.current.set("offset", gradeOffset);
+    }
+
     const i = inputs.current;
     if (!i) return;
     const { boost, hit, drifting } = i;
@@ -297,11 +354,26 @@ export function PostFX({ inputs }: { inputs: RefObject<PostFxInputs> }) {
   const q = qualityManager.get();
   const high = q.tier === "high";
   const low = q.tier === "low";
-  const epoch = getTrackEpoch();
+  /*
+   * The ENVIRONMENT epoch, not the track epoch.
+   *
+   * A grade belongs to the circuit AND to the hour AND to the weather — the
+   * whole point of a night variant is that it grades differently — and none of
+   * those last two move `getTrackEpoch()`. Keyed on the track alone, a rematch
+   * on the same circuit in the rain would keep the dry circuit's grade, which
+   * is the single most visible thing weather changes and the least obvious
+   * place to look for why it did not.
+   */
+  const epoch = getEnvironmentEpoch();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const post = useMemo(() => getActiveEnvironment().post, [epoch]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const lightningPeriod = useMemo(() => getWeather().rain?.lightningPeriod ?? 0, [epoch]);
 
   const composer = useRef<EffectComposerImpl>(null);
+  const gradeRef = useRef<GradeEffect | null>(null);
+  // Allocated once. The lightning driver writes into it every frame.
+  const gradeOffset = useMemo(() => new THREE.Vector3(), []);
 
   /*
    * Effects are constructed here and mounted with <primitive>, NOT via the
@@ -377,6 +449,10 @@ export function PostFX({ inputs }: { inputs: RefObject<PostFxInputs> }) {
           inputs={inputs}
           effects={effects}
           blur={blur}
+          grade={gradeRef}
+          gradeOffset={gradeOffset}
+          baseOffset={post.grade.offset}
+          lightningPeriod={lightningPeriod}
           bloomBias={post.bloomBias}
           vignetteBias={post.vignetteBias}
           high={high}
@@ -430,11 +506,11 @@ export function PostFX({ inputs }: { inputs: RefObject<PostFxInputs> }) {
         {/* Always mounted, opacity driven to zero below the speed threshold:
             mounting and unmounting an effect rebuilds the EffectPass. */}
         {!low ? <primitive object={effects.noise} dispose={null} /> : <></>}
-        <Grade options={post.grade} />
+        <Grade ref={gradeRef} options={post.grade} />
         <SMAA />
       </>
     ),
-    [effects, post, high, low, inputs],
+    [effects, post, high, low, inputs, gradeOffset, lightningPeriod],
   );
 
   return (

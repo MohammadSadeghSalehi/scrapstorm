@@ -92,6 +92,13 @@ const ASH_SPIRE: EnvironmentDef = {
     fill: { dir: [-40, 22, 40], color: "#88b8e8", intensity: 0.65 },
     rim: { dir: [20, 12, 30], color: "#ffd0a0", intensity: 0.3 },
     envIntensity: 1.0,
+    headlights: {
+      enabled: false,
+      color: "#fff2d8",
+      intensity: 1.2,
+      distance: 40,
+      angleDeg: 34,
+    },
   },
   fog: { color: "#c8b090", near: 120, far: 720, farLow: 480 },
   terrain: {
@@ -192,6 +199,9 @@ const ASH_SPIRE: EnvironmentDef = {
     sand: "#c8a47a",
     vergeDrift: "#d8b585",
     stripe: "#f0d878",
+    roadRoughness: 0.72,
+    roadEnvMapIntensity: 0.9,
+    wetness: 0,
   },
   post: { grade: DESERT_DUSK, bloomBias: 0, vignetteBias: 0 },
 };
@@ -263,6 +273,13 @@ const CINDER_BOWL: EnvironmentDef = {
     fill: { dir: [50, 26, -46], color: "#6a7ec8", intensity: 0.75 },
     rim: { dir: [-30, 10, 40], color: "#ff9a5a", intensity: 0.45 },
     envIntensity: 0.75,
+    headlights: {
+      enabled: false,
+      color: "#fff0d0",
+      intensity: 1.3,
+      distance: 42,
+      angleDeg: 34,
+    },
   },
   fog: { color: "#a8663c", near: 100, far: 620, farLow: 420 },
   terrain: {
@@ -379,6 +396,9 @@ const CINDER_BOWL: EnvironmentDef = {
     sand: "#9a7452",
     vergeDrift: "#a07a54",
     stripe: "#ffd090",
+    roadRoughness: 0.72,
+    roadEnvMapIntensity: 0.9,
+    wetness: 0,
   },
   post: { grade: EMBER_DUSK, bloomBias: 0.12, vignetteBias: 0.06 },
 };
@@ -455,6 +475,13 @@ const FOUNDRY_PIT: EnvironmentDef = {
     fill: { dir: [-46, 26, -40], color: "#3a5a88", intensity: 0.42 },
     rim: { dir: [-24, 14, 30], color: "#ffb060", intensity: 0.5 },
     envIntensity: 0.45,
+    headlights: {
+      enabled: true,
+      color: "#fff6e6",
+      intensity: 3.4,
+      distance: 55,
+      angleDeg: 36,
+    },
   },
   fog: { color: "#2a1a14", near: 60, far: 420, farLow: 300 },
   terrain: {
@@ -564,6 +591,9 @@ const FOUNDRY_PIT: EnvironmentDef = {
     sand: "#4a3c32",
     vergeDrift: "#5a4436",
     stripe: "#ffc060",
+    roadRoughness: 0.72,
+    roadEnvMapIntensity: 0.9,
+    wetness: 0,
   },
   post: { grade: SLAG_FURNACE, bloomBias: 0.2, vignetteBias: 0.12 },
 };
@@ -634,6 +664,13 @@ const RUSTLINE: EnvironmentDef = {
     fill: { dir: [-50, 30, -40], color: "#a08858", intensity: 0.5 },
     rim: { dir: [30, 16, 34], color: "#e0b070", intensity: 0.25 },
     envIntensity: 0.7,
+    headlights: {
+      enabled: true,
+      color: "#ffe4b8",
+      intensity: 2.2,
+      distance: 34,
+      angleDeg: 40,
+    },
   },
   fog: { color: "#a4834a", near: 40, far: 260, farLow: 190 },
   terrain: {
@@ -747,6 +784,9 @@ const RUSTLINE: EnvironmentDef = {
     sand: "#96784c",
     vergeDrift: "#a8845a",
     stripe: "#e8c878",
+    roadRoughness: 0.72,
+    roadEnvMapIntensity: 0.9,
+    wetness: 0,
   },
   post: { grade: RUST_HAZE, bloomBias: -0.14, vignetteBias: 0.1 },
 };
@@ -822,6 +862,13 @@ const SABLE_RUN: EnvironmentDef = {
     fill: { dir: [-40, 30, 46], color: "#8ab0e0", intensity: 0.5 },
     rim: { dir: [30, 20, 26], color: "#ffe8c0", intensity: 0.22 },
     envIntensity: 1.25,
+    headlights: {
+      enabled: false,
+      color: "#fff4e0",
+      intensity: 1.0,
+      distance: 38,
+      angleDeg: 34,
+    },
   },
   // 860, just inside the 900m camera far plane. Clear air is what makes a plain
   // feel enormous; pulling fog in here would undo the whole circuit.
@@ -946,6 +993,9 @@ const SABLE_RUN: EnvironmentDef = {
     sand: "#b8b4a4",
     vergeDrift: "#c8c4b2",
     stripe: "#ffffff",
+    roadRoughness: 0.72,
+    roadEnvMapIntensity: 0.9,
+    wetness: 0,
   },
   post: { grade: BLEACHED_NOON, bloomBias: 0.05, vignetteBias: -0.04 },
 };
@@ -1022,6 +1072,13 @@ const DEAD_MILE: EnvironmentDef = {
     fill: { dir: [70, 34, 26], color: "#7e9ad0", intensity: 0.8 },
     rim: { dir: [-40, 12, -20], color: "#ffb87a", intensity: 0.35 },
     envIntensity: 0.85,
+    headlights: {
+      enabled: false,
+      color: "#fff2d8",
+      intensity: 1.2,
+      distance: 40,
+      angleDeg: 34,
+    },
   },
   // Cold fog. Fog colour is the fastest single value in this file for saying
   // what time it is — a warm fog on a cold sky reads as a rendering fault.
@@ -1131,6 +1188,9 @@ const DEAD_MILE: EnvironmentDef = {
     sand: "#a89e9a",
     vergeDrift: "#b8ac9e",
     stripe: "#ffe8c8",
+    roadRoughness: 0.72,
+    roadEnvMapIntensity: 0.9,
+    wetness: 0,
   },
   post: { grade: FIRST_LIGHT, bloomBias: 0.14, vignetteBias: 0.02 },
 };

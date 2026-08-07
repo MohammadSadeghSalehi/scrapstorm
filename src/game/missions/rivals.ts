@@ -120,6 +120,7 @@ export const RIVALS: RivalDef[] = [
       brief: ["Vance wants you on the highlight reel.", "Put him on it instead. Then finish."],
     },
     reward: { scrap: 260, markers: 3, title: "Counted", pinkSlip: "his bolt cannon tuning" },
+    beatAfter: "vance-counted",
   },
   {
     id: "sook",
@@ -145,6 +146,7 @@ export const RIVALS: RivalDef[] = [
       brief: ["Sook overdrives every apex on the Rustline.", "Let her. Be there on the exit."],
     },
     reward: { scrap: 300, markers: 4, title: "Chicane Cutter", pinkSlip: "a Rustline pit key" },
+    beatAfter: "sook-vouches",
   },
   {
     id: "ait",
@@ -165,11 +167,22 @@ export const RIVALS: RivalDef[] = [
     duel: {
       laps: 3,
       kind: "time_attack",
-            objectives: [{ kind: "race_pace", pace: 34 }, { kind: "finish_place", place: 2 }],
+      /*
+       * 34 was authored blind. Measured on the Sable Mile, a default-profile car
+       * with no traffic averages 46-50 m/s of centreline pace over three laps
+       * and its best single lap is worth 52-60 — so the old target was cleared
+       * by simply completing the race, and every one of Sparrow's losses was
+       * losing the PLACE, not the clock. 47 is just above the bot's median race
+       * pace of 45.7, which puts the stopwatch back in a duel that is supposed
+       * to be nothing but a stopwatch, and makes the cleanest driver on the
+       * board the hardest clock on it.
+       */
+      objectives: [{ kind: "race_pace", pace: 47 }, { kind: "finish_place", place: 2 }],
       modifiers: { heat: heatForRank(11), catchUp: 0, weaponsFree: false },
       brief: ["Sparrow does not fight. Sparrow drives.", "Weapons cold. This one is on the clock."],
     },
     reward: { scrap: 340, markers: 4, title: "Clean Hands", pinkSlip: "his telemetry" },
+    beatAfter: "sparrow-sheet",
     beatAfterWrecked: "wrecked-sparrow",
   },
   {
@@ -191,9 +204,28 @@ export const RIVALS: RivalDef[] = [
     duel: {
       laps: 5,
       kind: "duel",
-      objectives: [{ kind: "wreck_target", slot: 0, count: 2 }],
+      /*
+       * Measured at a 67-100% bot clear rate — the easiest fight on the board
+       * at rank 10, easier than four of the five rungs below it, because "wreck
+       * him twice in five laps" against a car that parks in a choke is a
+       * patience test with no losing condition.
+       *
+       * The clock is the whole fix: both takedowns have to be banked before the
+       * last lap starts, so you cannot wait for the Foundry to hand him to you
+       * and you have to decide which choke you are doing it in. Finishing
+       * afterwards is what stops the answer being "trade your car for his".
+       * byLap 4 was tried first and took the bot from 67-100% straight to 0%,
+       * which is not a difficulty curve, it is a cliff.
+       */
+      objectives: [
+        { kind: "wreck_target", slot: 0, count: 2, byLap: 5 },
+        { kind: "finish_race" },
+      ],
       modifiers: { heat: heatForRank(10), aggression: 0.25 },
-      brief: ["Marsh owns the west choke and he knows it.", "Twice. Put him down twice."],
+      brief: [
+        "Marsh owns the west choke and he knows it.",
+        "Twice, and both before the last lap. Pick your choke before you leave the grid.",
+      ],
     },
     reward: { scrap: 380, markers: 5, title: "Pitbreaker", pinkSlip: "the Foundry gate code" },
     beatAfter: "beat-kiln",
@@ -214,7 +246,7 @@ export const RIVALS: RivalDef[] = [
     bio: "Fastest hands on the board, least hull. Decides races in one corner.",
     taunt: "One mistake each. I'm not making mine.",
     beaten: "Glass. Told you.",
-    unlock: { markers: 40, events: ["cb_elim"] },
+    unlock: { markers: 40, events: ["cb_elim", "cb_glasswork"] },
     duel: {
       laps: 4,
       kind: "duel",
@@ -223,6 +255,7 @@ export const RIVALS: RivalDef[] = [
       brief: ["Novo hits hard and folds harder.", "Survive her first two laps and she is yours."],
     },
     reward: { scrap: 420, markers: 5, title: "Second Corner", pinkSlip: "her decoy emitter" },
+    beatAfter: "novo-warning",
   },
   {
     id: "reyes",
@@ -249,6 +282,9 @@ export const RIVALS: RivalDef[] = [
     },
     reward: { scrap: 460, markers: 6, title: "Marked", pinkSlip: "his long-lock array" },
     beatAfter: "beat-bounty",
+    // Rank 8 is where Quist stops sounding amused. Fires either way, because
+    // the board closing ranks is not a reaction to how you beat Reyes.
+    beatAfterAlways: "board-closes",
   },
   {
     id: "ogun",
@@ -274,6 +310,8 @@ export const RIVALS: RivalDef[] = [
       brief: ["Two laps of the Dead Mile, and Ogun does not make mistakes.", "One wreck and it is over. Drive it home."],
     },
     reward: { scrap: 520, markers: 6, title: "Ironlung", pinkSlip: "a full hull rebuild" },
+    beatAfter: "ogun-remembers",
+    beatAfterWrecked: "wrecked-ogun",
   },
   {
     id: "vey",
@@ -317,7 +355,7 @@ export const RIVALS: RivalDef[] = [
     bio: "Sold you your first three heats. Takes a cut of everything, including this.",
     taunt: "Business. You understand.",
     beaten: "Costly. For me.",
-    unlock: { markers: 100, events: ["sm_convoy"] },
+    unlock: { markers: 100, events: ["sm_convoy", "as_holdline"] },
     duel: {
       laps: 3,
       kind: "race",
@@ -326,6 +364,10 @@ export const RIVALS: RivalDef[] = [
       brief: ["The fixer races too. Everyone forgets that.", "He has already sold your position to the other three."],
     },
     reward: { scrap: 640, markers: 7, title: "Unbought", pinkSlip: "his book of debts" },
+    // Vey talks on the way to the House race. She is the witness and Ptok is
+    // the man who sold the segment; putting her words on his grid is the point.
+    beatBefore: "vey-turns",
+    beatAfterWrecked: "wrecked-ptok",
   },
   {
     id: "ilo",
@@ -342,7 +384,7 @@ export const RIVALS: RivalDef[] = [
     bio: "Does not race. Processes. The Foundry is where the board sends people to stop.",
     taunt: "In you go.",
     beaten: "Out again. Rare.",
-    unlock: { markers: 122, events: ["fp_holdout", "fp_kingpit"] },
+    unlock: { markers: 122, events: ["fp_holdout", "fp_kingpit", "fp_overtime"] },
     duel: {
       laps: 6,
       kind: "survival",
@@ -351,7 +393,15 @@ export const RIVALS: RivalDef[] = [
         { kind: "no_wreck" },
         { kind: "takedowns", count: 2, optional: true },
       ],
-      modifiers: { heat: heatForRank(4), bountyOnPlayer: true, aggression: 0.35 },
+      // A field of BLOCKERS is what makes this the Pit rather than a long race.
+      // Ilo holds one choke; the extras hold the other one and the exits, so
+      // there is no lap where you are simply driving.
+      modifiers: {
+        heat: heatForRank(4),
+        bountyOnPlayer: true,
+        aggression: 0.35,
+        fieldPattern: "blocker",
+      },
       brief: ["Two and a half minutes in the Pit with all of it pointed at you.", "Ilo does not need to beat you. He needs you to stop."],
     },
     reward: { scrap: 720, markers: 8, title: "Unprocessed", pinkSlip: "the Pit itself" },
@@ -384,6 +434,9 @@ export const RIVALS: RivalDef[] = [
     beatBefore: "duel-kade",
     beatAfter: "outraced-kade",
     beatAfterWrecked: "wrecked-kade",
+    // Who actually ordered the stack. He says it whichever way the night went —
+    // it is the plot turning, not a reaction to your driving.
+    beatAfterAlways: "kade-confesses",
   },
   {
     id: "rhee",
@@ -395,7 +448,15 @@ export const RIVALS: RivalDef[] = [
     homeTrack: "dead_mile",
     profile: {
       aggression: 0.95, precision: 0.8, patience: 0.85, ultBias: 0.7, hunt: 0.95,
-      pace: 0.78, mistake: 0.1, nerve: 1, pattern: "hunter",
+      pace: 0.78, mistake: 0.1, nerve: 1,
+      // "Nobody gets past me twice" and "she measures how long you last" is the
+      // DUELIST written out in prose, and she was filed as a hunter — the one
+      // pattern that does not care where you are, only how hurt you are. As a
+      // duellist she anchors to your progress, will not be dropped on the long
+      // straight, and rams on corner entry, which is the fight her own bio
+      // promises. It also stops rank 2 and rank 1 being the same fight twice:
+      // Marrow duels you for the car, Rhee duels you for the road.
+      pattern: "duelist",
     },
     bio: "The last car anyone sees. Runs the Dead Mile because it gives her time to work.",
     taunt: "Nobody gets past me twice.",
@@ -414,7 +475,11 @@ export const RIVALS: RivalDef[] = [
     },
     reward: { scrap: 960, markers: 10, title: "Number Two", pinkSlip: "the road to Marrow" },
     beatBefore: "duel-rhee",
-    beatAfter: "quist-offer",
+    beatAfter: "outraced-rhee",
+    beatAfterWrecked: "wrecked-rhee",
+    // The offer arrives however rank two went. That is what makes it an offer
+    // rather than a reward.
+    beatAfterAlways: "quist-offer",
   },
   {
     id: "marrow",
@@ -431,7 +496,7 @@ export const RIVALS: RivalDef[] = [
     bio: "Champion of the Scrapline. Drives your car. Has done for a year and a half.",
     taunt: "It runs better for me.",
     beaten: "It was never mine. Take it.",
-    unlock: { markers: 220, events: ["as_gauntlet"] },
+    unlock: { markers: 220, events: ["as_gauntlet", "dm_widowmaker"] },
     duel: {
       laps: 5,
       kind: "duel",
@@ -440,7 +505,17 @@ export const RIVALS: RivalDef[] = [
         { kind: "beat_rival", slot: 0 },
         { kind: "wreck_target", slot: 0, optional: true },
       ],
-      modifiers: { heat: 1, bountyOnPlayer: true, aggression: 0.6, catchUp: 0.35 },
+      // Every car on this grid is a hunter, including the two names behind him.
+      // "The whole board is paid to stop you" is in the brief; this is the line
+      // that makes it true rather than flavour.
+      modifiers: {
+        heat: 1,
+        bountyOnPlayer: true,
+        aggression: 0.6,
+        catchUp: 0.35,
+        fieldPattern: "hunter",
+        fieldPaceFloor: 0.6,
+      },
       brief: [
         "Ash Spire. Same corner. Same stack. Same car — his side of it.",
         "The whole board is watching and every one of them is paid to stop you.",

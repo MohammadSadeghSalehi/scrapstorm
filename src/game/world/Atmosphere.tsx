@@ -21,7 +21,7 @@ import { FRAME } from "./framePriority";
 import { buildRidgeRange } from "./ridgeRange";
 import { clonePbrPack, preloadPbrLibrary } from "./webgl2/textureLibrary";
 import { getMaxAnisotropy } from "./webgl2/configure";
-import { TRACK_SAMPLES, getGroundHeight, getTrackEpoch } from "../track";
+import { TRACK_SAMPLES, getGroundHeight } from "../track";
 import { mulberry32 } from "./scatter/placement";
 import {
   FAR_INNER_R,
@@ -31,10 +31,13 @@ import {
   SKY_RADIUS,
   buildSkyRamp,
   getActiveEnvironment,
+  getEnvironmentEpoch,
   sampleSkyRamp,
   scaleCount,
   sunDiscPosition,
 } from "./environments";
+import { getWeather } from "./weather/conditions";
+import { RainCurtain } from "./weather/RainCurtain";
 import {
   softCircleTexture,
   softCloudTexture,
@@ -101,21 +104,27 @@ function alongTrack(
 export function Atmosphere() {
   const { scene } = useThree();
   const q = qualityManager.get();
-  const epoch = getTrackEpoch();
   /*
-   * Read the environment ONCE per circuit, not per frame and not per render.
+   * Read the environment ONCE per circuit-and-condition, not per frame and not
+   * per render.
    *
-   * Keyed on the track epoch rather than taken at mount: WorldContent is keyed
-   * by track id and does remount, but the epoch is the signal that actually
-   * means "the samples and the circuit changed", and it is what every other
-   * track-derived memo in this project keys on. Relying on the remount alone
-   * would leave this the one thing that silently kept the previous circuit's
-   * sky if that key were ever simplified.
+   * `getEnvironmentEpoch()`, not `getTrackEpoch()`. WorldContent is keyed by
+   * track id and does remount, but the epoch is the signal that actually means
+   * "the samples and the circuit changed", and it is what every other
+   * track-derived memo in this project keys on. It is not sufficient any more:
+   * a mission can run the SAME circuit at a different hour or in the rain, and
+   * the track epoch does not move for either. The environment epoch folds the
+   * variant and weather serials in, so a sky change without a circuit change
+   * still rebuilds the dome. Without it the symptom is silent — the rain falls
+   * out of the dry sky.
    */
+  const epoch = getEnvironmentEpoch();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const env = useMemo(() => getActiveEnvironment(), [epoch]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const centre = useMemo(() => circuitCentre(), [epoch]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rain = useMemo(() => getWeather().rain, [epoch]);
 
   const skySeg = Math.max(24, Math.min(48, q.skySegments + 4));
   const bgColor = useMemo(
@@ -623,6 +632,18 @@ export function Atmosphere() {
           />
         </sprite>
       ))}
+
+      {/*
+        The rain, and the only object weather adds to the tree.
+
+        It is mounted HERE rather than from GameScene because Atmosphere is
+        already the file that owns everything between the camera and the
+        horizon, and because it lets the curtain be paid for out of the same
+        budget: rain hides the sun disc above, which removes a sphere and two
+        additive sprites, and this adds one draw call. The low tier gets `rain`
+        with a drop scale of zero and renders nothing at all — see RAIN_BUDGET.
+      */}
+      <RainCurtain rain={rain} />
 
       <group ref={moteGroup}>
         {dustMotes.map((d, i) => (

@@ -56,6 +56,13 @@ interface Bookkeeping {
   takenDown: string[];
   playerWrecks: number;
   leadSeconds: number;
+  /**
+   * Seconds banked by each `hold_place`, keyed by OBJECTIVE INDEX rather than
+   * by place. Two hold_place objectives asking for different places in the same
+   * mission is a legitimate thing to author ("P3 for a minute, then P1 for
+   * twenty"), and keying by place would have them share a counter.
+   */
+  holdSeconds: Record<number, number>;
   aliveSeconds: number;
   bestLap: number | null;
   seenLapCount: Record<string, number>;
@@ -125,8 +132,24 @@ function fmtClock(sec: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** "Wreck the marked car" + "by 1:40" — the deadline has to be visible to be fair. */
+function withDeadline(o: Objective, base: string): string {
+  if (HOLD_KINDS.has(o.kind)) return base;
+  if (o.byLap !== undefined) return `${base} — by lap ${o.byLap}`;
+  if (o.bySec !== undefined) return `${base} — by ${fmtClock(o.bySec)}`;
+  return base;
+}
+
 function labelFor(o: Objective, lapTarget: number | null, raceTarget: number | null): string {
   if (o.label) return o.label;
+  return withDeadline(o, baseLabelFor(o, lapTarget, raceTarget));
+}
+
+function baseLabelFor(
+  o: Objective,
+  lapTarget: number | null,
+  raceTarget: number | null,
+): string {
   switch (o.kind) {
     case "finish_place":
       return o.place === 1 ? "Win the heat" : `Finish P${o.place} or better`;
@@ -148,6 +171,8 @@ function labelFor(o: Objective, lapTarget: number | null, raceTarget: number | n
       return `Wreck the marked car${o.count && o.count > 1 ? ` x${o.count}` : ""}`;
     case "beat_rival":
       return "Finish ahead of the rival";
+    case "hold_place":
+      return `Hold P${o.place} or better for ${fmtClock(o.seconds)}`;
     case "no_wreck":
       return "Do not get wrecked";
     case "hull_above":
@@ -202,6 +227,7 @@ export function createMissionRun(def: MissionDef, raceTime = 0): MissionRun {
       takenDown: [],
       playerWrecks: 0,
       leadSeconds: 0,
+      holdSeconds: {},
       aliveSeconds: 0,
       bestLap: null,
       seenLapCount: {},
@@ -435,6 +461,23 @@ export function stepMission(
     if (run.def.modifiers.bountyOnPlayer && now > 6) {
       radio(run, effects, now, "bounty", pickLine(EVENT_LINES.heat_up, seed), "hit");
     }
+
+    /*
+     * The rival arriving in your mirrors.
+     *
+     * The board's voice used to be tied to bookkeeping — a pass, a wreck, a
+     * result — so a rival who spent four laps sitting on your bumper without
+     * ever completing a move said nothing at all. That is the most tense part
+     * of a duel and it was silent. Twelve metres and fifteen seconds in, once.
+     */
+    const headRival = run.def.grid?.[0]?.rivalId;
+    const headCar = slotVehicle(snap, 0);
+    if (headRival && headCar && headCar.alive && headCar.wreckTimer <= 0 && now > 15) {
+      const d = Math.hypot(headCar.x - player.x, headCar.z - player.z);
+      if (d < 12) {
+        radio(run, effects, now, `close-${headRival}`, rivalBark(headRival, "close"), "hit");
+      }
+    }
   }
 
   /* ── elimination ───────────────────────────────────────────────────── */
@@ -590,6 +633,22 @@ export function stepMission(
         );
         break;
       }
+      case "hold_place": {
+        // Only counts while the race is live and the player is actually driving
+        // — a wrecked car keeps its `position`, and banking hold time from
+        // inside a burning wreck is not holding anything.
+        if (racing && player && player.alive && player.wreckTimer <= 0 && player.position <= o.place) {
+          b.holdSeconds[i] = (b.holdSeconds[i] ?? 0) + dt;
+        }
+        const held = b.holdSeconds[i] ?? 0;
+        setState(
+          st,
+          held >= o.seconds ? "met" : raceOver ? "failed" : "pending",
+          held / o.seconds,
+          fmtClock(Math.max(0, o.seconds - held)),
+        );
+        break;
+      }
       case "no_wreck": {
         setState(
           st,
@@ -638,6 +697,56 @@ export function stepMission(
       }
     }
   });
+
+  /*
+   * Deadlines, applied AFTER the switch rather than inside each case.
+   *
+   * Every case above already decides met/pending/failed on its own terms; a
+   * deadline is a separate question — "and did it happen in time" — so it is a
+   * separate pass. Doing it inside the cases would mean thirteen copies of the
+   * same three lines, and the fourteenth objective kind would be written without
+   * them.
+   *
+   * Note the ordering: an objective that became `met` on this very step is not
+   * failed by a deadline that also expires on this step. Ties go to the player,
+   * because the alternative is losing a run to a rounding error.
+   */
+  run.def.objectives.forEach((o, i) => {
+    const st = run.objectives[i]!;
+    if (st.status !== "pending" || HOLD_KINDS.has(o.kind)) return;
+    const outOfTime = o.bySec !== undefined && run.elapsed > o.bySec;
+    // `>=` on the lap, not `>`: byLap 3 means "before you start lap 3", which is
+    // the sentence a player reads off a HUD that is showing them lap 2 of 4.
+    const outOfLaps = o.byLap !== undefined && !!player && player.lap >= o.byLap;
+    if (outOfTime || outOfLaps) {
+      setState(st, "failed", st.progress, outOfLaps ? "too late" : "0:00");
+    }
+  });
+
+  /*
+   * The clock, out loud.
+   *
+   * A deadline the player only discovers by losing is a trap rather than a
+   * challenge, and the HUD chip that carries it is exactly the thing nobody
+   * looks at with a bruiser on their door. One warning, fifteen seconds out.
+   */
+  if (racing) {
+    run.def.objectives.forEach((o, i) => {
+      const st = run.objectives[i]!;
+      if (st.status !== "pending" || o.bySec === undefined || o.optional) return;
+      const left = o.bySec - run.elapsed;
+      if (left > 0 && left <= 15) {
+        radio(
+          run,
+          effects,
+          snap.raceTime,
+          `clock-${i}`,
+          pickLine(EVENT_LINES.clock_low, i),
+          "hit",
+        );
+      }
+    });
+  }
 
   /* ── objective transitions ─────────────────────────────────────────── */
   /*
@@ -816,7 +925,11 @@ export function armMission(
     profiles,
     // The standard of the whole grid, named or not. Anonymous house cars are
     // the ones a returning player notices least and should notice most.
-    fieldPace: Math.max(0, Math.min(1, opts.fieldPace ?? 0)),
+    fieldPace: Math.max(
+      0,
+      Math.min(1, Math.max(opts.fieldPace ?? 0, mods.fieldPaceFloor)),
+    ),
+    fieldPattern: mods.fieldPattern,
     playerId: "player",
   });
 
