@@ -1,24 +1,71 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/*
+ * SCRAPSTORM LEAGUE — UI SYSTEM
+ *
+ * The world is torched steel, spray stencil, sodium floodlight and ash. The
+ * interface is built out of the same things the league is: plates cut and hung,
+ * numbers sprayed through a template, one arc-amber signal light.
+ *
+ * Two rules run through everything and are worth stating once here rather than
+ * repeating at every call site:
+ *
+ *  1. ONE AMBER PER SCREEN. `--color-signal` marks the single primary action or
+ *     the single live value. The moment two things on a screen are amber, the
+ *     hierarchy is gone — which is exactly the state the menus were in, where
+ *     every panel had the same border, the same fill and the same weight.
+ *
+ *  2. PANELS CARRY THEIR OWN DARK. Menu and garage sit over looping footage at
+ *     0.85 opacity. Legibility cannot come from dimming the video — that was
+ *     tried and it makes the footage read as a stain. It comes from the plate
+ *     being genuinely opaque where text sits.
+ */
+
 @theme {
-  --color-bg: #0a0a0b;
-  --color-bg-elevated: #121214;
-  --color-bg-subtle: #1a1a1e;
-  --color-surface: #16161a;
-  --color-fg: #f4f4f5;
-  --color-muted: #a1a1aa;
-  --color-border: color-mix(in oklab, #f4f4f5 12%, transparent);
-  --color-accent: #c8ccd4;
-  --color-accent-fg: #0a0a0b;
-  --color-danger: #f87171;
-  --font-display: "Segoe UI", system-ui, -apple-system, sans-serif;
+  /*
+   * Warmed off the original neutral greys. Every colour in the render is ash,
+   * rust and sodium; a cool #0a0a0b panel over that footage read as a browser
+   * dialog parked on top of a game, and the two never looked like one product.
+   */
+  --color-bg: #0a0806;
+  --color-bg-elevated: #16110d;
+  --color-bg-subtle: #201811;
+  --color-surface: #191410;
+  --color-fg: #f0eade;
+  --color-muted: #9a9088;
+  --color-border: color-mix(in oklab, #e9e2d4 13%, transparent);
+  --color-accent: #f2a516;
+  --color-accent-fg: #140d05;
+  --color-danger: #e2543c;
+
+  /* Named world colours, used where a semantic token would be a lie. */
+  --color-signal: #f2a516; /* arc / sodium — the one bright */
+  --color-oxide: #8f3b17; /* rust structure: rules, edges, seams */
+  --color-bone: #e9e2d4; /* paper and paint on metal */
+  --color-slag: #8a8078; /* warm grey, secondary text */
+  --color-verdigris: #5fa38b; /* cleared, beaten, banked */
+  --color-ember: #e2543c; /* failed, lost, hunted */
+
+  /*
+   * Bahnschrift is the DIN-derived condensed grotesque that ships with Windows;
+   * Archivo Narrow / Oswald cover the rest. Condensed is not decoration here —
+   * it is what lets a rival name, a circuit name and a mission name all set at
+   * display size inside a panel that has to share the screen with a race.
+   */
+  --font-display: "Bahnschrift", "Archivo Narrow", "Oswald", "Haettenschweiler",
+    "Impact", "Arial Narrow", system-ui, sans-serif;
   --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 24px;
+
+  /*
+   * Plates are cut, not moulded. The large radii read as a phone app; the
+   * corners here are nearly square and the softness comes from shadow instead.
+   */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
 }
 
 @layer base {
@@ -41,51 +88,177 @@
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+
+  /* Keyboard users get a visible edge everywhere, in the signal colour so it
+     cannot be confused with a hover state. */
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+  }
 }
 
 @layer components {
   .hud-panel {
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
-    background: color-mix(in oklab, var(--color-surface) 82%, transparent);
+    background: color-mix(in oklab, var(--color-surface) 86%, transparent);
     backdrop-filter: blur(8px);
   }
 
-  .panel-shell {
-    border-radius: var(--radius-xl);
+  /*
+   * The plate: a cut sheet of steel with a lit top edge and a shadowed bottom.
+   * This is the fallback that has to look deliberate on its own, because the
+   * authored panel textures may not be present — see UiArt.tsx.
+   */
+  .plate {
+    position: relative;
+    border-radius: var(--radius-lg);
     border: 1px solid var(--color-border);
-    background: color-mix(in oklab, var(--color-bg-elevated) 94%, transparent);
-    padding: 1.25rem;
-    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+    background:
+      linear-gradient(163deg, rgba(255, 240, 214, 0.05), transparent 46%),
+      color-mix(in oklab, var(--color-bg-elevated) 95%, transparent);
+    box-shadow:
+      0 20px 46px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0 rgba(255, 240, 214, 0.06),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  }
+
+  /*
+   * The ONE panel on a screen that is the reason the screen exists. A 2px arc
+   * across the top edge is the whole device — cheap, unmistakable, and it does
+   * not need the panel to be bigger or brighter than its neighbours.
+   */
+  .plate-primary {
+    border-color: color-mix(in oklab, var(--color-signal) 34%, transparent);
+    box-shadow:
+      0 24px 56px rgba(0, 0, 0, 0.66),
+      inset 0 1px 0 rgba(242, 165, 22, 0.28),
+      0 0 0 1px rgba(242, 165, 22, 0.06);
+  }
+
+  .plate-primary::before {
+    content: "";
+    position: absolute;
+    inset: -1px auto auto -1px;
+    width: calc(100% + 2px);
+    height: 2px;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      var(--color-signal) 18%,
+      var(--color-signal) 72%,
+      transparent
+    );
+    opacity: 0.9;
+  }
+
+  /* Kept for compatibility with anything still asking for the old shell. */
+  .panel-shell {
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border);
+    background:
+      linear-gradient(163deg, rgba(255, 240, 214, 0.05), transparent 46%),
+      color-mix(in oklab, var(--color-bg-elevated) 95%, transparent);
+    padding: 1.1rem;
+    box-shadow:
+      0 20px 46px rgba(0, 0, 0, 0.6),
+      inset 0 1px 0 rgba(255, 240, 214, 0.06);
   }
 
   @media (min-width: 640px) {
     .panel-shell {
-      padding: 1.5rem;
+      padding: 1.35rem;
     }
   }
 
+  /*
+   * The eyebrow. Wide-tracked, tiny, in slag — it labels without competing.
+   * Used above every display heading in the game so the reader learns the
+   * pattern: small line says WHERE you are, big line says WHAT this is.
+   */
+  .eyebrow {
+    font-size: 0.58rem;
+    font-weight: 600;
+    line-height: 1.1;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--color-slag);
+  }
+
+  .eyebrow-signal {
+    color: color-mix(in oklab, var(--color-signal) 80%, var(--color-bone));
+  }
+
+  /*
+   * Stencil headings. Condensed, uppercase, tracked IN rather than out — a
+   * sprayed template has no letterspacing, and tightening is what stops the
+   * condensed face reading as merely "small".
+   */
+  .stencil {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+    line-height: 0.94;
+  }
+
+  /* A torn edge under a section head: oxide fading out, not a hairline box. */
+  .rule-oxide {
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      var(--color-oxide),
+      color-mix(in oklab, var(--color-oxide) 30%, transparent) 55%,
+      transparent
+    );
+  }
+
+  /*
+   * PRIMARY ACTION = the amber slab. It was a white pill, which is the same
+   * shape and nearly the same weight as every secondary control next to it.
+   */
   .btn-primary {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 0.5rem;
     min-height: 44px;
     border-radius: var(--radius-md);
-    border: 1px solid color-mix(in oklab, var(--color-fg) 20%, transparent);
-    background: var(--color-fg);
+    border: 1px solid color-mix(in oklab, var(--color-signal) 55%, transparent);
+    background: linear-gradient(180deg, #f7b62f, #d9880a);
     color: var(--color-accent-fg);
-    font-weight: 600;
-    font-size: 0.9375rem;
-    padding: 0.65rem 1.1rem;
-    transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1), opacity 150ms ease;
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    font-size: 1rem;
+    padding: 0.6rem 1.1rem;
+    box-shadow:
+      0 8px 20px rgba(217, 136, 10, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.32);
+    transition:
+      filter 150ms ease,
+      transform 150ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 150ms ease;
   }
 
-  .btn-primary:hover {
-    opacity: 0.92;
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.09);
+    box-shadow:
+      0 10px 26px rgba(217, 136, 10, 0.34),
+      inset 0 1px 0 rgba(255, 255, 255, 0.38);
   }
 
-  .btn-primary:active {
-    transform: scale(0.98);
+  .btn-primary:active:not(:disabled) {
+    transform: translateY(1px) scale(0.995);
+  }
+
+  .btn-primary:disabled {
+    background: color-mix(in oklab, var(--color-bg-subtle) 92%, transparent);
+    border-color: var(--color-border);
+    color: var(--color-slag);
+    box-shadow: none;
   }
 
   .btn-secondary {
@@ -95,20 +268,69 @@
     min-height: 44px;
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
-    background: transparent;
+    background: color-mix(in oklab, var(--color-bg) 55%, transparent);
     color: var(--color-fg);
-    font-weight: 500;
-    font-size: 0.9375rem;
-    padding: 0.65rem 1.1rem;
-    transition: background 150ms ease, transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    font-size: 0.9rem;
+    padding: 0.6rem 1.1rem;
+    transition:
+      background 150ms ease,
+      border-color 150ms ease,
+      transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  .btn-secondary:hover {
+  .btn-secondary:hover:not(:disabled) {
     background: var(--color-bg-subtle);
+    border-color: color-mix(in oklab, var(--color-bone) 26%, transparent);
   }
 
-  .btn-secondary:active {
-    transform: scale(0.98);
+  .btn-secondary:active:not(:disabled) {
+    transform: translateY(1px) scale(0.995);
+  }
+
+  /*
+   * A selectable tile — circuit, class, paint row. Selection is carried by an
+   * amber left bar rather than by a fill, so a grid of eight tiles does not
+   * turn into a grid of eight glowing rectangles.
+   */
+  .tile {
+    position: relative;
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in oklab, var(--color-bone) 9%, transparent);
+    background: color-mix(in oklab, var(--color-bg) 62%, transparent);
+    text-align: left;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .tile:hover:not(:disabled) {
+    background: color-mix(in oklab, var(--color-bg-subtle) 85%, transparent);
+    border-color: color-mix(in oklab, var(--color-bone) 20%, transparent);
+  }
+
+  .tile-on {
+    background: color-mix(in oklab, var(--color-bg-subtle) 96%, transparent);
+    border-color: color-mix(in oklab, var(--color-signal) 40%, transparent);
+  }
+
+  .tile-on::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 12%;
+    bottom: 12%;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--color-signal);
+  }
+
+  .tile:disabled {
+    opacity: 0.42;
   }
 
   .touch-btn {
@@ -132,13 +354,13 @@
     height: 0.4rem;
     width: 100%;
     overflow: hidden;
-    border-radius: 9999px;
-    background: color-mix(in oklab, var(--color-fg) 10%, transparent);
+    border-radius: 1px;
+    background: color-mix(in oklab, var(--color-bone) 10%, transparent);
   }
 
   .bar-fill {
     height: 100%;
-    border-radius: 9999px;
+    border-radius: 1px;
     transition: width 80ms linear;
   }
 
@@ -182,7 +404,28 @@
     width: 100% !important;
     height: 100% !important;
   }
+
+  /*
+   * Procedural grain, used when /assets/ui/grain.png is absent. Repeating a
+   * conic gradient at 3px is a cheap static dither that breaks up the flat
+   * fills without a texture fetch. Fixed attachment so it does not crawl when
+   * a panel animates.
+   */
+  .grain-fallback {
+    background-image:
+      repeating-conic-gradient(
+        rgba(255, 240, 214, 0.018) 0deg 90deg,
+        transparent 90deg 180deg
+      );
+    background-size: 3px 3px;
+  }
 }
+
+/* ── motion ─────────────────────────────────────────────────────────────
+   Screens arrive; they do not appear. Every keyframe here is short (<420ms)
+   and none of them delay input: the panel is interactive from frame one and
+   the animation is purely visual. A menu that you have to wait for is a
+   worse menu than one that snaps. */
 
 @keyframes rise-in {
   from {
@@ -195,6 +438,95 @@
   }
 }
 
+/* A plate being set down: drops in with a hair of scale, settles hard. */
+@keyframes plate-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/*
+ * An ink stamp hitting paper — for verdicts and BEATEN overprints only.
+ *
+ * Scale and opacity only. The tilt lives on the independent `rotate` property
+ * instead, so a stamp still sits crooked under prefers-reduced-motion, where
+ * this animation does not run at all.
+ */
+@keyframes stamp-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.5);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* A banner unmasking left to right, like a title card being wiped on. */
+@keyframes sweep-in {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* The between-screens shutter. One pass, then it unmounts itself. */
+@keyframes shutter {
+  0% {
+    transform: scaleX(0);
+    transform-origin: left;
+    opacity: 1;
+  }
+  42% {
+    transform: scaleX(1);
+    transform-origin: left;
+    opacity: 1;
+  }
+  43% {
+    transform: scaleX(1);
+    transform-origin: right;
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(0);
+    transform-origin: right;
+    opacity: 1;
+  }
+}
+
+/* A fluorescent tube deciding whether to stay on. Used once, on the wordmark. */
+@keyframes arc-flicker {
+  0%,
+  93%,
+  100% {
+    opacity: 1;
+  }
+  94% {
+    opacity: 0.42;
+  }
+  95% {
+    opacity: 1;
+  }
+  96.5% {
+    opacity: 0.6;
+  }
+  97.5% {
+    opacity: 1;
+  }
+}
+
 .animate-rise {
   animation: rise-in 350ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -203,9 +535,46 @@
   animation: rise-in 400ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both;
 }
 
+.animate-plate {
+  animation: plate-in 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-stamp {
+  animation: stamp-in 420ms cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+.animate-sweep {
+  animation: sweep-in 460ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-shutter {
+  animation: shutter 420ms cubic-bezier(0.65, 0, 0.35, 1) both;
+}
+
+.animate-arc {
+  animation: arc-flicker 7s linear infinite;
+}
+
+/*
+ * List stagger. Rows set `--i` inline; the delay is capped by only applying it
+ * to the first handful in each list, because a fifteen-row board with a linear
+ * stagger takes over a second to finish and the player is waiting on the last
+ * row, which is usually the one they came for.
+ */
+.stagger > * {
+  animation: rise-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(min(var(--i, 0), 7) * 34ms);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-rise,
-  .animate-rise-delay {
+  .animate-rise-delay,
+  .animate-plate,
+  .animate-stamp,
+  .animate-sweep,
+  .animate-shutter,
+  .animate-arc,
+  .stagger > * {
     animation: none;
   }
 }

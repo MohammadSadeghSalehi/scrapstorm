@@ -136,6 +136,77 @@ const TRACKS = {
       "lead vocal. Deflated but dignified — a heat survived, not a tragedy. " +
       "Late-1970s analogue production, dry and close. Definite ending, no loop.",
   },
+  /*
+   * Condition and context beds, added alongside the seven originals.
+   *
+   * Each exists because a state that already changes the GAME had no music of
+   * its own and had to borrow: a wet race sounded like a dry one, a night
+   * circuit like an afternoon, a rival duel like a club event, and the board —
+   * the screen a career player spends most of their non-driving time on — used
+   * the menu anthem, which is written to be heard once on arrival rather than
+   * sat inside.
+   *
+   * All share the key and tempo family of the race beds so a transition between
+   * them is a crossfade rather than a modulation.
+   */
+  rain_race: {
+    ms: 60000,
+    prompt:
+      "Original instrumental hard rock, 4/4 at 138 BPM in A minor, seamless " +
+      "loop. Overdriven rhythm guitar palm-muted and darker than usual with " +
+      "the treble rolled off, a heavy driving bass, and live drums played on " +
+      "the rims and closed hats rather than open cymbals so the top end stays " +
+      "clear. A single sustained organ pad underneath. Tense and slippery " +
+      "rather than triumphant — the feeling of pushing on a surface that will " +
+      "not hold. No lyrics, no lead vocal. Late-1970s analogue production, " +
+      "damped and close. Seamless loop, no fade in, no fade out.",
+  },
+  night_race: {
+    ms: 60000,
+    prompt:
+      "Original instrumental hard rock, 4/4 at 132 BPM in E minor, seamless " +
+      "loop. A repeating single-coil guitar arpeggio with heavy tape delay " +
+      "over a walking overdriven bass, live drums with a tight kick and " +
+      "brushed snare, and a distant sustained synth string pad. Nocturnal, " +
+      "spacious and forward-moving — headlights on an empty road. Restrained " +
+      "for most of the loop with one short lifted guitar phrase. No lyrics, no " +
+      "lead vocal. Late-1970s analogue production with plate reverb. Seamless " +
+      "loop, no fade in, no fade out.",
+  },
+  duel: {
+    ms: 60000,
+    prompt:
+      "Original instrumental hard rock, 4/4 at 152 BPM in D minor, seamless " +
+      "loop. Two overdriven guitars trading a tight chromatic riff in call and " +
+      "response, aggressive picked bass doubling the riff, live drums driving " +
+      "hard on the ride with a double-time snare, and a low brass-like " +
+      "synth stab on the downbeat of every fourth bar. Confrontational, " +
+      "two-handed, personal. No lyrics, no lead vocal. Late-1970s analogue " +
+      "production, hot and compressed. Seamless loop, no fade in, no fade out.",
+  },
+  board: {
+    ms: 50000,
+    prompt:
+      "Original instrumental rock underscore, 4/4 at 96 BPM in A minor, " +
+      "seamless loop. A slow clean guitar figure with light tremolo over a " +
+      "simple bass pulse, sparse drums mostly hi-hat and occasional rim, and " +
+      "a low sustained organ. Patient, brooding and unhurried — a room where " +
+      "names are on a wall and none of them are yours yet. Deliberately stays " +
+      "out of the way for minutes at a time. No lyrics, no lead vocal. " +
+      "Late-1970s analogue production, dry. Seamless loop, no fade in, no " +
+      "fade out.",
+  },
+  hunt: {
+    ms: 45000,
+    prompt:
+      "Original instrumental hard rock, 4/4 at 158 BPM in C minor, seamless " +
+      "loop. Relentless downstroked eighth-note rhythm guitar, a bass locked " +
+      "to the kick, live drums pounding a straight four with a crash on every " +
+      "bar, and a single alarm-like sustained guitar note that rises across " +
+      "eight bars and resets. Pursuit music — pressure without melody, meant " +
+      "to be uncomfortable. No lyrics, no lead vocal. Late-1970s analogue " +
+      "production, loud and flat. Seamless loop, no fade in, no fade out.",
+  },
 };
 
 function loadKey() {

@@ -64,6 +64,7 @@ import {
 import { MenuOverlay } from "./Menus";
 import { RaceLoadingScreen } from "./RaceLoadingScreen";
 import { CareerBoard, MissionBrief, MissionResults, StoryCard } from "./CareerMenus";
+import { ScreenStage } from "./UiArt";
 import type { HudSlice, MissionHud } from "./GameHUD";
 import { Cutscene, CutsceneLoop, hasSeenCutscene, type CutsceneId } from "./Cutscene";
 
@@ -1182,6 +1183,23 @@ export function ScrapstormApp() {
     (careerView === "brief" && !!briefDef) ||
     (careerView === "board" && !inRace);
 
+  /*
+   * Which front-end screen is on. Only used to trigger the between-screens
+   * shutter — it deliberately does NOT include anything that changes during a
+   * race, or the wipe would fire on every lap.
+   */
+  const screenKey = missionResult
+    ? "results"
+    : careerView === "brief" && briefDef
+      ? `brief:${briefDef.id}`
+      : careerView === "board" && !inRace
+        ? "board"
+        : inRace
+          ? "race"
+          : shellPhase === "garage"
+            ? "garage"
+            : "menu";
+
   const GameCanvas = kit?.GameCanvas;
   const GameHUD = kit?.GameHUD;
   const MobileControls = kit?.MobileControls;
@@ -1227,6 +1245,13 @@ export function ScrapstormApp() {
 
       <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(10,10,11,0.55)_100%)]" />
 
+      {/*
+        Every front-end screen swap is wrapped in one shutter so a change of
+        screen reads as a change of screen. ScreenStage never unmounts or delays
+        its children — the incoming panel is live immediately and the wipe is
+        pointer-transparent decoration over the top of it.
+      */}
+      <ScreenStage screenKey={screenKey}>
       {!careerOverlay && (
         <MenuOverlay
           state={displayState}
@@ -1302,6 +1327,7 @@ export function ScrapstormApp() {
           onReset={onResetCareer}
         />
       ) : null}
+      </ScreenStage>
 
       {beatQueue.length > 0 && (
         <StoryCard

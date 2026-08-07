@@ -321,7 +321,7 @@ function HeatMeter({ heat, bounty }: { heat: number; bounty: boolean }) {
   const bars = Math.round(Math.max(0, Math.min(1, heat)) * 5);
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-[0.55rem] uppercase tracking-[0.14em] text-muted">
+      <span className="eyebrow !text-[0.52rem]">
         Heat
       </span>
       <span className="flex gap-0.5">
@@ -438,10 +438,10 @@ function HudInner({
       {/* Top row */}
       <div className="absolute left-3 right-3 top-3 flex items-start justify-between gap-2 sm:left-4 sm:right-4 sm:top-4">
         <div className="rounded-xl border border-border/80 bg-surface/85 px-3 py-2 backdrop-blur-md">
-          <p className="text-[0.6rem] font-medium uppercase tracking-[0.16em] text-muted">
+          <p className="eyebrow">
             Position
           </p>
-          <p className="font-display text-2xl font-semibold leading-none">
+          <p className="stencil text-[1.9rem] leading-none">
             {player.position}
             <span className="text-base text-muted">/{hud.fieldSize}</span>
           </p>
@@ -449,10 +449,10 @@ function HudInner({
 
         <div className="flex flex-col items-center gap-1.5">
           <div className="rounded-xl border border-border/80 bg-surface/85 px-4 py-2 text-center backdrop-blur-md">
-            <p className="text-[0.6rem] font-medium uppercase tracking-[0.16em] text-muted">
+            <p className="eyebrow">
               Lap
             </p>
-            <p className="font-display text-2xl font-semibold leading-none">
+            <p className="stencil text-[1.9rem] leading-none">
               {Math.min(hud.lapCount, player.lap + 1)}
               <span className="text-base text-muted">/{hud.lapCount}</span>
             </p>
@@ -471,7 +471,7 @@ function HudInner({
 
         <div className="flex items-start gap-2">
           <div className="rounded-xl border border-border/80 bg-surface/85 px-3 py-2 text-right backdrop-blur-md">
-            <p className="text-[0.6rem] font-medium uppercase tracking-[0.16em] text-muted">
+            <p className="eyebrow">
               Time
             </p>
             <p className="font-mono text-lg font-semibold leading-none tabular-nums">
@@ -516,7 +516,7 @@ function HudInner({
 
       {hud.phase === "countdown" && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <div className="font-display text-7xl font-semibold tracking-tight text-fg drop-shadow-lg sm:text-8xl">
+          <div className="stencil text-8xl text-fg drop-shadow-[0_6px_24px_rgba(0,0,0,0.9)] sm:text-9xl">
             {hud.countdown > 0.2 ? Math.ceil(hud.countdown) : "GO"}
           </div>
         </div>
@@ -683,19 +683,19 @@ function HudInner({
       <div className="absolute bottom-3 right-3 sm:bottom-4 sm:right-4">
         <div className="flex items-end gap-3 rounded-2xl border border-border/80 bg-surface/90 px-3 py-2.5 backdrop-blur-md">
           <div className="text-center">
-            <p className="text-[0.55rem] font-medium uppercase tracking-[0.16em] text-muted">
+            <p className="eyebrow !text-[0.52rem]">
               Gear
             </p>
-            <p className="font-display text-3xl font-semibold leading-none">
+            <p className="stencil text-[2.3rem] leading-none">
               {gear}
             </p>
           </div>
           <div className="h-10 w-px bg-border" />
           <div className="min-w-[4.5rem] text-right">
-            <p className="text-[0.55rem] font-medium uppercase tracking-[0.16em] text-muted">
+            <p className="eyebrow !text-[0.52rem]">
               Speed
             </p>
-            <p className="font-display text-3xl font-semibold leading-none tabular-nums">
+            <p className="stencil text-[2.3rem] leading-none tabular-nums">
               {mph}
             </p>
             <p className="text-[0.6rem] text-muted">

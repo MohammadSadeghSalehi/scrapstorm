@@ -102,18 +102,16 @@ export function GhostDuelPanel({
   };
 
   return (
-    <div className="mt-4 rounded-2xl border border-border bg-bg/40 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[0.65rem] font-medium uppercase tracking-[0.16em] text-muted">
-          Ghost duel
+    /* No border and no heading of its own: this panel now lives inside a
+       disclosure that is already labelled "Ghost duel", and the old card drew a
+       second box and a second title inside the first. */
+    <div className="pt-1">
+      {rival && (
+        <p className="text-right text-[0.62rem] text-[var(--color-signal)]/85">
+          Rival · {rival.totalTime.toFixed(1)}s
         </p>
-        {rival && (
-          <span className="text-[0.65rem] text-rose-300/90">
-            Rival · {rival.totalTime.toFixed(1)}s
-          </span>
-        )}
-      </div>
-      <p className="mt-1 text-[0.7rem] leading-relaxed text-muted">
+      )}
+      <p className="text-[0.68rem] leading-relaxed text-muted">
         Race a friend's ghost — paste a code or open a casual P2P room (not ranked).
       </p>
 
@@ -132,7 +130,7 @@ export function GhostDuelPanel({
       </div>
 
       <textarea
-        className="mt-2 w-full resize-none rounded-xl border border-border bg-bg px-2.5 py-2 font-mono text-[0.65rem] text-fg outline-none ring-fg/20 focus:ring-2"
+        className="mt-2 w-full resize-none rounded-sm border border-border bg-bg px-2.5 py-2 font-mono text-[0.65rem] text-fg outline-none ring-fg/20 focus:ring-2"
         rows={2}
         placeholder="Paste SSG1.… ghost code"
         value={code}
@@ -144,7 +142,7 @@ export function GhostDuelPanel({
           <label className="text-[0.65rem] uppercase tracking-wider text-muted">
             Room
             <input
-              className="ml-2 w-28 rounded-lg border border-border bg-bg px-2 py-1 font-mono text-xs text-fg uppercase outline-none"
+              className="ml-2 w-28 rounded-sm border border-border bg-bg px-2 py-1 font-mono text-xs text-fg uppercase outline-none"
               value={roomCode}
               onChange={(e) => setRoomCode(e.target.value.toUpperCase().slice(0, 12))}
               disabled={p2pOn}

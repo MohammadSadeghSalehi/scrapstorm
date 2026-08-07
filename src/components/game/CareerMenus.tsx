@@ -10,8 +10,22 @@
  * Presentation rule that runs through all four screens: say what a run WANTS
  * before it starts, and what it COST after it ends. A progression system the
  * player has to infer is a progression system they will ignore.
+ *
+ * ── the Blacklist is the spine, so it is built as a BOARD ──────────────
+ *
+ * Fifteen names is the game. Rendering them as fifteen equal rows made the
+ * ladder read as a settings list: nothing said which one was next, nothing
+ * recorded what you had already taken, and the rank numbers — the only thing
+ * the whole mode is about — were 12px monospace.
+ *
+ * The board now has three states with three different weights. The next target
+ * is a full-width dossier and the only amber thing on the screen. Names you
+ * have taken are desaturated and overprinted. Names you cannot reach yet are
+ * dim plates that say exactly what is missing. A rank spine down the left edge
+ * shows all fifteen at once with your position on it, so the climb is visible
+ * even when only four dossiers fit on screen.
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   affordable,
   availableEvents,
@@ -32,6 +46,7 @@ import { getTrackDef, type AnyTrackId } from "@/game/track";
 import { beat as storyBeat, TRACK_BEATS, type StoryBeat } from "@/game/story";
 import type { MetaState } from "@/game/meta";
 import type { VehicleClassId } from "@/game/types";
+import { ArtBackdrop, Grain, Insignia, Plate, Stamp } from "./UiArt";
 
 /* ── small shared parts ───────────────────────────────────────────────── */
 
@@ -44,15 +59,15 @@ function Chip({
 }) {
   const cls =
     tone === "danger"
-      ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+      ? "border-[var(--color-ember)]/45 bg-[var(--color-ember)]/12 text-[#f0a292]"
       : tone === "warn"
-        ? "border-amber-500/40 bg-amber-500/10 text-amber-200"
+        ? "border-[var(--color-signal)]/45 bg-[var(--color-signal)]/12 text-[#f6c664]"
         : tone === "good"
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
-          : "border-border/70 bg-bg/40 text-muted";
+          ? "border-[var(--color-verdigris)]/45 bg-[var(--color-verdigris)]/12 text-[#8fc9b5]"
+          : "border-border/70 bg-bg/45 text-muted";
   return (
     <span
-      className={`rounded border px-1.5 py-0.5 text-[0.58rem] uppercase tracking-[0.1em] ${cls}`}
+      className={`rounded-sm border px-1.5 py-0.5 text-[0.56rem] font-semibold uppercase tracking-[0.12em] ${cls}`}
     >
       {children}
     </span>
@@ -69,9 +84,9 @@ function HeatBars({ heat }: { heat: number }) {
           className={`h-3 w-1 rounded-[1px] ${
             i <= bars
               ? bars >= 4
-                ? "bg-rose-400"
+                ? "bg-[var(--color-ember)]"
                 : bars >= 3
-                  ? "bg-amber-400"
+                  ? "bg-[var(--color-signal)]"
                   : "bg-fg/70"
               : "bg-fg/15"
           }`}
@@ -93,6 +108,45 @@ function missionTags(def: MissionDef): { label: string; tone: "neutral" | "warn"
   if (m.heat >= 0.7) out.push({ label: "Manhunt heat", tone: "danger" });
   else if (m.heat >= 0.4) out.push({ label: "High heat", tone: "warn" });
   return out;
+}
+
+/** A rival's face, or their initial cut into a plate. Never an empty square. */
+function Mugshot({
+  id,
+  name,
+  color,
+  className = "",
+  dim = false,
+}: {
+  id: string;
+  name: string;
+  color: string;
+  className?: string;
+  dim?: boolean;
+}) {
+  return (
+    <span
+      className={`relative shrink-0 overflow-hidden rounded-sm border border-border/80 bg-bg ${
+        dim ? "opacity-45 grayscale" : ""
+      } ${className}`}
+      style={{ boxShadow: `inset 0 0 0 1px ${color}33` }}
+    >
+      <Insignia
+        name={`rival-${id}`}
+        alt={name}
+        className="h-full w-full object-cover"
+        fallback={
+          <span
+            aria-hidden
+            className="stencil flex h-full w-full items-center justify-center text-[1.4em] text-fg/45"
+            style={{ background: `linear-gradient(150deg, ${color}22, transparent 70%)` }}
+          >
+            {name.slice(0, 2)}
+          </span>
+        }
+      />
+    </span>
+  );
 }
 
 /* ── the board ────────────────────────────────────────────────────────── */
@@ -134,56 +188,80 @@ export function CareerBoard({
     return locked ?? null;
   }, [career.markers]);
 
+  // Board rows arrive rank 15 → 1; the wall reads top-down from the champion
+  // being the thing at the end, so it is reversed once here rather than at
+  // each of the two places that consume it.
+  const wall = useMemo(() => [...rows].reverse(), [rows]);
+
   return (
-    <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col bg-bg/70 backdrop-blur-sm">
-      <div className="mx-auto flex h-full w-full max-w-2xl flex-col p-3 sm:p-5">
-        {/* Standing */}
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <p className="text-[0.58rem] font-medium uppercase tracking-[0.2em] text-muted">
-              The Scrapline
-            </p>
-            <h2 className="font-display text-xl font-semibold leading-tight text-fg sm:text-2xl">
-              {rank > 15 ? "Unranked" : `Rank ${rank}`}
-              {career.titles.length > 0 && (
-                <span className="ml-2 align-middle text-xs font-normal text-accent">
-                  {career.titles[career.titles.length - 1]}
-                </span>
-              )}
+    <div className="pointer-events-auto absolute inset-0 z-40 flex flex-col bg-bg/82 backdrop-blur-sm">
+      {/* The wall behind the wall. Absent by default — the blurred scrim under
+          it is the fallback and is what shipped before. */}
+      <ArtBackdrop name="board-wall" opacity={0.35} />
+      <Grain opacity={0.14} />
+
+      <div className="relative mx-auto flex h-full w-full max-w-4xl flex-col p-3 sm:p-5">
+        {/* Standing. The rank numeral is the largest thing on the screen
+            because the rank is the only score this mode keeps. */}
+        <div className="flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className="eyebrow eyebrow-signal">The Scrapline · fifteen names</p>
+            <h2 className="stencil mt-0.5 flex items-baseline gap-2 text-fg">
+              <span className="text-[2.6rem] leading-none sm:text-[3.2rem]">
+                {rank > 15 ? "—" : rank}
+              </span>
+              <span className="text-base text-muted">
+                {rank > 15 ? "Unranked" : "of 15"}
+              </span>
             </h2>
+            {career.titles.length > 0 && (
+              <p className="mt-0.5 text-[0.68rem] uppercase tracking-[0.14em] text-[var(--color-signal)]">
+                {career.titles[career.titles.length - 1]}
+              </p>
+            )}
           </div>
-          <button type="button" className="btn-secondary !min-h-9 !px-3 !py-1.5 !text-sm" onClick={onClose}>
+          <button
+            type="button"
+            className="btn-secondary !min-h-9 !px-3 !py-1.5 !text-xs"
+            onClick={onClose}
+          >
             Back
           </button>
         </div>
 
-        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-border/70 bg-surface/70 px-3 py-2">
-          <span className="text-[0.65rem] text-muted">
-            Markers <span className="font-mono text-fg">{career.markers}</span>
-          </span>
-          <span className="text-[0.65rem] text-muted">
-            Scrap <span className="font-mono text-fg">{meta.scrap}</span>
-          </span>
-          <span className="flex items-center gap-1.5 text-[0.65rem] text-muted">
-            League heat <HeatBars heat={career.heat} />
+        <div className="rule-oxide mt-2.5" />
+
+        <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1.5">
+          <Meter label="Markers" value={String(career.markers)} />
+          <Meter label="Scrap" value={String(meta.scrap)} />
+          <span className="flex items-center gap-1.5">
+            <span className="eyebrow !text-[0.52rem]">League heat</span>
+            <HeatBars heat={career.heat} />
           </span>
           {target && (
             <span className="ml-auto text-[0.65rem] text-muted">
-              Next: <span className="text-fg">#{target.rank} {target.name}</span>
+              Next on the line{" "}
+              <span className="font-display uppercase tracking-[0.06em] text-fg">
+                #{target.rank} {target.name}
+              </span>
             </span>
           )}
         </div>
 
-        <div className="mt-3 flex gap-1.5">
+        {/* Tabs as tabs, not as buttons: a hard amber underline on the live one
+            and nothing at all on the other. Two pill buttons of equal weight
+            never told you which view you were looking at. */}
+        <div className="mt-3 flex gap-5 border-b border-border">
           {(["events", "board"] as const).map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setTab(t)}
-              className={`rounded-lg border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.12em] transition-colors ${
+              aria-pressed={tab === t}
+              className={`-mb-px border-b-2 pb-1.5 font-display text-sm font-semibold uppercase tracking-[0.14em] transition-colors ${
                 tab === t
-                  ? "border-fg/25 bg-bg-subtle text-fg"
-                  : "border-border/70 bg-bg/25 text-muted hover:bg-bg-subtle/60"
+                  ? "border-[var(--color-signal)] text-fg"
+                  : "border-transparent text-muted hover:text-fg/80"
               }`}
             >
               {t === "events" ? "Events" : "Blacklist"}
@@ -191,18 +269,26 @@ export function CareerBoard({
           ))}
         </div>
 
-        <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-1">
+        <div key={tab} className="mt-3 min-h-0 flex-1 animate-rise overflow-y-auto pr-1">
           {tab === "events" ? (
             <>
               {byTrack.map(([trackId, list]) => (
-                <div key={trackId} className="mb-3">
-                  <p className="mb-1 text-[0.58rem] font-medium uppercase tracking-[0.16em] text-muted">
-                    {getTrackDef(trackId).name}
-                  </p>
-                  <div className="space-y-1.5">
-                    {list.map((m) => (
+                <div key={trackId} className="mb-4">
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <Insignia
+                      name={`circuit-${trackId}`}
+                      alt=""
+                      className="h-5 w-5 opacity-75"
+                      fallback={null}
+                    />
+                    <p className="eyebrow">{getTrackDef(trackId).name}</p>
+                    <span className="rule-oxide flex-1" />
+                  </div>
+                  <div className="stagger space-y-1">
+                    {list.map((m, i) => (
                       <EventRow
                         key={m.id}
+                        index={i}
                         def={m}
                         career={career}
                         scrap={meta.scrap}
@@ -213,36 +299,41 @@ export function CareerBoard({
                 </div>
               ))}
               {nextTrack && (
-                <div className="mb-3 rounded-lg border border-dashed border-border/70 bg-bg/20 px-3 py-2.5">
-                  <p className="text-[0.65rem] font-semibold text-fg/80">
+                <div className="mb-3 border-l-2 border-dashed border-[var(--color-oxide)]/70 py-1 pl-3">
+                  <p className="font-display text-[0.85rem] font-semibold uppercase tracking-[0.06em] text-fg/80">
                     {getTrackDef(nextTrack[0]).name} — locked
                   </p>
-                  <p className="mt-0.5 text-[0.65rem] text-muted">
+                  <p className="mt-0.5 text-[0.68rem] text-muted">
                     {TRACK_BEATS[nextTrack[0]] ?? "A road you have not earned yet."}
                   </p>
-                  <p className="mt-1 font-mono text-[0.6rem] text-amber-200/80">
+                  <p className="mt-1 font-mono text-[0.62rem] text-[var(--color-signal)]/85">
                     {nextTrack[1] - career.markers} more markers
                   </p>
                 </div>
               )}
             </>
           ) : (
-            <div className="space-y-1.5">
-              {[...rows].reverse().map((row) => (
-                <RivalRow
-                  key={row.rival.id}
-                  row={row}
-                  scrap={meta.scrap}
-                  onSelect={onSelect}
-                />
-              ))}
+            <div className="flex gap-3">
+              <RankSpine rows={wall} targetRank={target?.rank ?? null} />
+              <div className="stagger min-w-0 flex-1 space-y-2">
+                {wall.map((row, i) => (
+                  <RivalDossier
+                    key={row.rival.id}
+                    index={i}
+                    row={row}
+                    scrap={meta.scrap}
+                    isTarget={target?.id === row.rival.id}
+                    onSelect={onSelect}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>
 
         <button
           type="button"
-          className="mt-2 self-start text-[0.6rem] uppercase tracking-[0.14em] text-muted/70 underline-offset-2 hover:underline"
+          className="mt-2 self-start text-[0.58rem] uppercase tracking-[0.16em] text-muted/60 underline-offset-2 hover:text-muted hover:underline"
           onClick={onReset}
         >
           Reset career
@@ -252,13 +343,73 @@ export function CareerBoard({
   );
 }
 
+function Meter({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex items-baseline gap-1.5">
+      <span className="eyebrow !text-[0.52rem]">{label}</span>
+      <span className="stencil text-base tabular-nums text-fg">{value}</span>
+    </span>
+  );
+}
+
+/**
+ * The whole ladder at a glance, beside the dossiers that scroll.
+ *
+ * A scrolling list can only ever show you four names; the climb is fifteen. The
+ * spine is the one element that shows the shape of the run — how much is behind
+ * you, how much is left — without asking the player to scroll to find out.
+ * Hidden below sm, where the horizontal budget belongs to the dossiers.
+ */
+function RankSpine({
+  rows,
+  targetRank,
+}: {
+  rows: BoardEntry[];
+  targetRank: number | null;
+}) {
+  return (
+    <div className="sticky top-0 hidden w-8 shrink-0 flex-col items-end gap-1 self-start pt-1 sm:flex">
+      {rows.map((row) => {
+        const beaten = row.status === "defeated";
+        const here = row.rival.rank === targetRank;
+        return (
+          <div key={row.rival.id} className="flex items-center gap-1.5">
+            <span
+              className={`stencil text-[0.7rem] tabular-nums ${
+                beaten
+                  ? "text-[var(--color-verdigris)]/70"
+                  : here
+                    ? "text-[var(--color-signal)]"
+                    : "text-muted/45"
+              }`}
+            >
+              {row.rival.rank}
+            </span>
+            <span
+              className={`h-3 w-[3px] rounded-[1px] ${
+                beaten
+                  ? "bg-[var(--color-verdigris)]/60"
+                  : row.status === "available"
+                    ? "bg-[var(--color-signal)]"
+                    : "bg-fg/12"
+              }`}
+            />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function EventRow({
   def,
+  index,
   career,
   scrap,
   onSelect,
 }: {
   def: MissionDef;
+  index: number;
   career: CareerState;
   scrap: number;
   onSelect: (id: string) => void;
@@ -272,16 +423,17 @@ function EventRow({
       type="button"
       disabled={!canPay}
       onClick={() => onSelect(def.id)}
-      className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
-        canPay
-          ? "border-border/80 bg-bg/30 hover:bg-bg-subtle/60"
-          : "border-border/40 bg-bg/10 opacity-50"
-      }`}
+      style={{ "--i": index } as CSSProperties}
+      className={`tile w-full px-2.5 py-2 ${done ? "opacity-80" : ""}`}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-sm font-semibold text-fg">
+        <span className="truncate font-display text-[0.95rem] font-semibold uppercase tracking-[0.03em] text-fg">
           {def.name}
-          {done && <span className="ml-1.5 text-[0.6rem] font-normal text-emerald-300/80">cleared</span>}
+          {done && (
+            <span className="ml-2 text-[0.58rem] font-normal tracking-[0.12em] text-[var(--color-verdigris)]">
+              cleared
+            </span>
+          )}
         </span>
         <span className="shrink-0 font-mono text-[0.6rem] text-muted">
           {def.laps} lap{def.laps === 1 ? "" : "s"}
@@ -297,12 +449,19 @@ function EventRow({
         <span className="ml-auto font-mono text-[0.6rem] text-muted">
           +{def.reward.markers}M · +{def.reward.scrap}
           {cost > 0 && (
-            <span className={canPay ? " text-amber-200/80" : " text-rose-300"}> · stake {cost}</span>
+            <span
+              className={
+                canPay ? " text-[var(--color-signal)]/85" : " text-[var(--color-ember)]"
+              }
+            >
+              {" "}
+              · stake {cost}
+            </span>
           )}
         </span>
       </div>
       {best && (
-        <p className="mt-0.5 font-mono text-[0.58rem] text-muted/70">
+        <p className="mt-0.5 font-mono text-[0.56rem] text-muted/70">
           best P{best.place} · {best.time.toFixed(1)}s
         </p>
       )}
@@ -310,13 +469,27 @@ function EventRow({
   );
 }
 
-function RivalRow({
+/**
+ * One name on the board.
+ *
+ * Three weights, and they are the point of the whole screen:
+ *  - `isTarget`  the amber dossier. The only one. Bigger portrait, the bio in
+ *                full, and the action reads "Call them out" rather than a rank.
+ *  - defeated    greyed, overprinted, and still on the wall. Removing beaten
+ *                names would erase the progress the board exists to show.
+ *  - locked      dim, with the exact requirement rather than the word "locked".
+ */
+function RivalDossier({
   row,
+  index,
   scrap,
+  isTarget,
   onSelect,
 }: {
   row: BoardEntry;
+  index: number;
   scrap: number;
+  isTarget: boolean;
   onSelect: (id: string) => void;
 }) {
   const r = row.rival;
@@ -324,45 +497,101 @@ function RivalRow({
   const cost = missionCost(duel);
   const open = row.status === "available" && affordable(scrap, duel);
   const cls = VEHICLE_CLASSES[r.classId];
+  const beaten = row.status === "defeated";
+  const lit = isTarget && open;
+
   return (
     <button
       type="button"
       disabled={!open}
       onClick={() => onSelect(duel.id)}
-      className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
-        row.status === "defeated"
-          ? "border-emerald-500/25 bg-emerald-500/5"
-          : open
-            ? "border-fg/25 bg-bg-subtle hover:bg-bg-subtle/80"
-            : "border-border/50 bg-bg/15 opacity-60"
-      }`}
+      style={{ "--i": index } as CSSProperties}
+      className={`plate relative block w-full overflow-hidden text-left transition-transform ${
+        lit ? "plate-primary" : ""
+      } ${open ? "hover:-translate-y-[1px]" : ""} ${
+        beaten ? "opacity-70" : !open ? "opacity-55" : ""
+      } ${lit ? "p-3" : "p-2.5"}`}
     >
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-xs text-muted">#{r.rank}</span>
+      <div className="flex items-start gap-3">
+        {/* The rank numeral is set as a plate number, not as a list index. */}
         <span
-          className="inline-block h-2 w-2 shrink-0 rounded-full"
-          style={{ background: cls.color }}
+          className={`stencil shrink-0 tabular-nums leading-none ${
+            lit
+              ? "text-[3rem] text-[var(--color-signal)]"
+              : beaten
+                ? "text-[1.9rem] text-[var(--color-verdigris)]/60"
+                : "text-[1.9rem] text-fg/35"
+          }`}
+        >
+          {r.rank}
+        </span>
+
+        <Mugshot
+          id={r.id}
+          name={r.name}
+          color={cls.color}
+          dim={beaten}
+          className={lit ? "h-16 w-14" : "h-11 w-10"}
         />
-        <span className="truncate font-display text-sm font-semibold text-fg">{r.name}</span>
-        <span className="truncate text-[0.6rem] text-muted">{r.crew}</span>
-        <span className="ml-auto shrink-0">
-          {row.status === "defeated" ? (
-            <Chip tone="good">Beaten</Chip>
-          ) : open ? (
-            <Chip tone="warn">Open</Chip>
-          ) : (
-            <Chip>Locked</Chip>
+
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span
+              className={`truncate font-display font-semibold uppercase text-fg ${
+                lit ? "text-xl tracking-[0.04em]" : "text-base tracking-[0.03em]"
+              }`}
+            >
+              {r.name}
+            </span>
+            <span className="truncate text-[0.58rem] uppercase tracking-[0.14em] text-muted">
+              {r.crew}
+            </span>
+            <span className="ml-auto shrink-0">
+              {beaten ? (
+                <Chip tone="good">Beaten</Chip>
+              ) : open ? (
+                <Chip tone="warn">{isTarget ? "Next" : "Open"}</Chip>
+              ) : (
+                <Chip>Locked</Chip>
+              )}
+            </span>
+          </span>
+
+          <p
+            className={`mt-0.5 text-[0.68rem] leading-snug text-muted ${
+              lit ? "" : "truncate"
+            }`}
+          >
+            {r.bio}
+          </p>
+
+          {!beaten && (
+            <p className="mt-1 font-mono text-[0.58rem] text-muted/85">
+              {row.markersShort > 0 && `${row.markersShort} markers short`}
+              {row.markersShort > 0 && row.missing.length > 0 && " · "}
+              {row.missing.length > 0 && `run ${row.missing.join(", ")}`}
+              {row.status === "available" && cost > 0 && (
+                <span className="text-[var(--color-signal)]/85">stake {cost}</span>
+              )}
+            </p>
+          )}
+
+          {lit && (
+            <span className="mt-2 inline-flex items-center gap-1.5 font-display text-[0.78rem] font-bold uppercase tracking-[0.14em] text-[var(--color-signal)]">
+              Call them out
+              <span aria-hidden>→</span>
+            </span>
           )}
         </span>
       </div>
-      <p className="mt-0.5 truncate text-[0.65rem] text-muted">{r.bio}</p>
-      {row.status !== "defeated" && (
-        <p className="mt-0.5 font-mono text-[0.58rem] text-muted/80">
-          {row.markersShort > 0 && `${row.markersShort} markers short`}
-          {row.markersShort > 0 && row.missing.length > 0 && " · "}
-          {row.missing.length > 0 && `run ${row.missing.join(", ")}`}
-          {row.status === "available" && cost > 0 && `stake ${cost}`}
-        </p>
+
+      {beaten && (
+        <Stamp
+          name="stamp-beaten"
+          label="Beaten"
+          tone="var(--color-verdigris)"
+          className="right-4 top-1/2 h-10 w-auto -translate-y-1/2"
+        />
       )}
     </button>
   );
@@ -370,6 +599,15 @@ function RivalRow({
 
 /* ── the brief ────────────────────────────────────────────────────────── */
 
+/**
+ * Sell the stake before the player accepts it.
+ *
+ * The old brief was a stack of six equally-weighted boxes ending in a button —
+ * a form. The run's own words are now the largest thing on it, the objectives
+ * are a checklist rather than a bordered card, and the stake and the payout sit
+ * together on one ledger rail directly above the action, because "what this
+ * costs me if I lose" is the question the button is answering.
+ */
 export function MissionBrief({
   def,
   career,
@@ -396,108 +634,169 @@ export function MissionBrief({
   const trackDef = getTrackDef(def.trackId);
 
   return (
-    <div className="pointer-events-auto absolute inset-0 z-40 flex items-center justify-center bg-bg/70 p-3 backdrop-blur-sm sm:p-5">
-      <div className="panel-shell w-full max-w-md animate-rise !p-3.5">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="text-[0.58rem] font-medium uppercase tracking-[0.18em] text-muted">
-              {trackDef.name} · {def.laps} lap{def.laps === 1 ? "" : "s"}
-            </p>
-            <h2 className="truncate font-display text-xl font-semibold text-fg">{def.name}</h2>
+    <div className="pointer-events-auto absolute inset-0 z-40 flex items-center justify-center bg-bg/82 p-3 backdrop-blur-sm sm:p-5">
+      <ArtBackdrop name={`circuit-wide-${def.trackId}`} opacity={0.3} />
+      <Grain opacity={0.13} />
+
+      <Plate primary className="relative w-full max-w-2xl animate-plate p-0">
+        <div className="animate-sweep rounded-t-[5px] border-b border-border bg-[linear-gradient(100deg,rgba(143,59,23,0.3),transparent_72%)] px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="eyebrow eyebrow-signal">
+                {trackDef.name} · {def.laps} lap{def.laps === 1 ? "" : "s"} ·{" "}
+                {def.kind.replace("_", " ")}
+              </p>
+              <h2 className="stencil mt-0.5 truncate text-3xl text-fg sm:text-4xl">
+                {def.name}
+              </h2>
+            </div>
+            <button
+              type="button"
+              className="btn-secondary !min-h-8 !px-2.5 !py-1 !text-[0.7rem]"
+              onClick={onBack}
+            >
+              Back
+            </button>
           </div>
-          <button
-            type="button"
-            className="btn-secondary !min-h-8 !px-2.5 !py-1 !text-xs"
-            onClick={onBack}
-          >
-            Back
-          </button>
         </div>
 
-        <div className="mt-2 space-y-0.5">
-          {def.brief.map((line, i) => (
-            <p key={i} className="text-[0.72rem] leading-snug text-fg/85">
-              {line}
-            </p>
-          ))}
-        </div>
+        <div className="grid gap-4 p-4 sm:grid-cols-[1.1fr_1fr]">
+          {/* ── what you are walking into ────────────────────────────── */}
+          <div>
+            {/* The brief in the crew's voice, quoted against an oxide rule
+                rather than boxed. It is the only prose on the screen and it
+                should read as somebody talking. */}
+            <div className="border-l-2 border-[var(--color-oxide)] pl-3">
+              {def.brief.map((line, i) => (
+                <p key={i} className="text-[0.82rem] leading-relaxed text-fg/90">
+                  {line}
+                </p>
+              ))}
+            </div>
 
-        <div className="mt-2 flex flex-wrap gap-1">
-          <Chip>{def.kind.replace("_", " ")}</Chip>
-          {missionTags(def).map((t) => (
-            <Chip key={t.label} tone={t.tone}>
-              {t.label}
-            </Chip>
-          ))}
-          {heatFloor > def.modifiers.heat + 0.01 && (
-            <Chip tone="warn">Your heat raises this</Chip>
-          )}
-        </div>
+            <div className="mt-2.5 flex flex-wrap gap-1">
+              {missionTags(def).map((t) => (
+                <Chip key={t.label} tone={t.tone}>
+                  {t.label}
+                </Chip>
+              ))}
+              {heatFloor > def.modifiers.heat + 0.01 && (
+                <Chip tone="warn">Your heat raises this</Chip>
+              )}
+            </div>
 
-        <div className="mt-2.5 rounded-lg border border-border/70 bg-bg/25 px-2.5 py-2">
-          <p className="text-[0.58rem] font-medium uppercase tracking-[0.14em] text-muted">
-            Objectives
-          </p>
-          <ul className="mt-1 space-y-0.5">
-            {def.objectives.map((o, i) => (
-              <li key={i} className="text-[0.7rem] leading-snug text-fg/90">
-                {o.optional ? "◇ " : "· "}
-                {o.label ?? describeObjective(o)}
-                {o.optional && <span className="ml-1 text-[0.6rem] text-muted">bonus</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {/* Class choice belongs on the brief, not in a garage two screens away:
-            which car to bring IS the decision a brief exists to inform. */}
-        <div className="mt-2.5 grid grid-cols-3 gap-1.5">
-          {CLASS_ORDER.map((id) => {
-            const c = VEHICLE_CLASSES[id];
-            const on = classId === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onClass(id)}
-                className={`rounded-lg border px-2 py-1.5 text-left transition-colors ${
-                  on ? "border-fg/25 bg-bg-subtle" : "border-border/70 bg-bg/25 hover:bg-bg-subtle/60"
-                }`}
-              >
-                <span className="flex items-center gap-1.5">
+            <p className="eyebrow mt-3.5">Objectives</p>
+            <ul className="mt-1.5 space-y-1">
+              {def.objectives.map((o, i) => (
+                <li key={i} className="flex gap-2 text-[0.74rem] leading-snug">
                   <span
-                    className="inline-block h-2 w-2 shrink-0 rounded-full"
-                    style={{ background: c.color }}
+                    aria-hidden
+                    className={`mt-[0.35em] h-1.5 w-1.5 shrink-0 ${
+                      o.optional
+                        ? "rotate-45 border border-muted"
+                        : "bg-[var(--color-signal)]"
+                    }`}
                   />
-                  <span className="truncate text-[0.72rem] font-semibold text-fg">{c.name}</span>
+                  <span className={o.optional ? "text-muted" : "text-fg/90"}>
+                    {o.label ?? describeObjective(o)}
+                    {o.optional && (
+                      <span className="ml-1.5 text-[0.58rem] uppercase tracking-[0.12em] text-muted/80">
+                        bonus
+                      </span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* ── the decision ─────────────────────────────────────────── */}
+          <div className="flex flex-col">
+            {/* Class choice belongs on the brief, not in a garage two screens
+                away: which car to bring IS the decision a brief exists to
+                inform. */}
+            <p className="eyebrow mb-1.5">Bring</p>
+            <div className="grid grid-cols-3 gap-1">
+              {CLASS_ORDER.map((id) => {
+                const c = VEHICLE_CLASSES[id];
+                const on = classId === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => onClass(id)}
+                    aria-pressed={on}
+                    className={`tile flex flex-col items-center gap-1 px-1.5 py-2 ${on ? "tile-on" : ""}`}
+                  >
+                    <Insignia
+                      name={`class-${id}`}
+                      alt=""
+                      className="h-7 w-auto opacity-90"
+                      fallback={
+                        <span
+                          aria-hidden
+                          className="block h-1.5 w-7 rounded-full"
+                          style={{ background: c.color }}
+                        />
+                      }
+                    />
+                    <span className="truncate font-display text-[0.7rem] font-semibold uppercase tracking-[0.04em] text-fg">
+                      {c.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1.5 text-[0.66rem] leading-snug text-muted">
+              {VEHICLE_CLASSES[classId].description}
+            </p>
+
+            {/*
+              THE LEDGER. Stake and payout on one rail, immediately above the
+              button that commits to both. They were previously a single small
+              line of grey text under the class picker, which is where a player
+              stops reading.
+            */}
+            <div className="mt-auto pt-3">
+              <div className="flex items-stretch justify-between gap-2 border-y border-border py-2">
+                <span>
+                  <span className="eyebrow !text-[0.52rem]">Pays</span>
+                  <span className="stencil block text-lg leading-tight text-fg">
+                    +{def.reward.markers}M
+                    <span className="ml-1.5 text-[0.8em] text-muted">
+                      +{def.reward.scrap}
+                    </span>
+                  </span>
                 </span>
+                {cost > 0 && (
+                  <span className="text-right">
+                    <span className="eyebrow !text-[0.52rem]">Stake</span>
+                    <span
+                      className={`stencil block text-lg leading-tight ${
+                        canPay ? "text-[var(--color-signal)]" : "text-[var(--color-ember)]"
+                      }`}
+                    >
+                      −{cost}
+                      <span className="ml-1.5 text-[0.8em] text-muted">
+                        of {meta.scrap}
+                      </span>
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                className="btn-primary mt-3 w-full"
+                disabled={!canPay}
+                onClick={onStart}
+              >
+                {canPay ? "Roll out" : "Not enough scrap"}
               </button>
-            );
-          })}
+            </div>
+          </div>
         </div>
-
-        <div className="mt-2.5 flex items-center justify-between text-[0.65rem]">
-          <span className="text-muted">
-            Pays <span className="font-mono text-fg">+{def.reward.markers}M</span>
-            {" · "}
-            <span className="font-mono text-fg">+{def.reward.scrap} scrap</span>
-          </span>
-          {cost > 0 && (
-            <span className={canPay ? "text-amber-200/90" : "text-rose-300"}>
-              Stake <span className="font-mono">{cost}</span> · you hold {meta.scrap}
-            </span>
-          )}
-        </div>
-
-        <button
-          type="button"
-          className="btn-primary mt-3 w-full"
-          disabled={!canPay}
-          onClick={onStart}
-        >
-          {canPay ? "Roll out" : "Not enough scrap"}
-        </button>
-      </div>
+      </Plate>
     </div>
   );
 }
@@ -534,6 +833,17 @@ function describeObjective(o: MissionDef["objectives"][number]): string {
     case "stay_near":
       return `Stay within ${o.metres}m of the client`;
   }
+  /*
+   * Fallback, deliberately not an exhaustiveness assert.
+   *
+   * This switch covers every objective kind that exists today, but the
+   * catalogue grows — and the failure mode of a `never` assert here is that
+   * adding an objective breaks the BUILD of a screen that only needed to print
+   * a slightly worse sentence. A new kind should show up as unpolished copy on
+   * the brief, not as a red build, and the objective's own `label` is the
+   * primary path anyway; this is only reached when one was not authored.
+   */
+  return "Complete the objective";
 }
 
 /* ── story ────────────────────────────────────────────────────────────── */
@@ -555,28 +865,44 @@ export function StoryCard({
     return null;
   }
   return (
-    <div className="pointer-events-auto absolute inset-0 z-[55] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-sm animate-rise rounded-2xl border border-white/10 bg-[#12100e] p-5 shadow-2xl">
+    <div className="pointer-events-auto absolute inset-0 z-[55] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+      <Grain opacity={0.1} />
+      {/* A radio call, not a dialog: the speaker's name is set as a transmission
+          header and the body is left-ruled like the brief, so the two screens
+          share one voice. */}
+      <Plate className="w-full max-w-sm animate-plate p-5">
         {b.voice && (
-          <p className="text-[0.58rem] font-semibold uppercase tracking-[0.22em] text-accent">
+          <p className="eyebrow eyebrow-signal flex items-center gap-2">
+            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[var(--color-signal)]" />
             {b.voice}
           </p>
         )}
-        <h3 className="mt-1 font-display text-lg font-semibold text-fg">{b.title}</h3>
-        <p className="mt-2 text-sm leading-relaxed text-fg/90">{b.body}</p>
-        {b.flavor && (
-          <p className="mt-2 text-[0.7rem] italic leading-relaxed text-muted">{b.flavor}</p>
-        )}
+        <h3 className="stencil mt-1.5 text-2xl text-fg">{b.title}</h3>
+        <div className="mt-2.5 border-l-2 border-[var(--color-oxide)] pl-3">
+          <p className="text-[0.85rem] leading-relaxed text-fg/90">{b.body}</p>
+          {b.flavor && (
+            <p className="mt-2 text-[0.7rem] italic leading-relaxed text-muted">{b.flavor}</p>
+          )}
+        </div>
         <button type="button" className="btn-primary mt-4 w-full" onClick={onNext}>
-          {remaining > 1 ? `Continue (${remaining - 1} more)` : "Continue"}
+          {remaining > 1 ? `Continue · ${remaining - 1} more` : "Continue"}
         </button>
-      </div>
+      </Plate>
     </div>
   );
 }
 
 /* ── aftermath ────────────────────────────────────────────────────────── */
 
+/**
+ * Land the outcome, then account for it.
+ *
+ * Won and lost used to differ only in the colour of one heading, so the two
+ * most emotionally different moments in the game looked the same. The verdict
+ * is now a banner that wipes on and carries a stamp, and the ledger below it is
+ * ordered by what the player will look for first: what changed on the board,
+ * then what changed in the bank.
+ */
 export function MissionResults({
   def,
   summary,
@@ -592,104 +918,124 @@ export function MissionResults({
 }) {
   const won = summary.outcome === "complete";
   return (
-    <div className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-bg/70 p-4 backdrop-blur-sm">
-      <div className="panel-shell w-full max-w-sm animate-rise !p-4">
-        <p className="text-[0.58rem] font-medium uppercase tracking-[0.18em] text-muted">
-          {def.name}
-        </p>
-        <h2
-          className={`mt-0.5 font-display text-2xl font-semibold ${
-            won ? "text-emerald-300" : "text-rose-300"
+    <div className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-bg/80 p-4 backdrop-blur-sm">
+      <Grain opacity={0.13} />
+      <Plate
+        primary
+        className="max-h-[92dvh] w-full max-w-md animate-plate overflow-y-auto p-0"
+      >
+        <div
+          className={`animate-sweep relative overflow-hidden rounded-t-[5px] border-b px-4 py-3.5 ${
+            won
+              ? "border-[var(--color-verdigris)]/40 bg-[linear-gradient(100deg,rgba(95,163,139,0.22),transparent_70%)]"
+              : "border-[var(--color-ember)]/40 bg-[linear-gradient(100deg,rgba(226,84,60,0.22),transparent_70%)]"
           }`}
         >
-          {won ? "Objectives clear" : "Run lost"}
-        </h2>
-
-        <ul className="mt-3 space-y-1">
-          {summary.objectives.map((o, i) => (
-            <li key={i} className="flex items-baseline justify-between gap-2 text-[0.72rem]">
-              <span
-                className={
-                  o.status === "met"
-                    ? "text-emerald-300"
-                    : o.status === "failed"
-                      ? "text-rose-300"
-                      : "text-muted"
-                }
-              >
-                {o.status === "met" ? "✓" : o.status === "failed" ? "✕" : "–"}{" "}
-                {o.optional ? "◇ " : ""}
-                {o.label}
-              </span>
-              <span className="shrink-0 font-mono text-[0.65rem] text-muted">{o.detail}</span>
-            </li>
-          ))}
-        </ul>
-
-        <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-border/70 bg-bg/25 px-2.5 py-2 text-center">
-          <Stat label="Place" value={`P${summary.place}`} />
-          <Stat label="Takedowns" value={String(summary.takedowns)} />
-          <Stat
-            label="Best lap"
-            value={summary.bestLap ? `${summary.bestLap.toFixed(2)}s` : "—"}
+          <p className="eyebrow">{def.name}</p>
+          <h2
+            className={`stencil mt-0.5 text-[2.4rem] leading-none ${
+              won ? "text-[var(--color-verdigris)]" : "text-[var(--color-ember)]"
+            }`}
+          >
+            {won ? "Objectives clear" : "Run lost"}
+          </h2>
+          <Stamp
+            name={won ? "stamp-cleared" : "stamp-lost"}
+            label={won ? "Cleared" : "Lost"}
+            tone={won ? "var(--color-verdigris)" : "var(--color-ember)"}
+            className="right-4 top-1/2 h-11 w-auto -translate-y-1/2"
           />
         </div>
 
-        <div className="mt-2.5 space-y-1 text-[0.72rem]">
-          <Line label="Markers" value={`+${award.markers}`} good={award.markers > 0} />
-          <Line label="Scrap" value={`+${award.scrap}`} good={award.scrap > 0} />
-          {award.feeLost > 0 && (
-            <Line label="Stake lost" value={`−${award.feeLost}`} good={false} />
-          )}
-          <Line
-            label="League heat"
-            value={`${award.heatBefore.toFixed(1)} → ${award.heatAfter.toFixed(1)}`}
-            good={award.heatAfter >= award.heatBefore}
-          />
-        </div>
+        <div className="p-4">
+          <ul className="space-y-1">
+            {summary.objectives.map((o, i) => (
+              <li key={i} className="flex items-baseline justify-between gap-2 text-[0.74rem]">
+                <span
+                  className={
+                    o.status === "met"
+                      ? "text-[var(--color-verdigris)]"
+                      : o.status === "failed"
+                        ? "text-[var(--color-ember)]"
+                        : "text-muted"
+                  }
+                >
+                  {o.status === "met" ? "✓" : o.status === "failed" ? "✕" : "–"}{" "}
+                  {o.optional ? "◇ " : ""}
+                  {o.label}
+                </span>
+                <span className="shrink-0 font-mono text-[0.65rem] text-muted">{o.detail}</span>
+              </li>
+            ))}
+          </ul>
 
-        {award.rivalDefeated && (
-          <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-            <p className="text-[0.58rem] font-semibold uppercase tracking-[0.16em] text-amber-200">
-              Rank taken — #{award.rivalDefeated.rank}
-            </p>
-            <p className="mt-0.5 text-[0.72rem] text-fg/90">
-              &ldquo;{award.rivalDefeated.beaten}&rdquo;
-            </p>
-            <p className="mt-1 text-[0.65rem] text-muted">
-              You take {award.rivalDefeated.reward.pinkSlip}.
-            </p>
+          <div className="mt-3 grid grid-cols-3 gap-2 border-y border-border py-2.5 text-center">
+            <Stat label="Place" value={`P${summary.place}`} />
+            <Stat label="Takedowns" value={String(summary.takedowns)} />
+            <Stat
+              label="Best lap"
+              value={summary.bestLap ? `${summary.bestLap.toFixed(2)}s` : "—"}
+            />
           </div>
-        )}
 
-        {award.requalify && (
-          <div className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2">
-            <p className="text-[0.72rem] text-rose-200">
+          {/* The board moves first — that is the score. Money second. */}
+          {award.rivalDefeated && (
+            <div className="mt-3 border-l-2 border-[var(--color-signal)] bg-[var(--color-signal)]/8 py-2 pl-3 pr-2.5">
+              <p className="eyebrow eyebrow-signal">
+                Rank taken — #{award.rivalDefeated.rank}
+              </p>
+              <p className="mt-1 text-[0.78rem] leading-snug text-fg/90">
+                &ldquo;{award.rivalDefeated.beaten}&rdquo;
+              </p>
+              <p className="mt-1 text-[0.66rem] text-muted">
+                You take {award.rivalDefeated.reward.pinkSlip}.
+              </p>
+            </div>
+          )}
+
+          <div className="mt-3 space-y-1 text-[0.74rem]">
+            <Line label="Markers" value={`+${award.markers}`} good={award.markers > 0} />
+            <Line label="Scrap" value={`+${award.scrap}`} good={award.scrap > 0} />
+            {award.feeLost > 0 && (
+              <Line label="Stake lost" value={`−${award.feeLost}`} good={false} />
+            )}
+            <Line
+              label="League heat"
+              value={`${award.heatBefore.toFixed(1)} → ${award.heatAfter.toFixed(1)}`}
+              good={award.heatAfter >= award.heatBefore}
+            />
+          </div>
+
+          {award.requalify && (
+            <p className="mt-3 border-l-2 border-[var(--color-ember)] py-1 pl-3 text-[0.74rem] text-[#f0a292]">
               They will not take your call again until you have run{" "}
               <span className="font-semibold">{award.requalify}</span>.
             </p>
-          </div>
-        )}
+          )}
 
-        {award.tracksUnlocked.length > 0 && (
-          <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
-            {award.tracksUnlocked.map((t) => (
-              <p key={t} className="text-[0.72rem] text-emerald-200">
-                {getTrackDef(t).name} is open. {TRACK_BEATS[t] ?? ""}
-              </p>
-            ))}
-          </div>
-        )}
+          {award.tracksUnlocked.length > 0 && (
+            <div className="mt-3 border-l-2 border-[var(--color-verdigris)] py-1 pl-3">
+              {award.tracksUnlocked.map((t) => (
+                <p key={t} className="text-[0.74rem] text-[#8fc9b5]">
+                  <span className="font-display uppercase tracking-[0.06em]">
+                    {getTrackDef(t).name}
+                  </span>{" "}
+                  is open. <span className="text-muted">{TRACK_BEATS[t] ?? ""}</span>
+                </p>
+              ))}
+            </div>
+          )}
 
-        <div className="mt-4 flex gap-2">
-          <button type="button" className="btn-primary flex-1" onClick={onRetry}>
-            {won ? "Run it again" : "Retry"}
-          </button>
-          <button type="button" className="btn-secondary" onClick={onBoard}>
-            Board
-          </button>
+          <div className="mt-4 flex gap-2">
+            <button type="button" className="btn-primary flex-1" onClick={onRetry}>
+              {won ? "Run it again" : "Retry"}
+            </button>
+            <button type="button" className="btn-secondary" onClick={onBoard}>
+              Board
+            </button>
+          </div>
         </div>
-      </div>
+      </Plate>
     </div>
   );
 }
@@ -697,8 +1043,8 @@ export function MissionResults({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-[0.55rem] uppercase tracking-[0.12em] text-muted">{label}</p>
-      <p className="font-display text-base font-semibold leading-tight text-fg">{value}</p>
+      <p className="eyebrow !text-[0.52rem]">{label}</p>
+      <p className="stencil mt-0.5 text-xl text-fg">{value}</p>
     </div>
   );
 }
@@ -707,7 +1053,9 @@ function Line({ label, value, good }: { label: string; value: string; good: bool
   return (
     <div className="flex items-baseline justify-between gap-2">
       <span className="text-muted">{label}</span>
-      <span className={`font-mono ${good ? "text-fg" : "text-rose-300"}`}>{value}</span>
+      <span className={`font-mono ${good ? "text-fg" : "text-[var(--color-ember)]"}`}>
+        {value}
+      </span>
     </div>
   );
 }

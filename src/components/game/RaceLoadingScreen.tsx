@@ -82,10 +82,10 @@ export function RaceLoadingScreen() {
 
       <div className="absolute right-6 top-5 w-[19rem] max-w-[calc(100vw-3rem)]">
         <div className="flex items-baseline justify-between">
-          <p className="font-display text-[0.7rem] font-semibold uppercase tracking-[0.28em] text-amber-400/90">
+          <p className="eyebrow eyebrow-signal !text-[0.62rem]">
             {building ? "Warming the grid" : "Preparing race"}
           </p>
-          <span className="font-mono text-sm tabular-nums text-amber-300">
+          <span className="stencil text-xl tabular-nums text-[var(--color-signal)]">
             {gate.pct}%
           </span>
         </div>
@@ -97,12 +97,12 @@ export function RaceLoadingScreen() {
             <div
               key={label}
               className={`h-[3px] flex-1 overflow-hidden rounded-full ${
-                i < stepIndex ? "bg-amber-500" : "bg-white/12"
+                i < stepIndex ? "bg-[var(--color-signal)]" : "bg-white/12"
               }`}
             >
               {i === stepIndex && (
                 <div
-                  className="h-full rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)] transition-[width] duration-300"
+                  className="h-full rounded-full bg-[var(--color-signal)] shadow-[0_0_8px_rgba(242,165,22,0.9)] transition-[width] duration-300"
                   style={{
                     width: `${Math.max(6, ((gate.pct / 100) * STEPS.length - i) * 100)}%`,
                   }}
@@ -118,10 +118,10 @@ export function RaceLoadingScreen() {
               key={label}
               className={
                 i === stepIndex
-                  ? "text-amber-300"
+                  ? "text-[var(--color-signal)]"
                   : i < stepIndex
-                    ? "text-stone-400"
-                    : "text-stone-600"
+                    ? "text-muted"
+                    : "text-muted/40"
               }
             >
               {label}
@@ -129,7 +129,7 @@ export function RaceLoadingScreen() {
           ))}
         </div>
 
-        <p className="mt-2 text-right text-[0.62rem] text-stone-400">
+        <p className="mt-2 text-right text-[0.62rem] text-muted">
           {building
             ? "Compiling and uploading"
             : slow
