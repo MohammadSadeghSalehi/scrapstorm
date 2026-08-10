@@ -22,6 +22,8 @@ const story = await jiti.import("../src/game/story.ts");
 const ai = await jiti.import("../src/game/ai.ts");
 const classes = await jiti.import("../src/game/classes.ts");
 const track = await jiti.import("../src/game/track.ts");
+const physics = await jiti.import("../src/game/physics.ts");
+const weather = await jiti.import("../src/game/world/weather/index.ts");
 
 const VERBOSE = process.argv.includes("--verbose");
 
@@ -594,6 +596,31 @@ section("arm and disarm");
   ok(d.heat >= 0.5, "career heat raises the floor");
   ok(run.def.laps === marrow.duel.laps, "the duel owns its lap count");
 
+  /*
+   * Weather is armed with the grid, and cleared with it.
+   *
+   * Both halves matter and only the first is obvious. The condition is process-
+   * global module state that physics.ts reads every step, so a mission that
+   * leaves a storm armed hands the NEXT event — and free play — a road it never
+   * asked for, with no symptom other than everyone being mysteriously slow.
+   * Exactly the leak `resetFieldRoster` exists to prevent for grid names.
+   */
+  const wetEvent = M.missionById("dm_pipeline");
+  ok(!!wetEvent?.weather, "the catalogue has a wet event to check", `${wetEvent?.weather}`);
+  M.armMission(wetEvent, {});
+  eq(weather.getWeatherId(), wetEvent.weather, "a mission's condition reaches the sim");
+  ok(
+    weather.weatherGripMul("asphalt") < 1,
+    "and it is a handling condition, not just a sky",
+    `road grip x${weather.weatherGripMul("asphalt")}`,
+  );
+  M.armMission(duel, {});
+  eq(weather.getWeatherId(), "dry", "a mission with no condition arms dry, not the last one");
+  M.armMission(wetEvent, {});
+  M.disarmMission();
+  eq(weather.getWeatherId(), "dry", "disarm hands free play its own weather back");
+
+  M.armMission(duel, { heatFloor: 0.5, fieldPace: 0.6 });
   M.disarmMission();
   eq(classes.getFieldRoster().length, 0, "disarm clears the roster");
   eq(ai.getAiDirective().bountyOn, null, "disarm clears the manhunt");
@@ -1070,10 +1097,36 @@ section("pace targets");
    * and a car that sets one blinding lap and then spins is only good at one of
    * them.
    */
+  /*
+   * Seeded for the same reason the difficulty index is — these races run the
+   * same Math.random-using sim, and their output sets the pace TARGETS every
+   * lap_pace and race_pace objective is checked against. An unseeded target is
+   * a target that moves between runs. Local rather than shared with the
+   * difficulty-index block below because the two sections are independent and a
+   * seed shared between them would couple their results for no reason.
+   */
+  function paceRandom(def, a) {
+    let h = 2166136261;
+    for (const ch of `pace|${def.id}|${a}`) {
+      h ^= ch.charCodeAt(0);
+      h = Math.imul(h, 16777619);
+    }
+    let s = h >>> 0;
+    return function () {
+      s |= 0;
+      s = (s + 0x6d2b79f5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
   function bestPace(def, attempts = 6) {
     const lapRuns = [];
     const raceRuns = [];
+    const realRandom = Math.random;
     for (let a = 0; a < attempts; a++) {
+      Math.random = paceRandom(def, a);
       const g = new simMod.GameSimulation("TESTER", "interceptor", def.trackId);
       const run = M.armMission(def, { fieldPace: 0.3 });
       // Track length AFTER arming — armMission is what switches the circuit, and
@@ -1081,12 +1134,27 @@ section("pace targets");
       const length = track.getTrackLength();
       g.state.lapCount = def.laps;
       g.setPhase("countdown");
+      let dbgSpd = 0;
+      let dbgOff = 0;
+      let dbgN = 0;
+      const dbgSurf = {};
       for (let i = 0; i < 60 * 200 && g.state.phase !== "finished"; i++) {
         const player = g.state.vehicles.find((v) => v.isPlayer);
         const pin =
           player && g.state.phase === "racing"
             ? ai.aiInput(player, g.state.vehicles, g.state.time, g.state.lapCount)
             : null;
+        if (player && g.state.phase === "racing") {
+          dbgSpd += player.speed;
+          dbgOff += player.offroadAmount ?? 0;
+          dbgSurf[player.surface] = (dbgSurf[player.surface] ?? 0) + 1;
+          dbgSurf.thr = (dbgSurf.thr ?? 0) + (pin?.throttle ?? 0);
+          dbgSurf.brk = (dbgSurf.brk ?? 0) + (pin?.brake ? 1 : 0);
+          dbgSurf.str = (dbgSurf.str ?? 0) + Math.abs(pin?.steering ?? 0);
+          dbgSurf.dmg = (dbgSurf.dmg ?? 0) + player.damageVisual;
+          dbgSurf.drift = (dbgSurf.drift ?? 0) + (player.driftMeter > 0 ? 1 : 0);
+          dbgN += 1;
+        }
         g.tick(1 / 60, pin);
         // The run is stepped so the mission's own modifiers are live, but its
         // verdict is ignored: this asks what the ROAD gives, not whether the
@@ -1096,12 +1164,14 @@ section("pace targets");
       const p = g.state.vehicles.find((v) => v.isPlayer);
       let lap = 0;
       for (const t of p.lapTimes) if (t > 0.4) lap = Math.max(lap, length / t);
+      if (def.id === "cb_clean") console.log(`   DBG cb_clean a${a} laps=[${p.lapTimes.map((t) => t.toFixed(1))}] hp=${(100 * p.health / p.maxHealth).toFixed(0)} spd=${(dbgSpd/Math.max(1,dbgN)).toFixed(1)} off=${(dbgOff/Math.max(1,dbgN)).toFixed(3)} n=${dbgN} surf=${JSON.stringify(dbgSurf)} dir=${JSON.stringify({ heat: ai.getAiDirective().heat, fp: ai.getAiDirective().fieldPace, pat: ai.getAiDirective().fieldPattern, wf: ai.getAiDirective().weaponsFree, prof: Object.keys(ai.getAiDirective().profiles ?? {}) })}`);
       if (lap > 0) lapRuns.push(lap);
       if (p.finished && p.finishTime > 0) {
         raceRuns.push((length * def.laps) / p.finishTime);
       }
       M.disarmMission();
     }
+    Math.random = realRandom;
     /*
      * BEST and MEDIAN, and both are needed, because the two questions are not
      * the same question.
@@ -1282,7 +1352,50 @@ section("difficulty index");
    * Dead Mile whose flag falls at 110, which reads as merely hard right up until
    * you notice it can never be won by anybody.
    */
-  function attempt(def, ctx, cold = false) {
+  /*
+   * SEEDED, and it was not always. Every race here runs ai.ts, physics.ts and
+   * combat.ts, all three of which call Math.random, so back-to-back runs of an
+   * UNCHANGED tree scored 838, 837, 838 and 836 out of 838. A gate that fails a
+   * check or two at random cannot gate anything: a green is luck and a red
+   * starts a hunt for a regression that is not there. This file had exactly one
+   * Math.random of its own, which is why the nondeterminism was easy to miss —
+   * it comes in through the simulation, not through the harness.
+   *
+   * balance-classes.mjs already solved this and the pattern is lifted from it
+   * wholesale: swap the global for a mulberry32 keyed on the attempt, run, put
+   * the real one back. Restoration is in a finally so a throwing check cannot
+   * leave a seeded Math.random installed for the rest of the file.
+   */
+  function mulberry32(a) {
+    return function () {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const realRandom = Math.random;
+  /** Distinct per mission and per attempt, stable across runs. */
+  function seedFor(def, i, cold) {
+    let h = 2166136261;
+    for (const ch of `${def.id}|${i}|${cold ? "c" : "h"}`) {
+      h ^= ch.charCodeAt(0);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function attempt(def, ctx, cold = false, seedIdx = 0) {
+    Math.random = mulberry32(seedFor(def, seedIdx, cold));
+    try {
+      return attemptInner(def, ctx, cold);
+    } finally {
+      Math.random = realRandom;
+    }
+  }
+
+  function attemptInner(def, ctx, cold = false) {
     const armed = cold
       ? {
           ...def,
@@ -1305,10 +1418,20 @@ section("difficulty index");
     });
     g.state.lapCount = def.laps;
     g.setPhase("countdown");
-    // 300 simulated seconds. Long enough for four laps of the Dead Mile with a
-    // wreck in it; short enough that a mission which can never resolve gets
-    // reported rather than hanging the gate.
-    for (let i = 0; i < 60 * 300 && g.state.phase !== "finished"; i++) {
+    /*
+     * 300 simulated seconds for a hot run — long enough for four laps of the
+     * Dead Mile with a wreck in it, short enough that a mission which can never
+     * resolve gets reported rather than hanging the gate.
+     *
+     * The cold control gets 900, because it is the one run that has to reach
+     * the flag: a hot run is allowed to end early (that IS the measurement),
+     * but a control that stops at the cap has measured the cap. dm_widowmaker
+     * sat at lap 5 of 8 with raceTime 297.0 on all three seeds — a clean
+     * "duration unknown" once the control stopped truncating at mission
+     * resolution, and indistinguishable from a finished race before that.
+     */
+    const capSec = cold ? 900 : 300;
+    for (let i = 0; i < 60 * capSec && g.state.phase !== "finished"; i++) {
       const player = g.state.vehicles.find((v) => v.isPlayer);
       const pin =
         player && g.state.phase === "racing"
@@ -1316,7 +1439,27 @@ section("difficulty index");
           : null;
       g.tick(1 / 60, pin);
       M.applyMissionEffects(g.state, M.stepMission(run, g.state));
+      /*
+       * A resolved mission ends the race — EXCEPT in the cold control, whose
+       * entire job is to find out how long the distance takes.
+       *
+       * Without the `!cold` guard the control stopped 2.6s after the mission
+       * was decided and reported that as the race duration, which is not a
+       * measurement of anything. fp_overtime failed its hull floor at ~23s, the
+       * run was cut at 26s, and `duration` came back 26 for an eight-lap race
+       * that takes 94-110s to drive. Every clock check on the mission was then
+       * comparing its deadline against the moment the instrument gave up, and
+       * the one that fired — "deadline 100s, race ends at 26s" — was true about
+       * the harness and false about the game.
+       *
+       * Turning the guns off is not enough to make a control: a mission has
+       * failure conditions that have nothing to do with weapons, and any of
+       * them ending the run re-introduces exactly the coupling the control was
+       * built to remove. The verdict is already ignored here (`summarise` is
+       * read for the hot runs, not these) — so the run must be too.
+       */
       if (
+        !cold &&
         run.resolvedAt !== null &&
         g.state.phase === "racing" &&
         g.state.raceTime >= run.resolvedAt + 2.6
@@ -1351,6 +1494,9 @@ section("difficulty index");
       // did not finish is a lower bound, and a lower bound is the safe side for
       // a check that asks whether a mission's clocks fit inside it.
       duration: g.state.vehicles.find((v) => v.isPlayer)?.finishTime || g.state.raceTime,
+      finished: !!g.state.vehicles.find((v) => v.isPlayer)?.finished,
+      raceTime: g.state.raceTime,
+      lap: g.state.vehicles.find((v) => v.isPlayer)?.lap ?? 0,
       met: progress,
       // Which objective actually stopped the run. The most useful column here:
       // "hard" and "hard for the wrong reason" look identical in a percentage.
@@ -1368,7 +1514,7 @@ section("difficulty index");
     let place = 0;
     const blockers = {};
     for (let i = 0; i < n; i++) {
-      const r = attempt(def, ctx);
+      const r = attempt(def, ctx, false, i);
       if (r.cleared) wins += 1;
       met += r.met;
       place += r.place;
@@ -1379,15 +1525,28 @@ section("difficulty index");
     // a run where the instrument spins into a barrier reports a longer race than
     // the distance takes, and over-stating the duration is the direction that
     // would let a broken clock through.
-    const c1 = attempt(def, ctx, true);
-    const c2 = attempt(def, ctx, true);
+    /*
+     * Only a run that actually crossed the line has measured the distance.
+     *
+     * `finishTime || raceTime` silently substitutes "when the run stopped" for
+     * "how long the distance takes" whenever the player did not finish, and
+     * because the two clocks have the same units and a plausible magnitude,
+     * nothing downstream can tell them apart. Filtering on `finished` is what
+     * makes an unmeasurable mission report as unmeasurable instead of as a very
+     * short race. A third seed is tried before giving up.
+     */
+    const colds = [];
+    for (let s = 0; s < 3 && colds.length < 2; s++) {
+      const c = attempt(def, ctx, true, s);
+      if (c.finished) colds.push(c);
+    }
     return {
       id: def.id,
       rank: ctx.rank,
       clear: wins / n,
       met: met / n,
       place: place / n,
-      duration: Math.min(c1.duration, c2.duration),
+      duration: colds.length ? Math.min(...colds.map((c) => c.duration)) : null,
       blocked: worst ? `${worst[0]} x${worst[1]}` : "",
     };
   }
@@ -1415,9 +1574,10 @@ section("difficulty index");
     console.log(
       `     ${r.id.padEnd(16)} ${String(r.rank).padStart(4)}  ${(r.clear * 100)
         .toFixed(0)
-        .padStart(4)}%  ${(r.met * 100).toFixed(0).padStart(7)}%  ${r.duration
-        .toFixed(0)
-        .padStart(4)}s  ${r.place.toFixed(1).padStart(5)}  ${r.blocked}`,
+        .padStart(4)}%  ${(r.met * 100).toFixed(0).padStart(7)}%  ${(r.duration === null
+        ? "  --"
+        : r.duration.toFixed(0).padStart(4)
+      )}s  ${r.place.toFixed(1).padStart(5)}  ${r.blocked}`,
     );
   }
 
@@ -1437,6 +1597,27 @@ section("difficulty index");
    */
   for (const r of rows) {
     const def = M.missionById(r.id);
+    /*
+     * No control finished the distance, so there is no duration to check the
+     * clocks against. Reported as its own failure rather than skipped: a clock
+     * nobody could verify is not the same as a clock that fits, and silence
+     * here is what let a 26-second "eight-lap race" through.
+     */
+    if (r.duration === null) {
+      const clocked = def.objectives.filter(
+        (o) =>
+          !o.optional &&
+          (o.kind === "survive_time" || o.kind === "hold_place" || o.bySec !== undefined),
+      );
+      if (clocked.length) {
+        ok(
+          false,
+          `${r.id}: the weapons-cold control finished the distance`,
+          `${clocked.length} timed objective(s) unverified — no control run reached the flag`,
+        );
+      }
+      continue;
+    }
     for (const o of def.objectives) {
       if (o.optional) continue;
       if (o.kind === "survive_time") {
@@ -1499,6 +1680,264 @@ section("difficulty index");
   );
   if (!DEEP) {
     console.log("     (--winrate runs the whole catalogue at eight attempts each)");
+  }
+}
+
+/* ══ WEATHER ══════════════════════════════════════════════════════════
+ *
+ * A wet race has to be MEASURABLY less stable than a dry one, and it has to be
+ * less stable for all three classes by about the same amount. Those are two
+ * different claims and only the first one is obvious.
+ *
+ * The second is the one that has actually gone wrong here before: an earlier
+ * version of the model cooled tyres with a MULTIPLIER on compound.cool, which
+ * scales each class's own cooling rate, so rain punished the Interceptor about
+ * 1.6x as hard as the Bruiser and blew the win-rate spread from 3.7 dry to 16.2
+ * in a storm. Rain that decides the championship is a balance change in a
+ * weather costume. So the assertions below are on the RATIO of wet to dry, per
+ * class, and they require the three ratios to agree with each other — that is
+ * the property, not "wet is slower".
+ *
+ * ── the rig, and why it is pinned ─────────────────────────────────────
+ *
+ * The cornering measurement is a SKIDPAD: the car's position and road speed are
+ * written back to their starting values after every step, while yaw, lateral
+ * velocity, the drift state machine and the tyre model all evolve normally.
+ * stepVehicle reads position only through getSurfaceAt / getGroundHeight, so
+ * pinning it means "flat asphalt, forever" and the number that comes out is a
+ * property of the tyre and the weather rather than of whichever corner the car
+ * happened to reach. Without it the car leaves the road inside a second and the
+ * back half of every trial is measuring sand — which is exactly the shape of
+ * quietly-invalid harness this project has shipped before (AGENTS.md §1).
+ *
+ * Braking is deliberately NOT pinned: a stopping distance has to be integrated
+ * from real motion. It is run from the flattest, straightest run of samples on
+ * ash_spire and the trial FAILS if the car ever leaves the asphalt, rather than
+ * silently reporting a stop that finished in a dune.
+ */
+section("weather");
+
+{
+  track.setActiveTrack("ash_spire");
+  const samples = track.getTrackSamples();
+
+  /** Start index of the least-curved run of 24 samples. */
+  const straightIdx = (() => {
+    let best = 0;
+    let bestC = Infinity;
+    for (let i = 0; i < samples.length; i++) {
+      let c = 0;
+      for (let k = 0; k < 24; k++) {
+        let d = samples[(i + k + 1) % samples.length].yaw - samples[(i + k) % samples.length].yaw;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        c += Math.abs(d);
+      }
+      if (c < bestC) {
+        bestC = c;
+        best = i;
+      }
+    }
+    return best;
+  })();
+
+  /*
+   * A real grid car, cloned. Building one by hand would let the probe disagree
+   * with the sim about tyre count or starting state, which is the whole reason
+   * this file constructs a GameSimulation instead of faking a VehicleState.
+   */
+  const template = (classId) => {
+    const g = new simMod.GameSimulation("PROBE", classId, "ash_spire");
+    g.setPhase("countdown");
+    return structuredClone(g.state.vehicles.find((v) => v.isPlayer));
+  };
+  const TPL = {
+    interceptor: template("interceptor"),
+    bruiser: template("bruiser"),
+    trickster: template("trickster"),
+  };
+
+  const place = (classId, speed) => {
+    const v = structuredClone(TPL[classId]);
+    const sm = samples[straightIdx];
+    v.x = sm.x;
+    v.z = sm.z;
+    v.yaw = sm.yaw;
+    v.y = track.getGroundHeight(sm.x, sm.z) + 0.55;
+    v.speed = speed;
+    v.lateral = 0;
+    v.airTime = 0;
+    v.boostTimer = 0;
+    v.driftMeter = 0;
+    v.damageVisual = 0;
+    v.health = v.maxHealth;
+    // Tyres held at the optimum window so the number is a property of the ROAD.
+    // A cold tyre and a wet road both cost grip and this must not confuse them.
+    for (const t of v.tires) {
+      t.temp = 95;
+      t.slip = 0;
+      t.lat = 0;
+      t.long = 0;
+      t.spin = 0;
+    }
+    v.tireTemp = 95;
+    v.tireSlip = 0;
+    physics.resetDriftState();
+    physics.resetSteerRamp();
+    return v;
+  };
+
+  const INPUT = (o) => ({
+    throttle: 0,
+    brake: false,
+    boost: false,
+    steering: 0,
+    reverse: false,
+    fire: false,
+    defense: false,
+    ultimate: false,
+    ...o,
+  });
+
+  /** Does full lock at this road speed stay stuck for `secs`? */
+  const skidHolds = (classId, wid, speed, secs) => {
+    weather.setWeather(wid);
+    const v = place(classId, speed);
+    const x0 = v.x;
+    const z0 = v.z;
+    const y0 = v.y;
+    const inp = INPUT({ throttle: 1, steering: 1 });
+    for (let t = 0; t < secs; t += 1 / 60) {
+      physics.stepVehicle(v, inp, 1 / 60, {});
+      v.x = x0;
+      v.z = z0;
+      v.y = y0;
+      v.airTime = 0;
+      v.speed = speed;
+      if (physics.isDrifting(v, inp)) return false;
+    }
+    return true;
+  };
+
+  /** Lowest road speed at which full lock lets go — the corner limit, in m/s. */
+  const breakawaySpeed = (classId, wid) => {
+    const vmax = classes.VEHICLE_CLASSES[classId].maxSpeed;
+    let lo = 10;
+    let hi = vmax;
+    if (skidHolds(classId, wid, hi, 1.6)) return Infinity;
+    for (let i = 0; i < 20; i++) {
+      const mid = (lo + hi) / 2;
+      if (skidHolds(classId, wid, mid, 1.6)) lo = mid;
+      else hi = mid;
+    }
+    return hi;
+  };
+
+  /** Full-brake distance from 34 m/s, and whether it stayed on the road. */
+  const brakeStop = (classId, wid) => {
+    weather.setWeather(wid);
+    const v = place(classId, 34);
+    let dist = 0;
+    let off = 0;
+    let t = 0;
+    while (v.speed > 1 && t < 12) {
+      const ax = v.x;
+      const az = v.z;
+      physics.stepVehicle(v, INPUT({ brake: true }), 1 / 60, {});
+      dist += Math.hypot(v.x - ax, v.z - az);
+      if (v.surface !== "asphalt") off += 1;
+      t += 1 / 60;
+    }
+    return { dist, off };
+  };
+
+  const rows = [];
+  for (const cls of classes.CLASS_ORDER) {
+    const row = { cls };
+    for (const wid of ["dry", "wet", "storm"]) {
+      row[wid] = { grip: breakawaySpeed(cls, wid), brake: brakeStop(cls, wid) };
+    }
+    rows.push(row);
+  }
+  weather.setWeather("dry");
+
+  for (const r of rows) {
+    ok(
+      r.dry.brake.off === 0 && r.wet.brake.off === 0 && r.storm.brake.off === 0,
+      `${r.cls}: the braking rig stays on asphalt for the whole stop`,
+      `off-asphalt steps dry/wet/storm ${r.dry.brake.off}/${r.wet.brake.off}/${r.storm.brake.off} — the distance below is partly sand`,
+    );
+    ok(
+      Number.isFinite(r.dry.grip) && Number.isFinite(r.storm.grip),
+      `${r.cls}: the skidpad finds a corner limit in every condition`,
+      `dry ${r.dry.grip}, storm ${r.storm.grip}`,
+    );
+  }
+
+  /* Leg 1+2: peak grip and the breakaway, together, as a corner speed. */
+  for (const r of rows) {
+    const wetR = r.wet.grip / r.dry.grip;
+    const stormR = r.storm.grip / r.dry.grip;
+    ok(
+      wetR < 0.85 && stormR < wetR,
+      `${r.cls}: the corner limit falls in the rain and again in a storm`,
+      `${r.dry.grip.toFixed(1)} → ${r.wet.grip.toFixed(1)} → ${r.storm.grip.toFixed(1)} m/s`,
+    );
+  }
+
+  /* Leg 3: braking. A driver reads this as "brake earlier", not as "slower". */
+  for (const r of rows) {
+    ok(
+      r.wet.brake.dist > r.dry.brake.dist * 1.06 &&
+        r.storm.brake.dist > r.wet.brake.dist * 1.03,
+      `${r.cls}: a wet stop is longer, and a storm stop longer still`,
+      `${r.dry.brake.dist.toFixed(1)} → ${r.wet.brake.dist.toFixed(1)} → ${r.storm.brake.dist.toFixed(1)} m`,
+    );
+  }
+
+  /*
+   * The claim that matters: the penalty is the SAME for everyone.
+   *
+   * 4 points of spread in the wet/dry ratio is roughly the resolution of the
+   * skidpad bisection; anything under it is not a class-specific effect. If
+   * this ever fails, a weather term has been made to depend on a per-class
+   * constant, and balance-classes.mjs --weather will show it as win rate.
+   */
+  for (const wid of ["wet", "storm"]) {
+    const ratios = rows.map((r) => (100 * r[wid].grip) / r.dry.grip);
+    const spread = Math.max(...ratios) - Math.min(...ratios);
+    ok(
+      spread <= 4,
+      `${wid}: the corner-limit penalty is the same for all three classes`,
+      `${classes.CLASS_ORDER.map((c, i) => `${c} ${ratios[i].toFixed(0)}%`).join(", ")} — spread ${spread.toFixed(1)} pts`,
+    );
+    const bRatios = rows.map((r) => (100 * r[wid].brake.dist) / r.dry.brake.dist);
+    ok(
+      Math.max(...bRatios) - Math.min(...bRatios) <= 4,
+      `${wid}: the braking penalty is the same for all three classes`,
+      `${classes.CLASS_ORDER.map((c, i) => `${c} ${bRatios[i].toFixed(0)}%`).join(", ")}`,
+    );
+  }
+
+  /* Overcast is look-only. If it ever touches the physics it is not overcast. */
+  {
+    const dryLimit = breakawaySpeed("interceptor", "dry");
+    const overcast = breakawaySpeed("interceptor", "overcast");
+    weather.setWeather("dry");
+    ok(
+      Math.abs(overcast - dryLimit) < 1e-6,
+      "overcast is a look, not a handling condition",
+      `corner limit ${dryLimit.toFixed(2)} dry vs ${overcast.toFixed(2)} overcast`,
+    );
+  }
+
+  if (VERBOSE) {
+    for (const r of rows) {
+      console.log(
+        `     ${r.cls.padEnd(12)} corner limit ${r.dry.grip.toFixed(1)}/${r.wet.grip.toFixed(1)}/${r.storm.grip.toFixed(1)} m/s · ` +
+          `stop from 34 ${r.dry.brake.dist.toFixed(1)}/${r.wet.brake.dist.toFixed(1)}/${r.storm.brake.dist.toFixed(1)} m  (dry/wet/storm)`,
+      );
+    }
   }
 }
 

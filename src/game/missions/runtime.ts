@@ -19,6 +19,7 @@ import {
 } from "../classes";
 import { resetAiDirective, setAiDirective, type RivalProfile } from "../ai";
 import { getTrackLength, setActiveTrack } from "../track";
+import { setWeather } from "../world/weather";
 import { EVENT_LINES, pickLine, rivalBark } from "../story";
 import { emitAudioCue } from "../audio/cues";
 import {
@@ -902,6 +903,16 @@ export function armMission(
   opts: { heatFloor?: number; fieldPace?: number } = {},
 ): MissionRun {
   setActiveTrack(def.trackId);
+  /*
+   * Before anything reads it. `setWeather` bumps an epoch that the sky, grade
+   * and rain curtain memoise on, and physics.ts / tires.ts query the active
+   * condition every step — so a mission that armed after the grid was built
+   * would race the first corners dry and then have the road change underneath
+   * it. Missions with no `weather` field explicitly set "dry" rather than
+   * leaving it alone, or the previous event's rain would follow the player onto
+   * a circuit that never asked for it.
+   */
+  setWeather(def.weather ?? "dry");
 
   const mods = { ...DEFAULT_MODIFIERS, ...def.modifiers };
   // Career heat raises the floor but never lowers an authored ceiling —
@@ -942,6 +953,9 @@ export function armMission(
 export function disarmMission(): void {
   resetAiDirective();
   resetFieldRoster();
+  // Free play is always the circuit as authored. Leaving a storm armed here is
+  // the same class of leak as leaving the last mission's grid names in place.
+  setWeather("dry");
 }
 
 export function summarise(

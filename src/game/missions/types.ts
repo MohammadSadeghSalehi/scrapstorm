@@ -15,6 +15,9 @@
 import type { AnyTrackId } from "../track";
 import type { RivalPattern, RivalProfile } from "../ai";
 import type { VehicleClassId } from "../types";
+// The renderer-free half of weather only. `world/weather/index` exists to make
+// that importable from the sim graph — do not reach past it to RainCurtain.
+import type { WeatherId } from "../world/weather";
 
 /** Presentation grouping — icon, colour, and how the brief is worded. */
 export type MissionKind =
@@ -218,6 +221,21 @@ export interface MissionDef {
    * eventually only updating one copy.
    */
   beatAfterAlways?: string;
+  /**
+   * The condition this event runs in. Omitted means the circuit's own default,
+   * which is dry for all six — see CIRCUIT_DEFAULTS in world/environments.
+   *
+   * Weather is a MISSION property rather than a circuit property because the
+   * circuits are identities and their QA baselines are shot dry; a permanently
+   * wet circuit is a different circuit. As an event modifier it is the cheapest
+   * real escalation in the game — it changes the shape of the problem rather
+   * than the size of the numbers, the way `fieldPattern` does, and unlike heat
+   * it costs the field exactly what it costs the player.
+   *
+   * Only the id is stored. armMission hands it to the weather module, which
+   * owns the grip terms; the renderer reads the same id back out for the sky.
+   */
+  weather?: WeatherId;
   /** Requires this many markers to appear on the board. */
   requiresMarkers?: number;
   /**

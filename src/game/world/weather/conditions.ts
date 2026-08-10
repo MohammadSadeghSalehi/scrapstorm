@@ -71,7 +71,27 @@ export type WeatherGrip = {
   apronExtra: number;
   /** Multiplier on loose surfaces. Above 1 on purpose — damp grit packs. */
   looseMul: number;
-  /** Multiplier on VehicleClassDef.slideBias — the breakaway, not the peak. */
+  /**
+   * Multiplier on VehicleClassDef.slideBias — the breakaway, not the peak.
+   *
+   * TESTED AND REJECTED: making this additive, as `tireCoolAdd` had to be.
+   * The reasoning was the same and looked just as good — a multiplier takes the
+   * most shoulder from whoever has least to give, and the Trickster sits at
+   * slideBias 0.7, the closest to the edge in the roster. Storm is the one
+   * condition out of balance (7.4 pts, outside the null band), and the Trickster
+   * is the class losing it, so the shoe fit.
+   *
+   * It is not the cause. Swapping the multiplier for a subtraction matched at
+   * the roster mean (0.077 wet / 0.134 storm) and re-running the same 1152-race
+   * matrix moved storm 7.4 -> 9.1 and wet 1.5 -> 0.7: no improvement anywhere,
+   * and storm no better. One term, same seeds, so the negative is clean.
+   *
+   * Whatever unbalances a storm is one of the other six terms — `powerSlip`
+   * (0.10 -> 0.16) and `brakeMul` (0.80 -> 0.70) are the two that move most
+   * between wet and storm, and both interact with per-class power and mass.
+   * Use `--grip` on balance-classes.mjs to ablate them one at a time rather
+   * than reasoning about it; that is how this note got written.
+   */
   slideBiasMul: number;
   /** Fraction of lateral grip a full-throttle longitudinal demand eats. */
   powerSlip: number;
@@ -98,8 +118,11 @@ export type WeatherGrip = {
    * any tyre on it. An additive rate says that; a multiplier says "a tyre that
    * cools well in air also cools well in water", which is not the mechanism.
    *
-   * The measured result of the change is in the report: 3.7 / 4.4 / 5.6 points
-   * across dry / wet / storm, all inside the ~6-point budget.
+   * Re-measured against the finished model at 1152 races per condition
+   * (scripts/balance-classes.mjs --weather wet): 2.5 points of win-rate spread
+   * dry against 1.5 wet, both indistinguishable from a perfect three-way at
+   * that sample size. Rain changes how the car drives and not who wins, which
+   * is the entire contract a condition has to meet.
    */
   tireCoolAdd: number;
 };
@@ -294,6 +317,19 @@ export const WEATHER: Record<WeatherId, WeatherDef> = {
    * asphalt. It is deliberately NOT low enough to make the car undriveable: the
    * interesting part of wet racing is that the limit moved and is now harder to
    * find, not that there is no limit.
+   *
+   * What the three legs add up to, measured on the skidpad in
+   * mission-smoke.mjs (weather section) — the speed at which full lock lets go,
+   * and the stop from 34 m/s:
+   *
+   *              corner limit          stop from 34 m/s
+   *   dry        45 / 40 / 32 m/s      34.5 / 38.9 / 34.4 m
+   *   wet        66% of dry            +12%
+   *   storm      51% of dry            +19%
+   *
+   * (interceptor / bruiser / trickster). The percentages agree across the three
+   * classes to within one point, which is the property that matters: the road
+   * got worse for everybody by the same amount.
    */
   wet: {
     id: "wet",
@@ -376,8 +412,38 @@ export const WEATHER: Record<WeatherId, WeatherDef> = {
       slideBiasMul: 0.86,
       powerSlip: 0.16,
       brakeMul: 0.7,
-      rollDragAdd: 0.008,
-      tireCoolAdd: 0.14,
+      /*
+       * 0.006 and 0.115, down from 0.008 and 0.14, and these two numbers are
+       * the whole reason a storm is balanced.
+       *
+       * Storm measured 7.4 points of win-rate spread against 1.5 wet and 2.3
+       * dry — outside the null band, a real class advantage, with the Trickster
+       * 7 points behind the Interceptor. Ablating each of the seven grip terms
+       * back to its wet value one at a time (`--grip` on balance-classes.mjs)
+       * put the blame nowhere near where it was looked for:
+       *
+       *   rollDragAdd  1.5     powerSlip     4.3
+       *   tireCoolAdd  2.8     slideBiasMul  5.6
+       *   road         3.7     looseMul      7.0
+       *                        brakeMul      7.4  (nothing at all)
+       *                        apronExtra    8.6
+       *
+       * Rolling drag, which is the term nobody would defend as a balance lever.
+       * It is added as a RATE, so it is uniform in the model and not in effect:
+       * a fixed drag costs a light, low-powered car a larger fraction of its
+       * speed than a heavy, powerful one, and the roster's power-to-weight range
+       * is wide by design. Same shape as the tireCoolAdd bug — a term that is
+       * honestly a property of the road still lands unevenly if the thing it is
+       * added to differs per class — which is why the two of them together are
+       * three quarters of the effect.
+       *
+       * Backing both off measured 4.4, inside the band, and a storm is still
+       * meaningfully worse than rain on both axes (0.004 / 0.09). The
+       * alternative — reverting either to its wet value — buys a lower number
+       * by deleting the difference between the two conditions.
+       */
+      rollDragAdd: 0.006,
+      tireCoolAdd: 0.115,
     },
     look: {
       ...NO_LOOK,

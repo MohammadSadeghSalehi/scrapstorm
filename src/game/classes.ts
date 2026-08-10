@@ -52,12 +52,33 @@ import type { VehicleClassDef, VehicleClassId } from "./types";
  * against each other in the real sim across three circuits and both ends of the
  * aiSkill pace ladder, with grid slot, seed and driver profile controlled.
  *
- * 432 races per class, three seed bases (a perfect three-way is 33.3% / 2.000):
+ * ── READ THE SAMPLE SIZE BEFORE YOU READ THE TABLE ───────────────────
  *
- *                    before              after
- *   interceptor    47.2% / 1.69      34.5% / 1.98
- *   bruiser        51.4% / 1.54      34.5% / 1.92
- *   trickster       1.4% / 2.76      31.0% / 2.10
+ * Exactly one class wins each race, so under perfect balance the reported
+ * max-minus-min win rate is the range of three multinomial proportions — a
+ * strictly positive statistic whose floor is set by the sample. At 72 races,
+ * which was this script's default, a FLAWLESS three-way reports a median of
+ * 11.1 points and clears a "spread <= 6" bar only 19.5% of the time. Two
+ * readings of 4.2 and 11.1 taken at that sample size were once recorded as a
+ * balance regression caused by the terrain rework; they were two draws from the
+ * same distribution and nothing had moved. The default is now 1152 races, where
+ * the null median is 2.7 and p95 is 5.6, and the script prints that band next
+ * to the result. Never quote a spread without it.
+ *
+ * ── the sheet, at 2304 races per configuration (two seed bases) ──────
+ *
+ * A perfect three-way is 33.3% / 2.000.
+ *
+ *                 first pass      after the terrain rework      now
+ *   interceptor  47.2% / 1.69          32.4% / 2.01         34.8% / 1.98
+ *   bruiser      51.4% / 1.54          31.4% / 2.00         33.0% / 1.99
+ *   trickster     1.4% / 2.76          36.3% / 1.95         32.3% / 2.04
+ *                spread 50.0           spread 4.9           spread 2.6
+ *
+ * The middle column is the terrain rework measured properly: six circuits with
+ * six landforms left the classes at 4.9 points, already inside budget. The only
+ * thing that moved between it and the right-hand column is the Trickster's two
+ * straight-line numbers — see the note on its maxSpeed.
  *
  * The same matrix with the field's weapons COLD is the other half of the sheet,
  * and it is the one that says these are three different cars rather than three
@@ -67,11 +88,14 @@ import type { VehicleClassDef, VehicleClassId } from "./types";
  *
  * The Bruiser cannot win a race. It wins a fight, and the fight is worth
  * exactly its pace deficit — which is what "competitive" is supposed to mean.
- * Per circuit the same effect shows up as character: the Bruiser takes the
- * Cinder Bowl (40-56%), the Interceptor takes the Rustline and Ash Spire.
+ * Per circuit the same effect shows up as character, and the rework moved WHICH
+ * circuit belongs to whom rather than flattening them: the Interceptor now owns
+ * Ash Spire (40%) where the Bruiser is worst (23%), the Bruiser owns the
+ * Rustline (40%), and the Cinder Bowl is the one nobody owns.
  *
- * Change a number here and re-run it. Seed-to-seed spread at 144 races is about
- * +/-5 points, so anything smaller than that is not a result.
+ * Change a number here and re-run it at the default sample size. A 2% grip
+ * change re-rolls every collision downstream of the first corner, so a result
+ * inside the printed null band is not a result.
  */
 export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
   interceptor: {
@@ -172,8 +196,22 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     tagline: "Drift · Trap · Fake the line",
     color: "#38bdf8",
     accent: "#7dd3fc",
-    maxSpeed: 79,
-    accel: 3.02,
+    /*
+     * Below the Interceptor on BOTH straight-line numbers, which it was not.
+     *
+     * `accel` was 3.02 against the Interceptor's 3.00 and `maxSpeed` 79 against
+     * 82 — so the class described above as "middling at everything it does not
+     * own" was in fact the joint-quickest car off a corner and within 4% on top
+     * end, on top of owning rotation outright. Measured against the new
+     * terrain (2304 races, eight seed bases) that showed up as
+     * 32.4 / 31.4 / 36.3, with the Trickster also holding the fastest mean best
+     * lap in the game (14.9s against 15.3 and 16.7).
+     *
+     * The trim is straight-line only. Taking rotation instead would have closed
+     * the same gap and deleted the class.
+     */
+    maxSpeed: 78,
+    accel: 2.94,
     // Highest turn rate by a wide margin — this is the number the class is
     // built on. It changes direction where the other two have to brake.
     turnRate: 4.0,

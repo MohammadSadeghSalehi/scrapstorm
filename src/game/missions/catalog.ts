@@ -431,7 +431,24 @@ export const EVENT_MISSIONS: MissionDef[] = [
     kind: "hunt",
     trackId: "dead_mile",
     laps: 2,
-    brief: ["Two of Marrow's outriders are running freight tonight.", "They will not be running it tomorrow."],
+    /*
+     * The catalogue's one wet event, and it is deliberately this one.
+     *
+     * Rain costs the whole field the same thing — measured, the corner limit
+     * falls to 66% of dry and the stopping distance grows 12% for all three
+     * classes alike (mission-smoke, weather section) — so it does not make a
+     * mission harder so much as SLOWER and less precise. That is fatal to a
+     * pace target and merely interesting to a hunt: this one asks for two
+     * takedowns and a finish, none of which is on a clock, so the rain buys
+     * atmosphere and a real change in how the road drives without moving a
+     * threshold. Do not copy it onto anything holding a `lap_pace`.
+     */
+    weather: "wet",
+    brief: [
+      "Two of Marrow's outriders are running freight tonight.",
+      "Rain on the pipeline. Nobody stops for it, nobody trusts it either.",
+      "They will not be running it tomorrow.",
+    ],
     objectives: [
       { kind: "wreck_target", slot: 0 },
       { kind: "wreck_target", slot: 1 },
@@ -569,9 +586,19 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Overtime",
     kind: "hunt",
     trackId: "foundry_pit",
-    // Eight, not six. A Foundry lap runs 13-18 seconds, so six laps end at
-    // around ninety — before the hundred-second deadline, which would have made
-    // the deadline decorative and the mission a straight three-takedown hunt.
+    /*
+     * Eight, so the flag falls well after the hundred-second deadline — a race
+     * that ends first would make the deadline decorative and the mission a
+     * straight three-takedown hunt.
+     *
+     * The margin is much larger than it was thought to be. This said "a Foundry
+     * lap runs 13-18 seconds, so six laps end at around ninety", which came from
+     * the same truncating cold control that mis-sized dm_widowmaker; the real
+     * pace is 26s a lap and eight laps is a 207-second race. Eight still stands
+     * — the deadline bites at about the halfway point, which is where a purse
+     * closing early is supposed to bite — but it stands on a measurement now
+     * rather than on that arithmetic.
+     */
     laps: 8,
     brief: [
       "Three wrecks, and the purse closes at a hundred seconds.",
@@ -602,15 +629,27 @@ export const EVENT_MISSIONS: MissionDef[] = [
     kind: "survival",
     trackId: "dead_mile",
     /*
-     * Six laps for a hundred-and-fifty-second clock, and the first cut had
-     * three. A Dead Mile lap is 30-48 seconds, so three laps put the flag out
-     * at around 110 and the survival timer could NEVER land — the mission was
-     * unwinnable by arithmetic, not by difficulty, and it read as merely hard
-     * until the harness printed a zero next to it. Six laps measured at 153s,
-     * which clears 150 by three seconds — close enough that one quick run would
-     * put the flag out before the timer. Eight.
+     * Four laps for a hundred-and-fifty-second clock.
+     *
+     * This was eight, and eight came from a measurement the harness was not
+     * able to make. The first cut had three: a Dead Mile lap was believed to be
+     * 30-48 seconds, so three laps put the flag out around 110 and the survival
+     * timer could NEVER land — unwinnable by arithmetic rather than by
+     * difficulty, and it read as merely hard until the harness printed a zero.
+     * Six then "measured at 153s", clearing 150 by three seconds, which felt too
+     * close to trust, so eight.
+     *
+     * Every one of those numbers came from a control that stopped 2.6 seconds
+     * after the MISSION resolved rather than when the distance was driven, so it
+     * was reporting how long this mission survives, not how long its laps take.
+     * With that fixed the real figure is 51.8s a lap — eight laps is a
+     * 414-second race, near seven minutes, for a mission whose longest clock is
+     * 150. Four puts the flag at ~207s: the survival timer lands with fifty
+     * seconds in hand instead of three, the sixty-second position hold fits
+     * inside 0.7 of the race, and the thing is a survival mission rather than an
+     * endurance one. See the cold-control note in scripts/mission-smoke.mjs.
      */
-    laps: 8,
+    laps: 4,
     brief: [
       "Two and a half minutes on the pipeline with a live bounty.",
       "And you do not get to do it from the back. Top three, a minute of it, total.",

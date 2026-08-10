@@ -17,13 +17,18 @@
  * a parallel batch job.
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, copyFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, copyFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "refs");
 const GROK = "C:\\Users\\sadeg\\.grok\\bin\\grok";
+const SESSIONS = join(homedir(), ".grok", "sessions");
+/** The agent gets a scratch cwd of its own; see the note above extractPath. */
+const SCRATCH = join(tmpdir(), "scrapstorm-gen-refs");
 
 /**
  * House style, appended to every prompt.
@@ -264,10 +269,45 @@ const ACTIVE = MESH ? SPECS_MESH : SPECS;
 const SUBDIR = MESH ? join(OUT, "mesh") : OUT;
 const REL = MESH ? "refs/mesh" : "refs";
 
-/** The CLI reports where it wrote the file; that line is the only handle we get. */
-function extractPath(stdout) {
-  const m = stdout.match(/([A-Za-z]:\\[^\s`"']+\.(?:jpg|jpeg|png))/);
-  return m ? m[1] : null;
+/**
+ * Where the CLI put the image.
+ *
+ * It used to be enough to read the path out of the reply, and for nineteen
+ * images it was. Then the same prompt started answering with the markdown link
+ * `[images/1.jpg](images/1.jpg)` instead of an absolute path, and every run
+ * after that generated perfectly good images and filed none of them.
+ *
+ * The reply is prose and prose is not an interface. The real one is the layout
+ * on disk: the image tool writes to
+ *
+ *     ~/.grok/sessions/<percent-encoded-cwd>/<session-id>/images/<n>.jpg
+ *
+ * and `--session-id` lets us name the session, so we know the directory before
+ * the call is made. Rather than reproduce the CLI's cwd encoding we scan one
+ * level of ~/.grok/sessions for our (unique) id.
+ *
+ * `--cwd` sends the agent's own working directory to a scratch dir as well: told
+ * to save a file, it will save one, and it should not be into this repository.
+ */
+function extractPath(stdout, sid) {
+  const m = stdout.match(/([A-Za-z]:\\[^\s`"'()\[\]]+\.(?:jpg|jpeg|png|webp))/);
+  if (m && existsSync(m[1])) return m[1];
+  let entries;
+  try {
+    entries = readdirSync(SESSIONS);
+  } catch {
+    return null;
+  }
+  for (const e of entries) {
+    const dir = join(SESSIONS, e, sid, "images");
+    if (!existsSync(dir)) continue;
+    const files = readdirSync(dir)
+      .filter((f) => /\.(png|jpe?g|webp)$/i.test(f))
+      .map((f) => join(dir, f))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    return files[0] ?? null;
+  }
+  return null;
 }
 
 const results = [];
@@ -284,18 +324,30 @@ for (const spec of todo) {
     continue;
   }
 
+  // No "save it and tell me the path" any more: we already know the path, and
+  // asking for file work is what sends the agent off doing minutes of unwanted
+  // conversion and cleanup. One call, then stop.
   const full =
     `Generate an image. ${spec.prompt}\n\n${MESH ? MESH_STYLE : STYLE}\n\n` +
-    `Save the image to disk, then reply with ONLY its absolute Windows path.`;
+    `Make exactly ONE image-generation call and then stop. Do not write, edit ` +
+    `or convert any files, do not run any shell commands, and do not attempt ` +
+    `any post-processing or follow-up generations.`;
 
+  const sid = randomUUID();
+  mkdirSync(SCRATCH, { recursive: true });
   process.stdout.write(`· ${spec.cat}/${spec.slug} … `);
   try {
-    const out = execFileSync(GROK, ["-p", full], {
-      encoding: "utf8",
-      timeout: 5 * 60 * 1000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    const src = extractPath(out);
+    const out = execFileSync(
+      GROK,
+      ["--cwd", SCRATCH, "--session-id", sid, "-p", full],
+      {
+        cwd: SCRATCH,
+        encoding: "utf8",
+        timeout: 5 * 60 * 1000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+    const src = extractPath(out, sid);
     if (!src || !existsSync(src)) {
       console.log("FAILED (no image path in reply)");
       results.push({ ...spec, file: null, error: "no path" });
