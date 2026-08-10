@@ -181,6 +181,105 @@ export const STORY_BEATS: StoryBeat[] = [
     body: "Nobody comes out of the Foundry. You came out of the Foundry. Sit down, you're bleeding.",
     act: 2,
   },
+  /*
+   * ACT TWO — the middle, which used to sag.
+   *
+   * Act 1 has a wrong and act 3 has a reckoning; the eight rungs in between were
+   * carried by two beats and a heat threshold, so the long stretch of the game
+   * where the player is actually LEARNING it had the least to say. The fix is not
+   * more plot. It is that each of these names now reacts to having been beaten by
+   * you, and each of them is more interested in Marrow than in their own rank —
+   * so the middle act is where you find out what the man at the top is, from
+   * eight people who have driven against him and you have not.
+   */
+  {
+    id: "vance-counted",
+    title: "Off the tally",
+    voice: "TALLY",
+    body: "Forty confirmed. You're not one. First time I've had to write that.",
+    flavor: "He is already looking at whoever is behind you.",
+    act: 1,
+  },
+  {
+    id: "sook-vouches",
+    title: "Word gets round",
+    voice: "FERRITE",
+    body: "Told the Rustline crews you were worth watching. Don't waste it.",
+    flavor: "You have a reputation now. It is small and it is fragile.",
+    act: 2,
+  },
+  {
+    id: "sparrow-sheet",
+    title: "The clean sheet",
+    voice: "SPARROW",
+    body: "Nine seasons, no contact. Marrow is the only other name on that sheet. Think about why.",
+    flavor: "He does not say it like a compliment to anyone.",
+    act: 2,
+  },
+  {
+    id: "novo-warning",
+    title: "What the board is for",
+    voice: "GLASSJAW",
+    body: "Nobody up there is racing you. They're being paid to keep a number where it is.",
+    flavor: "She is the first one to say it out loud.",
+    act: 2,
+  },
+  {
+    id: "ogun-remembers",
+    title: "Eleven years",
+    voice: "BELLOWS",
+    body: "Marrow drove like you once. Quick, angry, broke. Then the Feed found him a producer.",
+    flavor: "He has finished every Dead Mile ever run. He has watched all of it.",
+    act: 2,
+  },
+  {
+    id: "board-closes",
+    title: "The board closes",
+    voice: "QUIST",
+    body: "Rank eight. That's usually where the story ends. The audience gets bored of a climb that keeps going.",
+    flavor: "It is the first time he has sounded like he means it.",
+    act: 2,
+  },
+  {
+    id: "bex-bill",
+    title: "What it costs",
+    voice: "BEX",
+    body: "Every night you bring this back I take something off another car to fix it. There aren't many left.",
+    flavor: "She has not asked you to stop.",
+    act: 2,
+  },
+  {
+    id: "ptok-terms",
+    title: "House terms",
+    voice: "SABLE",
+    body: "The House takes a cut of the Mile. Of your purse, of your heat, of your ending.",
+    flavor: "He is not threatening you. He is quoting a price.",
+    act: 2,
+  },
+  {
+    id: "first-loss",
+    title: "The first one you lost",
+    voice: "BEX",
+    body: "They took a qualifier back off you. That's how the board keeps score — not in scrap, in standing.",
+    flavor: "Run it again. It is the only answer this league accepts.",
+    act: 2,
+  },
+  {
+    id: "reputation-wrecker",
+    title: "How you drive",
+    voice: "HALCYON",
+    body: "Three of them are in garages because of you. The board has a word for that, and it isn't champion.",
+    flavor: "You are becoming the thing you climbed the board to punish.",
+    act: 3,
+  },
+  {
+    id: "reputation-clean",
+    title: "Clean hands",
+    voice: "SPARROW",
+    body: "Six names and not one of them in a wall. Nobody has done that since the league had rules.",
+    flavor: "The Feed has stopped showing your overtakes. They are not dramatic enough.",
+    act: 3,
+  },
   {
     id: "kade-confesses",
     title: "Half the story",
@@ -262,6 +361,37 @@ export const STORY_BEATS: StoryBeat[] = [
     act: 3,
   },
   {
+    id: "wrecked-ogun",
+    title: "The road finally did it",
+    voice: "BELLOWS",
+    body: "Eleven years. Every Dead Mile ever run, finished. Then you.",
+    flavor: "He is not angry. That is somehow worse.",
+    act: 2,
+  },
+  {
+    id: "wrecked-ptok",
+    title: "Off the books",
+    voice: "SABLE",
+    body: "You put the House in a ditch on the House's own road. That goes in the ledger under your name.",
+    flavor: "The Sable Mile will not be neutral ground again.",
+    act: 3,
+  },
+  {
+    id: "outraced-rhee",
+    title: "Past her once",
+    voice: "PALLBEARER",
+    body: "Clean. On the long straight. Nobody does that. Marrow's expecting you — he always was.",
+    act: 3,
+  },
+  {
+    id: "wrecked-rhee",
+    title: "The pallbearer",
+    voice: "PALLBEARER",
+    body: "You put me in the tanks. Fine. He'll do the same to you and call it racing.",
+    flavor: "She is laughing when they cut the feed.",
+    act: 3,
+  },
+  {
     id: "wrecked-marrow",
     title: "Salvage",
     voice: "BEX",
@@ -322,6 +452,45 @@ export const STORY_BEATS: StoryBeat[] = [
     title: "Last Call",
     body: "Three and a half kilometres of pipeline road, a live bounty, and a car cut every forty seconds.",
     flavor: "Marrow's crew run this road. They know where the far turn is.",
+    act: 3,
+  },
+  /*
+   * Openers for the four late events that are about a PLAN rather than a pace.
+   *
+   * Each one names the trick, because a mission whose difficulty is a hidden
+   * rule is not difficult, it is a first attempt spent finding out what the
+   * rules were. The player should arrive at the grid knowing exactly what is
+   * being asked and still find it hard.
+   */
+  {
+    id: "glasswork-open",
+    title: "Glasswork",
+    voice: "BEX",
+    body: "Win it, and come back with the panels I put on this morning. One overtaking spot. Think.",
+    flavor: "Cinder Bowl does not forgive a wide entry twice.",
+    act: 2,
+  },
+  {
+    id: "holdline-open",
+    title: "Hold the line",
+    voice: "QUIST",
+    body: "New format. You take second or better and you keep it, on the clock, while they're paid to remove you.",
+    flavor: "The audience does not watch for the overtake. They watch for the defence.",
+    act: 2,
+  },
+  {
+    id: "overtime-open",
+    title: "Overtime",
+    voice: "BEX",
+    body: "Three cars, and the purse closes at the clock. Pick where you're going to do it before you leave the grid.",
+    flavor: "The Foundry has two chokes. That is the whole answer.",
+    act: 3,
+  },
+  {
+    id: "widowmaker-open",
+    title: "Widowmaker",
+    body: "Two and a half minutes of pipeline road, a live bounty, and you are not allowed to hide at the back.",
+    flavor: "Rhee's crew have run this road for nine seasons. They know the far turn.",
     act: 3,
   },
   {
@@ -462,6 +631,18 @@ export const EVENT_LINES = {
     "Last lap. Whatever you were saving, spend it.",
     "One more. This is the one they'll show.",
   ],
+  /**
+   * A timed objective is fifteen seconds from expiring.
+   *
+   * Deliberately says WHAT to do, not just that time is short: the player is
+   * being told this while somebody is on their door, and "hurry" is not
+   * information.
+   */
+  clock_low: [
+    "Clock's nearly out. Take the shot you've got.",
+    "Fifteen seconds. Stop setting it up and do it.",
+    "Whatever the plan was, it's now or it's gone.",
+  ],
 } as const;
 
 /* ── rival voices ─────────────────────────────────────────────────────
@@ -482,6 +663,15 @@ export type BarkKind =
   | "open"
   /** They just took a place off you. */
   | "pass"
+  /**
+   * They are inside twelve metres and staying there.
+   *
+   * The one bark that is not attached to an event. Everything else in this list
+   * fires on something having HAPPENED, which left the most tense thing a rival
+   * does — sitting in your mirrors for a lap and a half without doing anything
+   * at all — as the only part of a duel with no voice on it.
+   */
+  | "close"
   /** Their hull is under 35%. */
   | "hurt"
   /** You wrecked them. */
@@ -494,6 +684,7 @@ export type BarkKind =
 export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   wask: {
     open: "GRIT: Door's shut. Try the handle.",
+    close: "GRIT: Still here. Door's still shut.",
     pass: "GRIT: Told you. Shut.",
     hurt: "GRIT: Plate's cheap. I've got more.",
     down: "GRIT: Fine. Fine.",
@@ -502,6 +693,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   nim: {
     open: "HALFPIPE: Watch the exit. Not the entry.",
+    close: "HALFPIPE: Something's on the next exit. Guess.",
     pass: "HALFPIPE: You looked where I told you not to.",
     hurt: "HALFPIPE: That's fine, that's fine, that's fine.",
     down: "HALFPIPE: My own mine. My OWN mine.",
@@ -510,6 +702,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   vance: {
     open: "TALLY: Number forty-one, coming up.",
+    close: "TALLY: Holding you at forty. Don't move.",
     pass: "TALLY: Line 'em up, knock 'em down.",
     hurt: "TALLY: Doesn't count. Doesn't count.",
     down: "TALLY: Off by one. I'll fix the tally.",
@@ -518,6 +711,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   sook: {
     open: "FERRITE: I don't lift. Ask the barrier.",
+    close: "FERRITE: Braking zone's coming. I won't.",
     pass: "FERRITE: Brakes are for people with plans.",
     hurt: "FERRITE: Panel's gone. Still don't lift.",
     down: "FERRITE: Should've lifted.",
@@ -526,6 +720,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   ait: {
     open: "SPARROW: I'll be where you were.",
+    close: "SPARROW: Not crowding you. Just here.",
     pass: "SPARROW: —",
     hurt: "SPARROW: That wasn't necessary.",
     down: "SPARROW: Nine seasons. Not one mark.",
@@ -534,6 +729,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   marsh: {
     open: "KILN: Gap's mine. Come take it.",
+    close: "KILN: Choke's in nine hundred metres.",
     pass: "KILN: There's the gap. There it goes.",
     hurt: "KILN: Still parked here.",
     down: "KILN: Nobody's ever come through there.",
@@ -542,6 +738,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   novo: {
     open: "GLASSJAW: One mistake each. I'm not making mine.",
+    close: "GLASSJAW: One corner. That's all this needs.",
     pass: "GLASSJAW: There it is. That was yours.",
     hurt: "GLASSJAW: No no no, not yet—",
     down: "GLASSJAW: Glass. Told you.",
@@ -550,6 +747,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   reyes: {
     open: "CATHODE: You're already in frame.",
+    close: "CATHODE: Lock's warm. Been warm a while.",
     pass: "CATHODE: Lock's been on you since the grid.",
     hurt: "CATHODE: Array's still up. That's what matters.",
     down: "CATHODE: Lost the lock. Lost the rest.",
@@ -558,6 +756,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   ogun: {
     open: "BELLOWS: It's a long road. You'll see.",
+    close: "BELLOWS: Long road. I'm in no rush.",
     pass: "BELLOWS: No hurry. Never is.",
     hurt: "BELLOWS: Still running. That's the trick.",
     down: "BELLOWS: First one. In eleven years.",
@@ -566,6 +765,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   vey: {
     open: "HALCYON: Not easy. Fair. There's a difference.",
+    close: "HALCYON: I could take you here. I won't.",
     pass: "HALCYON: Clean. Note that it was clean.",
     hurt: "HALCYON: You didn't have to do that.",
     down: "HALCYON: So you're his after all.",
@@ -574,6 +774,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   ptok: {
     open: "SABLE: Business. You understand.",
+    close: "SABLE: Your line's already been sold.",
     pass: "SABLE: I sold your position. Twice.",
     hurt: "SABLE: This is coming out of your cut.",
     down: "SABLE: Costly. For me.",
@@ -582,6 +783,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   ilo: {
     open: "ORGAN GRINDER: In you go.",
+    close: "ORGAN GRINDER: Feeding you in.",
     pass: "ORGAN GRINDER: Processing.",
     hurt: "ORGAN GRINDER: Doesn't hurt. Never has.",
     down: "ORGAN GRINDER: Out again. Rare.",
@@ -590,6 +792,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   kade: {
     open: "SUMP: You remember the stack. I remember the stack.",
+    close: "SUMP: This is where I was. Last time.",
     pass: "SUMP: Same side as last time. Notice?",
     hurt: "SUMP: He'll just send the next one.",
     down: "SUMP: There. Now we're even.",
@@ -598,6 +801,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   rhee: {
     open: "PALLBEARER: Nobody gets past me twice.",
+    close: "PALLBEARER: I'm not passing. I'm measuring.",
     pass: "PALLBEARER: That's the first time. There is no second.",
     hurt: "PALLBEARER: Good. Now it's a long road for both of us.",
     down: "PALLBEARER: Then go and take it back.",
@@ -606,6 +810,7 @@ export const RIVAL_BARKS: Record<string, Partial<Record<BarkKind, string>>> = {
   },
   marrow: {
     open: "MARROW: It runs better for me.",
+    close: "MARROW: Feel that? That's my car under you.",
     pass: "MARROW: You never could hold this corner.",
     hurt: "MARROW: Careful. It's still my car.",
     down: "MARROW: Eighteen months. Eighteen months.",

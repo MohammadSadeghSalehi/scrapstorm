@@ -13,8 +13,11 @@
  * a field.
  */
 import type { AnyTrackId } from "../track";
-import type { RivalProfile } from "../ai";
+import type { RivalPattern, RivalProfile } from "../ai";
 import type { VehicleClassId } from "../types";
+// The renderer-free half of weather only. `world/weather/index` exists to make
+// that importable from the sim graph — do not reach past it to RainCurtain.
+import type { WeatherId } from "../world/weather";
 
 /** Presentation grouping — icon, colour, and how the brief is worded. */
 export type MissionKind =
@@ -51,6 +54,20 @@ export type ObjectiveDef =
   | { kind: "race_pace"; pace: number }
   | { kind: "wreck_target"; slot: number; count?: number }
   | { kind: "beat_rival"; slot: number }
+  /**
+   * Hold a position for a while — NOT the same objective as finishing in it.
+   *
+   * `finish_place` is settled once, at the flag, and everything before it is
+   * recoverable; a player can spend the whole race eighth and still clear it
+   * with one late move. `hold_place` asks for the opposite thing: be P2 or
+   * better and STAY there while the field is paid to remove you. It is the only
+   * objective in the set that cannot be solved by pace alone, because pace puts
+   * you at the front and then leaves you there with your back to everybody.
+   *
+   * Accumulated, not consecutive, for the same reason `lead_for` is: a single
+   * unlucky corner should cost you seconds, not the run.
+   */
+  | { kind: "hold_place"; place: number; seconds: number }
   /* hold */
   | { kind: "no_wreck" }
   | { kind: "hull_above"; pct: number }
@@ -64,6 +81,24 @@ export type Objective = ObjectiveDef & {
   optional?: boolean;
   /** Overrides the generated HUD wording. */
   label?: string;
+  /**
+   * Deadlines. An ACHIEVE objective still pending when one passes fails.
+   *
+   * One generic mechanism rather than a `wreck_target_before_lap` kind, because
+   * every deadline objective anybody will ever want is an existing objective
+   * with a clock on it, and the alternative is the same interpreter branch
+   * written once per goal.
+   *
+   * What a deadline buys, and the reason the late board needs it: without one,
+   * "wreck the marked car" over five laps is a patience test that a player
+   * clears by waiting for the AI to make a mistake. With one, it is a plan —
+   * you have to decide WHERE on the circuit you are going to do it, and go
+   * there. Meaningless on a hold objective (they cannot be pending), and the
+   * runtime ignores them there rather than pretending otherwise.
+   */
+  bySec?: number;
+  /** Deadline in player laps: fails once the player STARTS this lap. */
+  byLap?: number;
 };
 
 /**
@@ -89,6 +124,25 @@ export interface MissionModifiers {
   protectSlot: number | null;
   /** Knock out the last-placed runner on a timer. */
   elimination: { everySec: number; warnSec: number } | null;
+  /**
+   * How the ANONYMOUS cars drive tonight. Null = ordinary racers.
+   *
+   * This is the late board's cheapest real escalation. Raising heat makes the
+   * field shoot more; raising pace makes it faster; neither changes the SHAPE of
+   * the problem. A field of blockers in the Foundry means the chokes are held
+   * and you have to make your own road. A field of hunters means there is no
+   * such thing as a quiet lap. Costs one word per mission.
+   */
+  fieldPattern: RivalPattern | null;
+  /**
+   * Floor under the anonymous grid's pace, on top of the career's own.
+   *
+   * Career fieldPace says how good the league has got since you started. This
+   * says that THIS night is not an ordinary night regardless — the Feed put its
+   * best extras in the show. Kept separate so a returning player re-running an
+   * early event does not find the house cars silently promoted.
+   */
+  fieldPaceFloor: number;
 }
 
 export const DEFAULT_MODIFIERS: MissionModifiers = {
@@ -99,6 +153,8 @@ export const DEFAULT_MODIFIERS: MissionModifiers = {
   bountyOnPlayer: false,
   protectSlot: null,
   elimination: null,
+  fieldPattern: null,
+  fieldPaceFloor: 0,
 };
 
 /**
@@ -155,6 +211,31 @@ export interface MissionDef {
   beatAfter?: string;
   /** Aftermath used instead of `beatAfter` when the rival was wrecked, not out-driven. */
   beatAfterWrecked?: string;
+  /**
+   * Aftermath that plays HOWEVER it went, alongside the branch above.
+   *
+   * The branch pair answers "what did they make of the way you did it"; this
+   * answers "what did they have to tell you". Kade confesses who actually
+   * ordered the stack whether you out-drove him or put him in the scrap, and
+   * folding that into both branches would mean writing the plot point twice and
+   * eventually only updating one copy.
+   */
+  beatAfterAlways?: string;
+  /**
+   * The condition this event runs in. Omitted means the circuit's own default,
+   * which is dry for all six — see CIRCUIT_DEFAULTS in world/environments.
+   *
+   * Weather is a MISSION property rather than a circuit property because the
+   * circuits are identities and their QA baselines are shot dry; a permanently
+   * wet circuit is a different circuit. As an event modifier it is the cheapest
+   * real escalation in the game — it changes the shape of the problem rather
+   * than the size of the numbers, the way `fieldPattern` does, and unlike heat
+   * it costs the field exactly what it costs the player.
+   *
+   * Only the id is stored. armMission hands it to the weather module, which
+   * owns the grip terms; the renderer reads the same id back out for the sky.
+   */
+  weather?: WeatherId;
   /** Requires this many markers to appear on the board. */
   requiresMarkers?: number;
   /**
@@ -308,4 +389,6 @@ export interface RivalDef {
    * say, and career falls back to `beatAfter` for them.
    */
   beatAfterWrecked?: string;
+  /** Plays whichever way it went. See MissionDef.beatAfterAlways. */
+  beatAfterAlways?: string;
 }

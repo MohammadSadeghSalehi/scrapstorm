@@ -32,6 +32,16 @@ export interface CareerState {
   /** 1..5, persistent. 1 is an ordinary night, 5 is a manhunt. */
   heat: number;
   defeated: string[];
+  /**
+   * The subset of `defeated` you put into a wall rather than out-drove.
+   *
+   * The story could already branch on how ONE duel went, which is a moment. It
+   * could not see a pattern, which is a character — and "how does this player
+   * win" is the only thing about them the game can actually observe. Two beats
+   * read this and they are the only ones in the script that nobody triggers on
+   * purpose: you get the reputation you have been building for ten races.
+   */
+  wreckedRivals: string[];
   completed: string[];
   best: Record<string, { time: number; place: number; takedowns: number }>;
   seenBeats: string[];
@@ -46,6 +56,7 @@ export const DEFAULT_CAREER: CareerState = {
   markers: 0,
   heat: 1,
   defeated: [],
+  wreckedRivals: [],
   completed: [],
   best: {},
   seenBeats: [],
@@ -77,7 +88,16 @@ export function missionById(id: string): MissionDef | undefined {
 }
 
 function clampCareer(raw: Partial<CareerState> | null): CareerState {
-  if (!raw) return { ...DEFAULT_CAREER, defeated: [], completed: [], best: {}, seenBeats: [], titles: [] };
+  if (!raw)
+    return {
+      ...DEFAULT_CAREER,
+      defeated: [],
+      wreckedRivals: [],
+      completed: [],
+      best: {},
+      seenBeats: [],
+      titles: [],
+    };
   const known = new Set(ALL_MISSIONS.map((m) => m.id));
   const rivals = new Set(RIVALS_BY_RANK.map((r) => r.id));
   return {
@@ -85,6 +105,7 @@ function clampCareer(raw: Partial<CareerState> | null): CareerState {
     markers: Math.max(0, Math.floor(raw.markers ?? 0)),
     heat: Math.min(5, Math.max(1, raw.heat ?? 1)),
     defeated: (raw.defeated ?? []).filter((id) => rivals.has(id)),
+    wreckedRivals: (raw.wreckedRivals ?? []).filter((id) => rivals.has(id)),
     completed: (raw.completed ?? []).filter((id) => known.has(id)),
     best: raw.best ?? {},
     seenBeats: raw.seenBeats ?? [],
@@ -286,6 +307,7 @@ export function applyMissionResult(
   const next: CareerState = {
     ...career,
     defeated: [...career.defeated],
+    wreckedRivals: [...career.wreckedRivals],
     completed: [...career.completed],
     best: { ...career.best },
     seenBeats: [...career.seenBeats],
@@ -367,6 +389,10 @@ export function applyMissionResult(
         next.completed = next.completed.filter((id) => id !== lost);
         award.requalify = lost;
       }
+      // The script had thirty beats and not one of them was about losing, which
+      // made failure the only thing that happens in this game that nobody in it
+      // reacts to. Once, on the first duel that gets away from you.
+      fire("first-loss");
     }
     return { career: next, award };
   }
@@ -408,6 +434,7 @@ export function applyMissionResult(
     if (rival) {
       next.defeated.push(rival.id);
       next.titles.push(rival.reward.title);
+      if (summary.rivalWrecked) next.wreckedRivals.push(rival.id);
       award.rivalDefeated = rival;
       // Taking a rank is the loudest thing you can do. The board notices.
       next.heat = Math.min(5, next.heat + 1);
@@ -434,11 +461,44 @@ export function applyMissionResult(
    * because duelMission copies both ids onto the def: picking separately fired
    * the out-raced line and the wrecked line for the same race.
    */
+  /*
+   * Quist's offer is refused by DRIVING, not by answering.
+   *
+   * There is no dialogue wheel to decline it with, so the refusal is the act of
+   * taking the grid against Marrow anyway. Fired before the aftermath below,
+   * because the last word of this story belongs to Marrow and not to a producer.
+   */
+  if (
+    def.rivalId === "marrow" &&
+    career.seenBeats.includes("quist-offer") &&
+    !career.seenBeats.includes("quist-refused")
+  ) {
+    fire("quist-refused");
+  }
+
   const pickBeat = (normal?: string, wrecked?: string) =>
     summary.rivalWrecked ? (wrecked ?? normal) : normal;
   fire(pickBeat(def.beatAfter, def.beatAfterWrecked));
+  fire(def.beatAfterAlways);
   const beaten = award.rivalDefeated;
-  if (beaten) fire(pickBeat(beaten.beatAfter, beaten.beatAfterWrecked));
+  if (beaten) {
+    fire(pickBeat(beaten.beatAfter, beaten.beatAfterWrecked));
+    fire(beaten.beatAfterAlways);
+  }
+
+  /*
+   * REPUTATION — the only branch in the script the player cannot aim at.
+   *
+   * Everything else here fires on one race. These two fire on ten, and they are
+   * mutually exclusive by construction: you cannot have wrecked three names and
+   * also have got to six with clean hands. The thresholds are set where the
+   * pattern stops being an accident — one wreck in a fight is a bad corner,
+   * three is how you drive.
+   */
+  if (next.wreckedRivals.length >= 3) fire("reputation-wrecker");
+  else if (next.defeated.length >= 6 && next.wreckedRivals.length === 0) {
+    fire("reputation-clean");
+  }
 
   // Heat thresholds. Announced as they are CROSSED, so they land on the run
   // that caused them rather than on the next menu the player happens to open.

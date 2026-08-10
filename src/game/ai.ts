@@ -113,6 +113,20 @@ export interface AiDirective {
    * replacement, so an authored rival never gets slower than they were written.
    */
   fieldPace: number;
+  /**
+   * Pattern forced onto every car that has no authored profile of its own.
+   *
+   * The five patterns were the board's most under-used lever: fifteen rivals
+   * carry one each and the other three cars on every grid drove as racers, so a
+   * pattern was something you met once per duel and never again. A whole
+   * anonymous field of BLOCKERS turns the Foundry's chokes into a wall; the same
+   * field as HUNTERS turns a two-minute survival into a manhunt with four
+   * participants instead of one. Same cars, same pace, completely different
+   * problem — which is the definition of difficulty that is worth having.
+   *
+   * Null leaves house cars as racers, which is the honest default.
+   */
+  fieldPattern: RivalPattern | null;
   /** Who the patterns orient themselves around. */
   playerId: string;
 }
@@ -126,6 +140,7 @@ const NEUTRAL: AiDirective = {
   protect: null,
   profiles: {},
   fieldPace: 0,
+  fieldPattern: null,
   playerId: "player",
 };
 
@@ -150,10 +165,18 @@ function profileFor(id: string): RivalProfile {
   const p = directive.profiles[id];
   if (!p) {
     // House cars are not characters, but they are not stationary targets
-    // either — they drive at whatever the league's current standard is.
-    return directive.fieldPace > 0
-      ? { ...DEFAULT_PROFILE, pace: Math.max(DEFAULT_PROFILE.pace, directive.fieldPace) }
-      : DEFAULT_PROFILE;
+    // either — they drive at whatever the league's current standard is, and in
+    // whatever manner the night calls for.
+    if (directive.fieldPace <= 0 && !directive.fieldPattern) return DEFAULT_PROFILE;
+    return {
+      ...DEFAULT_PROFILE,
+      pace: Math.max(DEFAULT_PROFILE.pace, directive.fieldPace),
+      pattern: directive.fieldPattern ?? DEFAULT_PROFILE.pattern,
+      // A house car told to hunt has to actually want it. Leaving `hunt` at the
+      // default would give a "pack of hunters" that still shoots whatever is
+      // nearest, which is what they were already doing.
+      hunt: directive.fieldPattern === "hunter" ? 0.85 : DEFAULT_PROFILE.hunt,
+    };
   }
   return p.pace >= directive.fieldPace
     ? p

@@ -12,23 +12,76 @@
  * tall a range is allowed to be before it eats the sun.
  */
 import * as THREE from "three";
-import { getActiveTrackId, isTrackId } from "../../track";
+import { getActiveTrackId, getTrackEpoch, isTrackId } from "../../track";
 import type { AnyTrackId } from "../../track";
 import { DEFAULT_ENVIRONMENT, ENVIRONMENTS } from "./presets";
 import type { EnvironmentDef, RidgeDef, SkyStop, Vec3 } from "./types";
+import {
+  applyConditions,
+  getVariantEpoch,
+  resolveConditions,
+  type Conditions,
+  type TimeOfDayId,
+} from "./variants";
+import { getWeatherEpoch } from "../weather/conditions";
 
 export * from "./types";
 export { ENVIRONMENTS, DEFAULT_ENVIRONMENT } from "./presets";
+export {
+  NIGHT,
+  SUNSET,
+  TIMES_OF_DAY,
+  circuitDefaults,
+  getTimeOfDayOverride,
+  getVariantEpoch,
+  resolveConditions,
+  setTimeOfDay,
+  type Conditions,
+  type TimeOfDayDef,
+  type TimeOfDayId,
+} from "./variants";
 
 /* ── lookup ───────────────────────────────────────────────────────── */
 
-export function getEnvironment(id: string): EnvironmentDef {
+/** The circuit's BASE preset — its authored hour, dry. No conditions applied. */
+export function getBaseEnvironment(id: string): EnvironmentDef {
   if (!isTrackId(id)) return DEFAULT_ENVIRONMENT;
   return ENVIRONMENTS[id as AnyTrackId] ?? DEFAULT_ENVIRONMENT;
 }
 
+/** The circuit under the conditions currently set. */
+export function getEnvironment(id: string): EnvironmentDef {
+  const base = getBaseEnvironment(id);
+  return resolveEnvironment(base, resolveConditions(base.id));
+}
+
+/*
+ * One-entry memo, because the transform is not free and every consumer calls
+ * `getActiveEnvironment()` at least once per render of the world tree — and
+ * GameScene calls it four times in the same JSX block.
+ *
+ * Keyed on circuit id AND on the two condition epochs, so a mission that
+ * changes the weather without changing the circuit still gets a new sky.
+ * Getting that wrong is silent: the old environment keeps rendering and the
+ * only symptom is that the rain has no clouds over it.
+ */
+let cacheKey = "";
+let cacheVal: EnvironmentDef | null = null;
+
+function resolveEnvironment(
+  base: EnvironmentDef,
+  c: Conditions,
+): EnvironmentDef {
+  const key = `${base.id}|${c.timeOfDay}|${c.weather}`;
+  if (cacheKey === key && cacheVal) return cacheVal;
+  cacheVal = applyConditions(base, c, farRangeCeiling, midRangeCeiling);
+  cacheKey = key;
+  return cacheVal;
+}
+
 /**
- * The environment for whatever circuit is loaded.
+ * The environment for whatever circuit is loaded, under whatever conditions are
+ * set.
  *
  * Deliberately a FUNCTION, not an exported binding that gets reassigned on a
  * track change. `export let` is a live binding under real ESM but jiti
@@ -37,9 +90,31 @@ export function getEnvironment(id: string): EnvironmentDef {
  * the previous circuit's value while reporting the new circuit's id — the exact
  * failure that made a track-profile check silently pass twice on the same
  * track. Same reason `getTrackSamples()` exists in track.ts.
+ *
+ * The conditions layer sits INSIDE this function rather than beside it on
+ * purpose. Every consumer in the render tree — the light rig and the fog in
+ * GameScene, PostFX's grade, TrackMesh's surfaces, HeightmapTerrain's ramp,
+ * the scatter tints, Atmosphere's whole backdrop — already reads through here,
+ * so an hour and a weather condition propagate to all of them without a single
+ * one of those files learning that variants exist. That is the entire reason
+ * time of day is cheap to add and would not have been if the look had stayed as
+ * literals.
  */
 export function getActiveEnvironment(): EnvironmentDef {
-  return ENVIRONMENTS[getActiveTrackId()] ?? DEFAULT_ENVIRONMENT;
+  const base = ENVIRONMENTS[getActiveTrackId()] ?? DEFAULT_ENVIRONMENT;
+  return resolveEnvironment(base, resolveConditions(base.id));
+}
+
+/**
+ * Memo key for anything that caches per environment.
+ *
+ * Consumers currently key on `getTrackEpoch()`, which only moves when the
+ * CIRCUIT changes. Conditions can change without it — a rematch on the same
+ * circuit in the rain — so anything that builds geometry or colours from the
+ * environment must key on this instead.
+ */
+export function getEnvironmentEpoch(): number {
+  return getTrackEpoch() * 1000003 + getVariantEpoch() * 1009 + getWeatherEpoch();
 }
 
 /* ── skyline geometry, shared with Atmosphere ─────────────────────── */
@@ -285,6 +360,83 @@ export function validateEnvironments(): string[] {
       }
       if (ridge.relax < 0 || ridge.relax > 1) {
         at(`${name} range relax ${ridge.relax} out of range 0..1`);
+      }
+    }
+  }
+  problems.push(...validateVariants());
+  return problems;
+}
+
+/**
+ * The same rules, over every circuit x hour x condition the game can produce.
+ *
+ * Two of them are variant-specific and both correspond to a failure that is
+ * invisible in code review:
+ *
+ * 1. THE SKYLINE AMPUTATION. A variant lowers the sun, `farRangeCeiling` falls,
+ *    and `clampSkyline` quietly cuts a 190m range down to whatever fits. The
+ *    clamp is correct — the alternative is a sky that eats its own sun — but if
+ *    it is removing most of the mountain then the variant's sun is authored too
+ *    low and the right fix is in the variant, not in the clamp. 0.6 is the line:
+ *    losing 40% of a range is a compromise, losing 70% is a different circuit.
+ *
+ * 2. THE SKY COLLAPSE. `applyWeather` blends the hour's stops toward the cloud
+ *    deck with a height-dependent weight, and a bug there would leave the stops
+ *    out of descending order — which does not throw, it silently flattens the
+ *    dome to one colour. Cheap to assert, impossible to spot by reading.
+ */
+export function validateVariants(): string[] {
+  const problems: string[] = [];
+  const hours: TimeOfDayId[] = ["default", "sunset", "night"];
+  const conditions: Conditions["weather"][] = ["dry", "overcast", "wet", "storm"];
+
+  for (const [key, base] of Object.entries(ENVIRONMENTS)) {
+    for (const timeOfDay of hours) {
+      for (const weather of conditions) {
+        const tag = `${key}/${timeOfDay}/${weather}`;
+        const env = applyConditions(
+          base,
+          { timeOfDay, weather },
+          farRangeCeiling,
+          midRangeCeiling,
+        );
+        const at = (msg: string) => problems.push(`${tag}: ${msg}`);
+
+        const stops = env.sky.stops;
+        for (let i = 1; i < stops.length; i++) {
+          if (stops[i]!.y >= stops[i - 1]!.y) {
+            at(`sky stops must descend in y (index ${i})`);
+          }
+        }
+
+        if (env.skyline.far.peak > farRangeCeiling(env) + 1e-6) {
+          at("far range is over its own ceiling after the clamp");
+        }
+        if (env.skyline.far.peak < base.skyline.far.peak * 0.6) {
+          at(
+            `clamp cut the far range from ${base.skyline.far.peak} to ${env.skyline.far.peak.toFixed(
+              0,
+            )} — the variant's sun is too low for this circuit`,
+          );
+        }
+
+        for (const [n, s] of [
+          ["haze", env.atmosphere.haze.countScale],
+          ["clouds", env.atmosphere.clouds.countScale],
+        ] as const) {
+          if (s > COUNT_SCALE_MAX) {
+            at(`${n} countScale ${s.toFixed(2)} is above COUNT_SCALE_MAX`);
+          }
+        }
+
+        // A dark hour that also switches the headlights off is the one
+        // combination that is genuinely unplayable rather than merely dark.
+        if (
+          timeOfDay === "night" &&
+          !env.light.headlights.enabled
+        ) {
+          at("night with no headlights");
+        }
       }
     }
   }

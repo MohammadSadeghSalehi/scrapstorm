@@ -3,6 +3,10 @@ import { VEHICLE_CLASSES } from "./classes";
 import { getGroundHeight, getSurfaceAt } from "./track";
 import { stepTires, tireGripMul, tireScrubDrag } from "./tires";
 import type { Particle, PlayerInput, VehicleClassId, VehicleState } from "./types";
+// The renderer-free half of weather. `world/weather/index` re-exports only
+// conditions.ts for exactly this import — see the note at the top of that file
+// before adding anything to the barrel.
+import { getWeather, weatherGripMul, weatherPowerSlipMul } from "./world/weather";
 
 /** OBB half-extents (world units) per class — matches modular mesh footprint */
 export const VEHICLE_HITBOX: Record<
@@ -212,9 +216,18 @@ function stepGripDrift(
   // `slideBias` separates "does not snap sideways" from "corners fast" — the
   // Bruiser wants the first and not the second, and one grip number cannot say
   // both. See VehicleClassDef.slideBias.
+  //
+  // Weather moves the BREAKAWAY here and the PEAK at the `grip` call site, and
+  // the two have to stay separate: dropping peak μ alone makes a wet car slower
+  // through a corner but no twitchier at the limit, which is the naive wet
+  // model. slideBiasMul is what makes the limit arrive earlier for the same
+  // amount of lock. See WeatherGrip in world/weather/conditions.ts.
   const load =
     (mag * speedRatio) /
-    Math.max(0.3, grip * VEHICLE_CLASSES[v.classId].slideBias);
+    Math.max(
+      0.3,
+      grip * VEHICLE_CLASSES[v.classId].slideBias * getWeather().grip.slideBiasMul,
+    );
   const over = load / DRIFT.breakLoad - 1;
   const holdMul = v.isPlayer ? 1 : DRIFT.aiHoldMul;
   const needed =
@@ -448,6 +461,34 @@ export function stepVehicle(
   turnRate *= mods.turnMul;
   grip *= tireGripMul(v);
 
+  /*
+   * Weather, leg 1 of 3: PEAK μ, per surface.
+   *
+   * Keyed off the surface the wheel is actually on rather than off a single
+   * scalar, because standing water is a PLACE — the apron is dished and drains
+   * badly, so running wide in the rain has to cost more than running wide in
+   * the dry. Dry returns exactly 1 for every surface, so this line is a no-op
+   * in the authored condition and the class-balance table is unaffected.
+   */
+  const weather = getWeather();
+  grip *= weatherGripMul(surf.kind);
+
+  /*
+   * Weather, leg 2 of 3: the friction circle.
+   *
+   * Total tyre force is bounded by μ·N whatever direction it points, so
+   * longitudinal demand steals from the lateral budget. Dry there is enough μ
+   * that mid-corner throttle is nowhere near the boundary; wet, the same pedal
+   * puts a driven tyre over it. Throttle-dependent on purpose — a flat grip cut
+   * would be "less grip with a different name" rather than snap oversteer.
+   *
+   * Braking is excluded: it is already carried by brakeMul below, and charging
+   * it twice would make a wet stop both longer AND cost the front lateral grip
+   * you need to actually make the corner.
+   */
+  const powerDemand = Math.max(input.throttle, input.boost ? 1 : 0);
+  grip *= weatherPowerSlipMul(input.brake ? 0 : powerDemand);
+
   if (input.boost && surf.factor > 0.25) {
     accel *= 1 - surf.factor * 0.3;
     maxSpeed *= 1 - surf.factor * 0.1;
@@ -531,8 +572,12 @@ export function stepVehicle(
     v.speed += thr * accel * torqueMul * HANDLING.driftThrottleMul * dt;
     v.speed *= Math.max(0, 1 - HANDLING.driftHandbrakeDrag * dt);
   } else if (input.brake) {
+    // Weather, leg 3 of 3. Braking distance scales as 1/brakeMul, so wet's 0.8
+    // is a 25% longer stop and storm's 0.7 is 43% longer — the number a driver
+    // reads as "brake earlier" rather than as "the car is slower".
     const brakeMul =
       (HANDLING.brakeForceMul ?? 2.2) *
+      weather.grip.brakeMul *
       (1 + surf.factor * 0.15) *
       (1 + Math.min(0.35, Math.abs(v.speed) / 120));
     if (v.speed > 0.4) {
@@ -556,7 +601,10 @@ export function stepVehicle(
   }
 
   const coasting = input.throttle < 0.12 && !input.brake && !input.boost && !wantDrift;
-  let drag = dragForSurface(surf.kind, surf.factor, coasting);
+  // Water displacement and mud, as rolling resistance rather than as lost grip.
+  // A wet road does not make a tyre slip more in a straight line; it makes the
+  // wheel push a wedge of water. That is drag, and it belongs here.
+  let drag = dragForSurface(surf.kind, surf.factor, coasting) + weather.grip.rollDragAdd;
   if (coasting && Math.abs(v.speed) > 5) {
     drag += HANDLING.engineBrake ?? 0.1;
   }

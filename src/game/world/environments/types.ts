@@ -143,6 +143,32 @@ export type LightDef = {
   rim: { dir: Vec3; color: Hex; intensity: number };
   /** Multiplier on scene.environmentIntensity (EnvLighting's HDRI). */
   envIntensity: number;
+  /**
+   * Per-car headlights.
+   *
+   * Nothing in this module mounts them — GameScene owns the car rig, the same
+   * way it owns the key light. These are the values it should read.
+   *
+   * `enabled` is false on every daylight preset and true on the night and
+   * sunset variants and in rain, because at those hours the lights stop being
+   * decoration: the key light is a fraction of daylight and the fog is pulled
+   * in to well under half its dry distance, so the cone in front of the car is
+   * most of what the player knows about the next corner. A night without them
+   * is not atmospheric, it is unplayable.
+   *
+   * Cost, if GameScene mounts these as spot lights: a shadow-casting spot per
+   * car is a whole extra shadow pass each and must not happen. Non-shadowing
+   * spots only, and only for the player plus the nearest rival on the low tier.
+   */
+  headlights: {
+    enabled: boolean;
+    color: Hex;
+    intensity: number;
+    /** Metres of throw. */
+    distance: number;
+    /** FULL cone angle in degrees — halve it for THREE.SpotLight.angle. */
+    angleDeg: number;
+  };
 };
 
 export type FogDef = {
@@ -329,6 +355,29 @@ export type SurfaceDef = {
   vergeDrift: Hex;
   /** Lane markings. Bright paint reads differently under a dead sky. */
   stripe: Hex;
+  /**
+   * Road material roughness, and how strongly it takes the environment map.
+   *
+   * These exist because a dry road and a wet road differ almost entirely in
+   * these two numbers and hardly at all in colour. Water fills the surface
+   * pores: light that used to scatter back out diffusely is refracted in and
+   * absorbed (so the albedo darkens) while the film left on top reflects
+   * specularly (so roughness collapses and the reflection strengthens). Tinting
+   * a wet road blue is the naive version and it reads as a decal over dry
+   * tarmac.
+   *
+   * TrackMesh currently hardcodes 0.72 / 0.9, which are exactly the dry values
+   * every preset carries here, so reading these changes nothing until a
+   * condition moves them.
+   */
+  roadRoughness: number;
+  roadEnvMapIntensity: number;
+  /**
+   * 0..1 standing-water level on the sealed surfaces. Presentation only — the
+   * grip consequence lives in ../weather/conditions.ts, which the sim reads
+   * directly and which never imports this file.
+   */
+  wetness: number;
 };
 
 export type PostDef = {

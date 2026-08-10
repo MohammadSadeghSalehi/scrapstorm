@@ -1,5 +1,7 @@
 import { VEHICLE_CLASSES } from "./classes";
 import type { PlayerInput, SurfaceKind, TireState, VehicleClassId, VehicleState } from "./types";
+// Renderer-free half of weather only — see world/weather/index.ts.
+import { getWeather } from "./world/weather";
 
 /** Rest radius used for visual sink compensation (world units). */
 export const TIRE_RADIUS: Record<VehicleClassId, number> = {
@@ -309,7 +311,19 @@ export function stepTires(
 
     // Cooling: ambient + forced air (speed) + sand sink when not scrubbing
     const airflow = Math.pow(Math.max(0, speedAbs) * 0.035, 1.1); // ~0–3
-    const coolK = (0.12 + airflow * 0.11) * compound.cool;
+    /*
+     * Evaporative cooling off a wet contact patch is ADDED, never multiplied.
+     *
+     * A multiplier scales each class's own `compound.cool`, so the Interceptor
+     * (cool 1.2, thermal mass 0.72, coldPenalty 0.22) gets punished ~1.6x as
+     * hard as the Bruiser for a property of the ROAD — measured, that alone
+     * took the win-rate spread from 3.7 dry to 10.6 wet to 16.2 in a storm.
+     * Physically the same objection: convective cooling scales with the tyre's
+     * airflow and construction, evaporative cooling scales with the water film
+     * and the patch area, and the second is very nearly the same for any tyre
+     * on the same road.
+     */
+    const coolK = (0.12 + airflow * 0.11) * compound.cool + getWeather().grip.tireCoolAdd;
     const coolRate = (t.temp - surfaceAmbient) * coolK;
     const sandSink =
       soft > 0.25 && t.slip < 0.25 ? (t.temp - surfaceAmbient) * soft * 0.08 : 0;
