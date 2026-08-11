@@ -96,6 +96,33 @@ import type { VehicleClassDef, VehicleClassId } from "./types";
  * Change a number here and re-run it at the default sample size. A 2% grip
  * change re-rolls every collision downstream of the first corner, so a result
  * inside the printed null band is not a result.
+ *
+ * ── THE TOP-SPEED SPREAD IS LOAD-BEARING. DO NOT CLOSE IT ────────────
+ *
+ * 82 / 78 / 67 looks unfair on paper and reads as unfair to a player watching a
+ * Bruiser lose a straight, so it has been attempted. Measured, at 1152 races a
+ * step, with the Bruiser's other numbers trimmed to pay for it each time:
+ *
+ *   maxSpeed 67, as authored                          33.0%   spread  2.6
+ *   74 / accel 2.68, hull 200, damage 30              48.2%   spread 22.5
+ *   72 / accel 2.58, offroadPenalty 0.34 -> 0.75      46.8%   spread 23.2
+ *   69 / accel 2.48, offroadPenalty 0.45, hull 210    43.0%   spread 16.6
+ *
+ * Roughly five points of win rate per metre per second, and trimming hull,
+ * damage and off-road impunity together did not buy back even the first two.
+ *
+ * The reason is in the `mean-speed` column rather than the win rate: at 67 the
+ * Bruiser is ALREADY the fastest car on track over a race distance. Its Vmax is
+ * not what limits it and never was — mass, hull, line-holding and (before this
+ * was measured) near-total off-road impunity make it quicker between two points
+ * than either rival, and the top-end deficit is the toll being charged for
+ * that. Refunding the toll while leaving the goods is how the class ends up
+ * winning half of everything.
+ *
+ * If the felt gap has to be addressed, it is a PRESENTATION problem — gearing,
+ * engine note, camera FOV at speed, what the speedometer reads — not this
+ * number. Changing it here has been tried three ways and costs the game its
+ * balance every time.
  */
 export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
   interceptor: {

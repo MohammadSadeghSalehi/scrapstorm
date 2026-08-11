@@ -1197,6 +1197,25 @@ function ShaderWarmup() {
     const timers: number[] = [];
     const warm = () => {
       if (cancelled) return;
+      /*
+       * ONLY WHILE THE LOADING SCREEN IS UP. This is the countdown hitch.
+       *
+       * `gl.compile` is synchronous and blocks for as long as it takes, and
+       * these passes were fired on wall-clock timers from mount — 600ms and
+       * 4000ms. The gate closes well before the second one, so it landed on the
+       * countdown or the first corner every single time, which is precisely the
+       * "first run is laggy and still loading" report. The comment below says a
+       * loading screen covers this window; that was true of the first pass and
+       * never true of the second.
+       *
+       * A wall clock cannot know whether the race has started, so ask. When the
+       * gate is already closed the work is not skipped so much as declined:
+       * WorldWarmup performs the authoritative compile *inside* the gate, with
+       * a settle detector in front of it, so anything still uncompiled here is
+       * a straggler that costs one lazy frame when it first appears. One lazy
+       * frame beats a guaranteed freeze on the green light.
+       */
+      if (!getRaceGate().held) return;
       try {
         // Synchronous compile, deliberately NOT compileAsync.
         //

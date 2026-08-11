@@ -51,6 +51,15 @@ export type RangeOpts = {
    * weathered desert rock, which is what this range is.
    */
   sharpness?: number;
+  /**
+   * How far the noise domain is bent before the ridges are evaluated, in units
+   * of `featureSize`. 0 is the raw isotropic multifractal — evenly crinkled in
+   * every direction, which reads as texture rather than as landform. ~0.5 gives
+   * ridgelines a grain: long crests running roughly parallel, valleys that
+   * wander rather than radiate. Above ~0.9 the field folds over itself and the
+   * range starts to look melted.
+   */
+  warp?: number;
   /** Metres of world per texture tile, vertically. 0 disables the detail map. */
   tileM?: number;
   /**
@@ -201,9 +210,30 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
     const R = o.innerR + (o.outerR - o.innerR) * tr;
     for (let a = 0; a < cols; a++) {
       const ang = (a / segsA) * Math.PI * 2;
+      const wx = Math.cos(ang) * R;
+      const wz = Math.sin(ang) * R;
+      /*
+       * DOMAIN WARP — what turns crumpled paper into a mountain range.
+       *
+       * Ridged multifractal on its own is ISOTROPIC: every ridge is as likely
+       * to run in any direction as any other, so the result is evenly crinkled
+       * in all directions and reads as texture rather than as landform. Real
+       * ranges are not isotropic. They have grain — long ridgelines running
+       * roughly parallel, valleys that wander instead of radiating, spurs that
+       * peel off a main crest at an angle.
+       *
+       * Warping the sample position by a much lower-frequency noise before
+       * evaluating the field bends those ridgelines into that grain for the
+       * cost of two extra perlin lookups per vertex. Sampled in WORLD space, so
+       * a = 0 and a = segsA warp identically and the seam still closes.
+       */
+      const wf = o.featureSize * 2.6;
+      const warpAmt = (o.warp ?? 0.5) * o.featureSize;
+      const dx = perlin2(wx / wf + 3.1, wz / wf - 7.4) * warpAmt;
+      const dz = perlin2(wx / wf - 5.2, wz / wf + 9.8) * warpAmt;
       const f = ridgeField(
-        (Math.cos(ang) * R) / o.featureSize,
-        (Math.sin(ang) * R) / o.featureSize,
+        (wx + dx) / o.featureSize,
+        (wz + dz) / o.featureSize,
         o.seed,
         octaves,
       );
@@ -269,6 +299,40 @@ export function buildRidgeRange(o: RangeOpts): THREE.BufferGeometry {
 
       // Sun-bleached toward the summits, shadowed rock in the gullies.
       tmp.copy(low).lerp(high, smoothstep(0.08, 0.85, n));
+
+      /*
+       * SLOPE, and this is the cue that was missing entirely.
+       *
+       * Colour was a function of height alone, so a vertical cliff and a flat
+       * bench at the same altitude came out identical — which is exactly the
+       * "painted on" look, because in the real world the two could not be more
+       * different. Nothing loose stays on a steep face: it sheds to bare, dark,
+       * freshly-broken rock. Anything shallow collects dust and grit and goes
+       * pale and matte. That single correlation is most of what separates a
+       * photograph of a mountain from a heightfield with a gradient on it.
+       *
+       * Central differences on the relaxed field, in metres, so the gradient is
+       * a real slope and not a per-grid-cell one — the angular spacing grows
+       * with R, and ignoring that would make the outer rows read as flatter
+       * than they are purely because their cells are wider.
+       */
+      const dRm = (o.outerR - o.innerR) / segsR;
+      const dAm = (2 * Math.PI * R) / segsA;
+      const am = (a - 1 + segsA) % segsA;
+      const ap = (a + 1) % segsA;
+      const rm = Math.max(0, r - 1);
+      const rp = Math.min(rows - 1, r + 1);
+      const scale = o.peak * amp;
+      const gA = ((hN[r * cols + ap]! - hN[r * cols + am]!) * scale) / (2 * dAm);
+      const gR = ((hN[rp * cols + a]! - hN[rm * cols + a]!) * scale) / (2 * dRm);
+      // 0 flat, 1 at about 45 degrees and beyond.
+      const slope = Math.min(1, Math.hypot(gA, gR));
+
+      // Steep: bare rock, darker and slightly cooler.
+      tmp.lerp(low, smoothstep(0.35, 0.95, slope) * 0.45);
+      // Shallow, and not already at the summit: dust and grit collect.
+      const bench = (1 - smoothstep(0.06, 0.3, slope)) * (1 - smoothstep(0.5, 0.9, n));
+      if (bench > 0) tmp.lerp(high, bench * 0.18);
 
       /*
        * STRATA — the single strongest "this is desert rock" cue.

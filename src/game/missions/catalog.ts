@@ -544,12 +544,23 @@ export const EVENT_MISSIONS: MissionDef[] = [
     ],
     objectives: [
       { kind: "finish_place", place: 1 },
-      // 60% was measured killing all three headless attempts while the bot was
-      // winning the race on the road (mean finishing position 1.3). A hull floor
-      // you cannot survive is not a constraint on how you win, it is a different
-      // mission — 45% still forbids bulldozing the hairpin four times and leaves
-      // a race in front of it.
-      { kind: "hull_above", pct: 0.45 },
+      /*
+       * 30%, and this is the second time it has come down.
+       *
+       * 60% was measured killing all three headless attempts while the bot was
+       * winning the race on the road (mean finishing position 1.3), so it went
+       * to 45 — and 45 measured 0% clear across four more, blocked by this
+       * clause every time, with the car still finishing 1.8 on average. A hull
+       * floor you cannot survive is not a constraint on how you win, it is a
+       * different mission.
+       *
+       * The instrument overstates this: its driver cannot break a weapons lock
+       * or spend a defensive charge, so it takes far more damage than a person
+       * would (see the cold-control note in mission-smoke). That is exactly why
+       * this is 30 and not 15 — the floor should still bite for a player who
+       * bulldozes the hairpin, and 30 leaves a race in front of it either way.
+       */
+      { kind: "hull_above", pct: 0.3 },
       { kind: "no_wreck", optional: true, label: "Not a mark on it" },
     ],
     modifiers: { heat: 0.5, aggression: 0.2, fieldPattern: "blocker" },

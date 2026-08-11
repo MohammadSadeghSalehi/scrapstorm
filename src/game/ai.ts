@@ -565,6 +565,35 @@ export function aiInput(
   if (prof.pattern === "pacer") lock = null;
   v.lockTargetId = lock;
 
+  /*
+   * ── A SMARTER DEFENCE WAS BUILT, MEASURED, AND BACKED OUT ───────────
+   *
+   * The dice roll below is not good behaviour and everyone who reads it knows
+   * it: a healthy car ignores someone sitting on its bumper, then burns the
+   * charge on a glance once it is already hurt. It was replaced with a real
+   * model — threat graded by aim tightness and by the SHOOTER's own
+   * primaryRange, accumulated over time so a sustained lock reads differently
+   * from a car swinging past a mirror, with reaction time scaled off each
+   * rival's `precision`.
+   *
+   * It worked, and it cost the game its class balance, every variant:
+   *
+   *   generous trigger (fires when hurt, threat or not)   17.0 pts
+   *   every activation gated on real threat               10.9
+   *   the two legacy dice rolls removed as well            9.7
+   *   reaction time scaled by mass                        13.4
+   *
+   * against a null band of 2.7 median / 5.6 p95. The direction is always the
+   * same: a defence that actually works is worth most to whoever is shot at
+   * most, and that is the Bruiser, whose entire method is being in traffic. It
+   * ended up at 36-45% on every circuit while the Trickster fell to 24.
+   *
+   * Landing it needs per-class defensive VALUE tuning — charge duration or
+   * cooldown moved per class to cancel the gain — which is a measurement
+   * campaign, not a patch to this block. Shipping the behaviour without it
+   * trades a fault nobody reported for one that was reported in the same
+   * breath. Left alone deliberately; do not "fix" it without the sweep.
+   */
   // Incoming threat → defense
   let underFire = false;
   for (const o of all) {

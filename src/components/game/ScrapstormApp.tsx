@@ -545,12 +545,25 @@ export function ScrapstormApp() {
          * skip path and the natural end land in the same place — the card —
          * which is what stops a skipped victory from feeling like a bug.
          *
-         * A mission is won when its objectives resolved complete — which is
-         * NOT the same as finishing first, since a survival or escort run can
-         * be won from any place. Neither clip is a one-shot: winning and losing
-         * are the two things that happen most.
+         * A mission is won when its objectives resolved complete — which is NOT
+         * the same as finishing first, since a survival or escort run can be won
+         * from any place. Neither clip is a one-shot: winning and losing are the
+         * two things that happen most.
+         *
+         * BUT THE CLIP ALSO FIRES ON AN OUTRIGHT WIN, and that clause is a bug
+         * fix. Objectives alone meant crossing the line first and then watching
+         * a defeat reel because a secondary constraint — almost always a hull
+         * floor — had failed somewhere in lap two. That is not a rare corner:
+         * mission-smoke reports `hull_above` as the top blocker on most of the
+         * board. The card behind still reports the objectives honestly and the
+         * reward is still the objectives' to give; this is only about which
+         * two-second reel plays over a race the player just won on the road.
+         *
+         * Taking the flag is a victory. Being told otherwise by a video is what
+         * made the result logic read as broken.
          */
-        playCutscene(summary.outcome === "complete" ? "victory" : "defeat", () => {
+        const wonOutright = summary.place === 1;
+        playCutscene(summary.outcome === "complete" || wonOutright ? "victory" : "defeat", () => {
           setMissionResult({ def, summary, award });
         });
         if (award.beats.length > 0) setBeatQueue(award.beats);
