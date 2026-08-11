@@ -233,6 +233,26 @@ function pointsBackward(geo: THREE.BufferGeometry): boolean {
  * not a tighter percentile: these meshes are legitimately spiky (a rocket has a
  * nose, a mine has spikes) and clipping real extremities would sink the prop
  * into the bodywork instead, which is the same bug facing the other way.
+ *
+ * ── MEASURED, AND SMALLER THAN THE THEORY WANTED ─────────────────────
+ *
+ * scripts/check-weapon-bbox.mjs reads the source meshes and reports the strict
+ * box against the percentile box. The inflation is real, and it does differ per
+ * asset, but converted into finished centimetres it is modest:
+ *
+ *   ScrapMetalRocket        27.1%   11.4 cm
+ *   ImprovisedQuadLauncher   7.7%    4.7 cm
+ *   RustyIndustrialSawBlade  6.8%    2.4 cm
+ *   WastelandHeavyTurret     5.6%    2.3 cm
+ *   ImprovisedSpikedMine     3.6%    1.1 cm
+ *
+ * So this is worth fixing and is NOT on its own an explanation for hardware
+ * that reads as obviously detached: the two props that actually sit on a roof
+ * are out by 2.3cm and 4.7cm. The rocket's 11.4cm is the largest and it is a
+ * projectile, where the error shows up as the body sitting off-centre in its
+ * own trajectory rather than as a gap.
+ *
+ * If something still looks wrong on top of a car, look past this file.
  */
 function robustBox(geo: THREE.BufferGeometry): THREE.Box3 {
   const pos = geo.getAttribute("position") as THREE.BufferAttribute;
