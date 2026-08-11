@@ -93,6 +93,59 @@ export interface MusicContext {
   lapCount: number;
   finished: boolean;
   won: boolean;
+  /**
+   * What the race IS, and what it looks like out of the window.
+   *
+   * Both optional and both default to the plain race beds, so free play and
+   * every existing caller are unchanged. They exist because five finished
+   * tracks were shipped and never played: the score had a duel theme, a hunt
+   * theme, a night bed and a rain bed sitting in public/assets/audio/music with
+   * nothing in the code that could ever ask for them.
+   *
+   * Priority, when more than one applies: the MISSION KIND wins over the
+   * CONDITION. A duel in the rain is a duel — the thing the player is doing
+   * outranks the weather it is being done in — and stacking them is not
+   * possible with one bed anyway.
+   */
+  missionKind?: string | null;
+  /** "night" | "sunset" | ... — only night currently has its own bed. */
+  timeOfDay?: string | null;
+  /** Weather id. Rain and storm share the wet bed. */
+  weather?: string | null;
+}
+
+/**
+ * Which TRACK a state actually plays, once the race is taken into account.
+ *
+ * MUSIC_STATE_TRACK is the default map and stays the answer for everything that
+ * is not on a circuit — menu, garage, victory, defeat. This layer only ever
+ * re-points the three driving beds (grid, race, final), because those are the
+ * ones where a duel, a manhunt, a night or a downpour should not sound like a
+ * Tuesday afternoon heat.
+ *
+ * Kept separate from `musicStateFor` rather than folded into it because the two
+ * answer different questions and one of them is already load-bearing: the state
+ * decides transitions, ducking and the stinger (see MUSIC_TRANSITIONS), and a
+ * duel is dramaturgically still "the race" — same fade, same stinger, same
+ * promotion to `final` on the last lap. Only the audio differs. Adding
+ * `duel`/`hunt`/`night`/`rain` as STATES would have meant restating every one of
+ * those transition rules four times over and getting one of them wrong.
+ */
+export function trackFor(state: MusicState, c?: MusicContext): MusicId | null {
+  const base = MUSIC_STATE_TRACK[state];
+  if (!c) return base;
+  if (state !== "grid" && state !== "race" && state !== "final") return base;
+
+  // Mission kind first — what you are doing outranks the weather you do it in.
+  if (c.missionKind === "duel") return "duel";
+  if (c.missionKind === "hunt" || c.missionKind === "survival") return "hunt";
+
+  // Then the condition. Rain and storm share a bed; overcast is not weather
+  // enough to earn one and stays on the standard track.
+  if (c.weather === "wet" || c.weather === "storm") return "rain_race";
+  if (c.timeOfDay === "night") return "night_race";
+
+  return base;
 }
 
 /**

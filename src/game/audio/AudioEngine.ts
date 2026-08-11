@@ -661,11 +661,21 @@ class AudioEngine {
    * tempos: an unadorned crossfade between two unaligned drum kits is the single
    * most obvious way a soundtrack announces that it is a playlist.
    */
-  setMusicState(state: MusicState) {
-    if (state === this.musicState) return;
+  /**
+   * `pick` overrides which track the state plays — see `trackFor` in music.ts.
+   *
+   * The guard has to compare BOTH the state and the chosen track, not just the
+   * state as it used to. Once a duel, a manhunt, the rain and the night can each
+   * re-point the same three driving states at a different bed, "the state has
+   * not changed" stopped being the same statement as "the music has not
+   * changed", and comparing only the state would have left the standard race bed
+   * playing through every one of them.
+   */
+  setMusicState(state: MusicState, pick?: MusicId | null) {
+    const id = pick === undefined ? MUSIC_STATE_TRACK[state] : pick;
+    if (state === this.musicState && id === this.musicId) return;
     this.musicState = state;
     const tr = transitionFor(state);
-    const id = MUSIC_STATE_TRACK[state];
     if (!id) {
       this.stopMusic(tr.fade);
       return;
@@ -678,6 +688,9 @@ class AudioEngine {
       // transition is a once-per-scene event, not per-frame work.
       const target = state;
       setTimeout(() => {
+        // Still the same scene AND still wanting the same bed. Without the
+        // second half, a transition that started under one track could land
+        // after the pick had already moved on.
         if (this.musicState !== target) return;
         this.playMusic(id, tr.fade);
       }, tr.duckFirst * 1000);

@@ -102,6 +102,13 @@ type EngineKit = {
         | "pause"
         | "lap",
     ) => void;
+    /*
+     * The shell drives menu and garage music itself — AudioDriver only exists
+     * inside a mounted race scene, and the front screen has no scene at all.
+     * Only the two out-of-race states are ever passed from here; everything
+     * from the countdown on belongs to AudioDriver.
+     */
+    setMusicState: (state: "menu" | "garage") => void;
   };
   installAudioUnlock: () => () => void;
   snapshotHud: (s: SimState, mission?: MissionHud | null) => HudSlice;
@@ -464,15 +471,32 @@ export function ScrapstormApp() {
       }
       radioRef.current = radioRef.current.filter((r) => r.until > now).slice(-3);
       /*
-       * Throw the flag when the run is decided.
+       * Throw the flag when the run is WON. Never when it is lost.
        *
        * A survival mission is authored with a lap count chosen only to outlast
        * its own clock — The Gauntlet is six laps for a two-minute objective.
        * Without this the player wins at 2:00 and then drives four more laps of
-       * a race that no longer has a result in it.
+       * a race that no longer has a result in it. That is the case this exists
+       * for, and it is a completion.
+       *
+       * IT WAS ALSO FIRING ON FAILURE, which is a different thing entirely and
+       * a bad one. `resolvedAt` is set for any non-running status, so breaking a
+       * hull floor on lap one ended the race two and a half seconds later: the
+       * screen went to results with no flag, no placing and no way back onto the
+       * circuit. A secondary objective failing is not the end of a race — the
+       * race is still there, and the placing, the scrap and the rest of the
+       * field still are too. Confiscating it reads as the game crashing rather
+       * than as losing, which is exactly how it was reported.
+       *
+       * So a lost run keeps driving to the flag and the mission simply reports
+       * failed at the end. If the player would rather not finish it, Restart on
+       * the pause menu re-arms the same mission immediately (it rebuilds the
+       * MissionRun, not just the grid), and Retry on the results card does the
+       * same through beginRace.
        */
       if (
         run.resolvedAt !== null &&
+        run.status === "complete" &&
         sim.state.phase === "racing" &&
         now >= run.resolvedAt + RESOLVE_GRACE
       ) {
@@ -718,6 +742,33 @@ export function ScrapstormApp() {
   }, [pendingRace, kit]);
 
   const audio = () => kitRef.current?.audioEngine;
+
+  /*
+   * ── MENU AND GARAGE MUSIC ─────────────────────────────────────────────
+   *
+   * The music state machine is driven by AudioDriver, and AudioDriver is
+   * mounted by GameScene — which does not exist outside a race. Verified in the
+   * browser: the front screen has ZERO canvases. So `menu_anthem` and
+   * `garage_vibe` were mapped in MUSIC_STATE_TRACK, shipped in
+   * public/assets/audio/music, preloaded by the sample bank, and then never
+   * requested by anything, because the only component that could ask for them
+   * was not on screen at the only time they applied.
+   *
+   * Driven from the shell instead, which is mounted the whole time. Safe to
+   * call before the first gesture: the engine is locked until `unlock()` and
+   * `playMusic` parks the request in `pendingMusic` rather than dropping it, so
+   * the anthem starts on the first click instead of being lost to it.
+   *
+   * Guarded on the race phases so this never fights AudioDriver for the wheel
+   * once a race is up — that component owns everything from the countdown on.
+   */
+  useEffect(() => {
+    const a = audio();
+    if (!a) return;
+    if (shellPhase === "garage") a.setMusicState("garage");
+    else if (shellPhase === "menu") a.setMusicState("menu");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shellPhase, kit]);
 
   const onName = (n: string) => {
     setName(n);

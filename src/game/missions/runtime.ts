@@ -898,10 +898,28 @@ export function applyMissionEffects(
  * builds the grid (buildField reads BOT_NAMES at construction time, inside
  * startCountdown). Call this, then setPhase("countdown").
  */
+/*
+ * What kind of event is currently armed, for consumers that need the shape of
+ * the race without holding the run.
+ *
+ * A function rather than `export let`, for the reason this codebase has now
+ * been bitten by six times: an exported binding is live under real ESM and a
+ * SNAPSHOT under jiti's CJS transpile, so every headless check would read
+ * whatever it was at module init while armMission reported success. Same rule as
+ * `getWeatherId` next door — see AGENTS.md section 4.
+ */
+let activeKind: string | null = null;
+
+/** The armed mission's kind ("race", "duel", "hunt", "survival"...), or null. */
+export function getActiveMissionKind(): string | null {
+  return activeKind;
+}
+
 export function armMission(
   def: MissionDef,
   opts: { heatFloor?: number; fieldPace?: number } = {},
 ): MissionRun {
+  activeKind = def.kind;
   setActiveTrack(def.trackId);
   /*
    * Before anything reads it. `setWeather` bumps an epoch that the sky, grade
@@ -951,6 +969,7 @@ export function armMission(
 
 /** Hand the world back to free play. */
 export function disarmMission(): void {
+  activeKind = null;
   resetAiDirective();
   resetFieldRoster();
   // Free play is always the circuit as authored. Leaving a storm armed here is

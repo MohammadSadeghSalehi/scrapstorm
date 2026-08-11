@@ -41,7 +41,21 @@ export type MusicId =
   | "race_intensity"
   | "final_lap"
   | "victory"
-  | "defeat";
+  | "defeat"
+  /*
+   * The five below were generated, shipped into public/assets/audio/music, and
+   * then never referenced by anything — the state machine only ever asked for
+   * the seven above, so a third of the score has been sitting on disk unplayed.
+   * They are wired in music.ts: `board` under the Blacklist, `duel` and `hunt`
+   * for the two mission kinds whose whole point is that they are not a race,
+   * and `night_race` / `rain_race` for the conditions that already change how
+   * the car handles and should change what it sounds like too.
+   */
+  | "board"
+  | "duel"
+  | "hunt"
+  | "night_race"
+  | "rain_race";
 
 /**
  * Announcer lines (ElevenLabs), mirrors public/assets/audio/vo/manifest.json.
@@ -139,6 +153,19 @@ export function preloadSamples(ctx: AudioContext): Promise<void> {
     "final_lap",
     "victory",
     "defeat",
+    /*
+     * Preloaded like the rest. Each is ~1MB and they are fetched in parallel
+     * with everything else here, but more to the point a music track that
+     * arrives late does not pop in quietly — it is the loudest thing in the mix
+     * and it starts mid-phrase. The condition tracks in particular are needed
+     * exactly at the countdown, which is the one moment the loader is holding a
+     * screen up anyway.
+     */
+    "board",
+    "duel",
+    "hunt",
+    "night_race",
+    "rain_race",
   ];
   loading = Promise.all([
     ...sfx.map(async (id) => {

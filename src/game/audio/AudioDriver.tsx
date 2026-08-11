@@ -33,7 +33,10 @@ import {
   OPPONENT_VOICES,
   droneClassIndex,
 } from "./spatial";
-import { musicStateFor, type MusicContext } from "./music";
+import { musicStateFor, trackFor, type MusicContext } from "./music";
+import { getActiveMissionKind } from "../missions/runtime";
+import { getWeatherId } from "../world/weather";
+import { getTimeOfDayOverride } from "../world/environments";
 import type { VoiceId } from "./SampleBank";
 import type { GameEvent, PlayerInput, VehicleClassId } from "../types";
 import { FRAME } from "../world/framePriority";
@@ -531,7 +534,19 @@ export function AudioDriver({
     MUSIC_CTX.won = st.finishedOrder.length
       ? st.finishedOrder[0] === player.id
       : player.position === 1;
-    audioEngine.setMusicState(musicStateFor(MUSIC_CTX));
+    /*
+     * What the race is and what it looks like, so the five beds that were
+     * shipped-but-unreachable can be chosen. Read from the live modules rather
+     * than threaded through SimState: the mission runtime and the weather module
+     * both already own this and both are queried the same way everywhere else.
+     * `trackFor` falls back to the standard beds when none of them apply, so
+     * free play is byte-identical to before.
+     */
+    MUSIC_CTX.missionKind = getActiveMissionKind();
+    MUSIC_CTX.weather = getWeatherId();
+    MUSIC_CTX.timeOfDay = getTimeOfDayOverride();
+    const mstate = musicStateFor(MUSIC_CTX);
+    audioEngine.setMusicState(mstate, trackFor(mstate, MUSIC_CTX));
 
     if (st.phase === "countdown") {
       const cd = Math.ceil(st.countdown);
