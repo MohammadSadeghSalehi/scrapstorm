@@ -304,11 +304,43 @@ function snapshotMenu(state: SimState): SimState {
   };
 }
 
+/**
+ * One frame, or 50ms, whichever comes first.
+ *
+ * A BARE `requestAnimationFrame` IS NOT A DELAY, IT IS A DEPENDENCY ON BEING
+ * VISIBLE. Browsers do not schedule animation frames for a tab that is not
+ * compositing — backgrounded, minimised, occluded, or in a hidden embedded
+ * view — so `await new Promise(r => requestAnimationFrame(r))` does not resolve
+ * late, it does not resolve AT ALL until the tab comes back.
+ *
+ * That is a boot sequence that stops dead at 12% and never recovers: observed
+ * exactly that, pinned at "Race systems…" with no error, because the very first
+ * thing after the first progress report was this await. Switching tabs while
+ * the game loads is a completely ordinary thing to do, and the reward was a
+ * progress bar that never moved again.
+ *
+ * The frame is wanted — it lets the loading screen paint the label before the
+ * next import blocks the main thread — but it is a nicety, and a nicety must
+ * never be able to hold the boot hostage. The timer is the floor.
+ */
+function nextFrameOrTimeout(ms = 50): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(finish);
+    setTimeout(finish, ms);
+  });
+}
+
 async function loadEngine(
   onProgress: (pct: number, msg: string) => void,
 ): Promise<EngineKit> {
   onProgress(12, "Race systems…");
-  await new Promise((r) => requestAnimationFrame(() => r(null)));
+  await nextFrameOrTimeout();
 
   const [simMod, inputMod, metaHud] = await Promise.all([
     import("@/game/sim"),
@@ -702,7 +734,10 @@ export function ScrapstormApp() {
         setSceneEpoch(sim.worldEpoch);
         setKit(loaded);
         setEnginePct(100);
-        requestAnimationFrame(() => {
+        // Same hazard as the await in loadEngine: a bare rAF here would leave
+        // the canvas unmounted forever in a tab that is not compositing, so the
+        // engine would finish loading and the game would never appear.
+        void nextFrameOrTimeout().then(() => {
           if (bootGen.current === gen) setCanvasReady(true);
         });
       } catch (e) {
