@@ -555,12 +555,34 @@ export function stepMission(
         break;
       }
       case "survive_time": {
+        /*
+         * SURVIVING MEANS NOT BEING DESTROYED, not merely being present when
+         * the clock runs out.
+         *
+         * This used to read the timer and nothing else — not whether the player
+         * was alive, not whether they had been wrecked, not how many times. A
+         * player who was rammed into the scenery repeatedly, spent the closing
+         * seconds in the respawn state and finished last was handed the
+         * objective, and with it the mission, because the clock had expired
+         * while they were dead. Reported exactly that way: "I was last and it
+         * made me the winner".
+         *
+         * A wreck is recoverable in this game, which is why it is worth being
+         * explicit rather than leaning on the hull floor: `hull_above` catches
+         * this on the missions that carry one — hull reaches 0 before it reaches
+         * 15% — but a survival mission without a floor had nothing at all
+         * standing between "destroyed four times" and "objective met".
+         *
+         * `playerWrecks` is the same counter `no_wreck` reads, so the two agree
+         * on what a wreck is.
+         */
+        const wrecked = b.playerWrecks > 0;
         const left = o.seconds - run.elapsed;
         setState(
           st,
-          left <= 0 ? "met" : "pending",
-          run.elapsed / o.seconds,
-          fmtClock(Math.max(0, left)),
+          wrecked ? "failed" : left <= 0 ? "met" : "pending",
+          wrecked ? 0 : run.elapsed / o.seconds,
+          wrecked ? "destroyed" : fmtClock(Math.max(0, left)),
         );
         break;
       }
