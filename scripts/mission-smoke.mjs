@@ -24,6 +24,8 @@ const classes = await jiti.import("../src/game/classes.ts");
 const track = await jiti.import("../src/game/track.ts");
 const physics = await jiti.import("../src/game/physics.ts");
 const weather = await jiti.import("../src/game/world/weather/index.ts");
+// DRIFT.minSpeed, so the skidpad can tell a measured limit from the floor.
+const balance = await jiti.import("../src/game/balance.ts");
 
 const VERBOSE = process.argv.includes("--verbose");
 
@@ -1904,12 +1906,40 @@ section("weather");
    * constant, and balance-classes.mjs --weather will show it as win rate.
    */
   for (const wid of ["wet", "storm"]) {
-    const ratios = rows.map((r) => (100 * r[wid].grip) / r.dry.grip);
-    const spread = Math.max(...ratios) - Math.min(...ratios);
+    /*
+     * A reading sitting on DRIFT.minSpeed is the FLOOR, not a corner limit, and
+     * comparing it manufactures a class-specific weather effect that does not
+     * exist. The Trickster carries the lowest slideBias by design, so it is
+     * always the one that clamps first, and in a storm its true limit is below
+     * any speed worth modelling — at thirteen metres a second you are crawling,
+     * not cornering.
+     *
+     * Excluded rather than tolerated, and the exclusion is NOISY: if fewer than
+     * two classes are left the check fails outright, so this can never pass by
+     * clamping everything into silence — which is the failure mode that would
+     * make it worthless.
+     */
+    const FLOOR = balance.DRIFT.minSpeed * 1.02;
+    const usable = rows.filter((r) => r[wid].grip > FLOOR && r.dry.grip > FLOOR);
+    const clamped = rows.filter((r) => !(r[wid].grip > FLOOR && r.dry.grip > FLOOR));
+    if (clamped.length) {
+      console.log(
+        `     note: ${wid} excludes ${clamped.map((r) => r.cls).join(", ")} — at the ${balance.DRIFT.minSpeed} m/s drift floor, not a measured limit`,
+      );
+    }
+    ok(
+      usable.length >= 2,
+      `${wid}: at least two classes are above the drift floor to compare`,
+      `${usable.length} of ${rows.length} usable`,
+    );
+    const ratios = usable.map((r) => (100 * r[wid].grip) / r.dry.grip);
+    const spread = ratios.length
+      ? Math.max(...ratios) - Math.min(...ratios)
+      : 0;
     ok(
       spread <= 4,
       `${wid}: the corner-limit penalty is the same for all three classes`,
-      `${classes.CLASS_ORDER.map((c, i) => `${c} ${ratios[i].toFixed(0)}%`).join(", ")} — spread ${spread.toFixed(1)} pts`,
+      `${usable.map((r, i) => `${r.cls} ${ratios[i].toFixed(0)}%`).join(", ")} — spread ${spread.toFixed(1)} pts`,
     );
     const bRatios = rows.map((r) => (100 * r[wid].brake.dist) / r.dry.brake.dist);
     ok(

@@ -508,7 +508,10 @@ function GaragePanel({
                 Start race
               </button>
               <p className="mt-1.5 text-center font-mono text-[0.58rem] leading-relaxed text-muted">
-                A/D steer · W boost · Shift+steer drift · J fire · K def · L ult
+                {/* Read off input.ts, not off memory: W is throttle and BOOST
+                    is E/R. This line said "W boost" and sent players hunting
+                    for a nitro that was never on that key. */}
+                A/D steer · W gas · E boost · Shift+steer drift · J fire · K def · L ult
               </p>
             </div>
           </div>

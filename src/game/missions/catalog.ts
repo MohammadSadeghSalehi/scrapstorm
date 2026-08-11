@@ -89,6 +89,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Feed Bounty",
     kind: "hunt",
     trackId: "ash_spire",
+    timeOfDay: "sunset",
     laps: 3,
     brief: [
       "The Feed has painted one car red and set a price on it.",
@@ -109,6 +110,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "The Gauntlet",
     kind: "survival",
     trackId: "ash_spire",
+    weather: "overcast",
+    timeOfDay: "sunset",
     laps: 6,
     brief: [
       "Every crew still on the board wants your rank tonight.",
@@ -138,6 +141,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "The Squeeze",
     kind: "race",
     trackId: "cinder_bowl",
+    weather: "overcast",
     laps: 4,
     brief: ["Kidney loop, one real overtaking spot.", "Take the hairpin or take the hit."],
     objectives: [{ kind: "finish_place", place: 1 }],
@@ -150,6 +154,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Cull",
     kind: "elimination",
     trackId: "cinder_bowl",
+    timeOfDay: "night",
     laps: 8,
     brief: [
       "Every twenty seconds the Feed cuts the last car.",
@@ -194,6 +199,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Scrum",
     kind: "elimination",
     trackId: "foundry_pit",
+    timeOfDay: "sunset",
     laps: 10,
     brief: [
       "Six hundred metres of lap and two chokes to share.",
@@ -209,6 +215,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Piecework",
     kind: "hunt",
     trackId: "foundry_pit",
+    timeOfDay: "night",
     laps: 5,
     brief: ["Paid by the wreck tonight.", "Three of them. The bowls are wide; the chokes are not."],
     /*
@@ -231,6 +238,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Holdout",
     kind: "survival",
     trackId: "foundry_pit",
+    weather: "overcast",
+    timeOfDay: "night",
     laps: 12,
     brief: [
       "The Pit gate is shut and the bounty is live.",
@@ -255,6 +264,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "King of the Pit",
     kind: "race",
     trackId: "foundry_pit",
+    weather: "wet",
     laps: 8,
     brief: ["Lead. Keep leading.", "Forty-five seconds out front, total. They do not have to be consecutive."],
     objectives: [
@@ -272,6 +282,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Scrapline",
     kind: "race",
     trackId: "rustline",
+    timeOfDay: "sunset",
     laps: 4,
     brief: [
       "Narrowest road in the league and a slalom nobody likes.",
@@ -308,6 +319,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Courier",
     kind: "escort",
     trackId: "rustline",
+    weather: "wet",
     laps: 4,
     brief: [
       "Bex is running a load through the Rustline and the Feed knows it.",
@@ -349,6 +361,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Top End",
     kind: "race",
     trackId: "sable_run",
+    weather: "overcast",
     laps: 3,
     brief: ["Full-course heat. Weapons live.", "The crest goes light above about eighty. Be ready for it."],
     objectives: [{ kind: "finish_place", place: 1 }],
@@ -361,6 +374,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Convoy",
     kind: "escort",
     trackId: "sable_run",
+    timeOfDay: "sunset",
     laps: 3,
     brief: [
       "House cargo, House rules, House cut.",
@@ -385,6 +399,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Flyover",
     kind: "hunt",
     trackId: "sable_run",
+    timeOfDay: "night",
     laps: 3,
     brief: ["Two wrecks and the flag, in that order.", "The Feed wants the crest shot. Give them the crest shot."],
     objectives: [
@@ -402,6 +417,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Long Haul",
     kind: "race",
     trackId: "dead_mile",
+    timeOfDay: "sunset",
     laps: 2,
     brief: ["Out along the pipeline, up the grade, around the tanks, home.", "Twice. Pace yourself; nobody wins this in the first kilometre."],
     objectives: [{ kind: "finish_place", place: 2 }],
@@ -414,6 +430,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Iron Lung",
     kind: "race",
     trackId: "dead_mile",
+    weather: "overcast",
     laps: 2,
     brief: ["Same road. No repairs, no respawn worth having.", "Come back with a car."],
     objectives: [
@@ -430,6 +447,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Pipeline Work",
     kind: "hunt",
     trackId: "dead_mile",
+    timeOfDay: "night",
     laps: 2,
     /*
      * The catalogue's one wet event, and it is deliberately this one.
@@ -469,6 +487,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Last Call",
     kind: "elimination",
     trackId: "dead_mile",
+    weather: "storm",
+    timeOfDay: "night",
     laps: 4,
     brief: [
       "Long road, short list. One car drops every forty seconds.",
@@ -516,6 +536,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Glasswork",
     kind: "race",
     trackId: "cinder_bowl",
+    weather: "overcast",
     laps: 4,
     brief: [
       "Win it, and bring the panels back on it.",
@@ -542,6 +563,7 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Hold the Line",
     kind: "survival",
     trackId: "ash_spire",
+    timeOfDay: "night",
     // Ten laps of the Spire runs about 140 seconds, and seventy of those have to
     // be spent at the front. Seven laps was tried and measured at 98s — asking
     // for 71% of the whole race is not "hold a position", it is "win by a lap".
@@ -586,6 +608,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Overtime",
     kind: "hunt",
     trackId: "foundry_pit",
+    weather: "wet",
+    timeOfDay: "sunset",
     /*
      * Eight, so the flag falls well after the hundred-second deadline — a race
      * that ends first would make the deadline decorative and the mission a
@@ -628,6 +652,8 @@ export const EVENT_MISSIONS: MissionDef[] = [
     name: "Widowmaker",
     kind: "survival",
     trackId: "dead_mile",
+    weather: "storm",
+    timeOfDay: "night",
     /*
      * Four laps for a hundred-and-fifty-second clock.
      *

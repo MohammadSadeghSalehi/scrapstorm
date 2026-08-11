@@ -18,6 +18,19 @@ import type { VehicleClassId } from "../types";
 // The renderer-free half of weather only. `world/weather/index` exists to make
 // that importable from the sim graph — do not reach past it to RainCurtain.
 import type { WeatherId } from "../world/weather";
+/*
+ * TYPE-ONLY, and it has to stay that way.
+ *
+ * environments/variants.ts imports `three`, so a value import here would pull
+ * the renderer into the sim graph and break every headless check — the same
+ * trap world/weather/index.ts exists to route around. A type import erases
+ * completely, so this costs nothing at runtime.
+ *
+ * Unlike weather, the hour is applied by the APP layer rather than by
+ * armMission: it has no physics term at all, so the sim never needs to know
+ * about it. See beginRace in ScrapstormApp.
+ */
+import type { TimeOfDayId } from "../world/environments/variants";
 
 /** Presentation grouping — icon, colour, and how the brief is worded. */
 export type MissionKind =
@@ -236,6 +249,15 @@ export interface MissionDef {
    * owns the grip terms; the renderer reads the same id back out for the sky.
    */
   weather?: WeatherId;
+  /**
+   * The hour this event runs at. Omitted means the circuit's own default.
+   *
+   * Purely a look — `TIMES_OF_DAY` swaps light, sky, fog and grade and touches
+   * no physics term, which is exactly why it is applied renderer-side and why
+   * it is safe to hang on any event without re-measuring balance. A night race
+   * is the same road; it is the *reading* of the road that changes.
+   */
+  timeOfDay?: TimeOfDayId;
   /** Requires this many markers to appear on the board. */
   requiresMarkers?: number;
   /**

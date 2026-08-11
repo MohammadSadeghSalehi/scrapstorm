@@ -138,12 +138,55 @@ export const HANDLING = {
  * something you can place rather than something you sit through.
  */
 export const DRIFT = {
-  /** m/s floor. Below this a held lock is a manoeuvre, not a slide. */
-  minSpeed: 16,
+  /**
+   * m/s floor. Below this a held lock is a manoeuvre, not a slide.
+   *
+   * 13, down from 16, because 16 was binding on the physics and not just on the
+   * measurement. The Trickster carries the lowest slideBias in the roster by
+   * design, so it has the lowest breakaway speed, and a storm takes another 30%
+   * off it — which put its limit UNDER the floor and pinned it at exactly 16.0
+   * in both wet and storm. A clamp is not a limit: the car simply could not
+   * break away in the rain at any speed it could hold through a wet corner.
+   *
+   * That was already true at breakLoad 0.62 (storm limit ~16.3 against a 16.0
+   * floor) and is the reason the weather ratios had so little headroom. Still
+   * comfortably above `sustainSpeed` (11), so the enter-high/hold-lower
+   * hysteresis is intact.
+   */
+  minSpeed: 13,
   /** |steer| that counts as "held". Below 0.6x of it the hold timer unwinds. */
   steerMin: 0.5,
-  /** LOAD at which the tyres are exactly at the limit. */
-  breakLoad: 0.62,
+  /**
+   * LOAD at which the tyres are exactly at the limit.
+   *
+   * 0.45, down from 0.62, and the size of that step is the whole story.
+   *
+   * The complaint was that the car never breaks away on a sharp bend. It does —
+   * the skidpad puts the dry limit at 45/40/32 m/s (interceptor/bruiser/
+   * trickster) — but those are SWEEPER speeds, and a sharp bend is taken at
+   * twenty-something, so in practice the automatic drift only ever appeared on
+   * the fastest corners in the game. A full-lock corner at 30 m/s measures a
+   * peak load of 0.404 against a 0.62 threshold: close, and always short.
+   *
+   * The first cut at this took it to 0.36 and that was too far. Breakaway
+   * collapsed onto DRIFT.minSpeed — the skidpad reported 16.0 m/s for the
+   * bruiser in BOTH wet and storm, saturating against the floor — and a car
+   * that lets go at sixteen is sliding everywhere, not on the bends you meant.
+   * It also broke the per-class weather ratios (21.5 and 28.4 points of spread
+   * against a 4-point bar) because a clamp compresses the three classes by
+   * different amounts.
+   *
+   * 0.45 moves onset to roughly 33/29/23 m/s, which puts it inside the speed a
+   * real corner is actually taken at while leaving daylight above the floor for
+   * the weather ratios to stay parallel.
+   *
+   * Bots are unaffected at any value: `aiEffect` is 0, so the state machine
+   * runs for them and changes nothing. What the threshold really calibrates is
+   * the STEERING RAMP — `playerSteerCmd` eases a human's lock in over a couple
+   * hundred milliseconds while aiInput commands it on the tick, so the same
+   * number is easy for a bot and hard for a person.
+   */
+  breakLoad: 0.45,
   /** Seconds of sustained lock needed AT the limit... */
   holdBase: 0.55,
   /** ...and once `overFull` past it. */

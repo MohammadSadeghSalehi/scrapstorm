@@ -57,6 +57,13 @@ import { FRAME } from "./framePriority";
 import { PhysicsPropsView } from "./PhysicsPropsView";
 import { SceneryDecor, buildDecorList } from "./SceneryDecor";
 import { getActiveEnvironment } from "./environments";
+/*
+ * Re-exported so the app shell can set the hour without importing
+ * environments/ itself — that module imports `three`, and ScrapstormApp is the
+ * eagerly-loaded half of the split. Anything already inside GameScene has paid
+ * for three; the shell has not, and must not.
+ */
+export { setTimeOfDay } from "./environments";
 import { VfxScene } from "./vfx/VfxScene";
 import { WeaponMounts } from "./WeaponMounts";
 import type { PostFxInputs } from "./PostFX";

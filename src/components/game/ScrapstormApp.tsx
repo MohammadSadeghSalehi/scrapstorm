@@ -80,6 +80,8 @@ type CanvasProps = {
 };
 
 type EngineKit = {
+  /** null restores the circuit's authored hour. See beginRace. */
+  setTimeOfDay: (id: "default" | "sunset" | "night" | null) => void;
   GameCanvas: ComponentType<CanvasProps>;
   wireControlsTest: (sim: GameSimulation, input: InputController) => void;
   GameSimulation: new (
@@ -316,6 +318,13 @@ async function loadEngine(
   ]);
   onProgress(95, "Ready");
   return {
+    /*
+     * Carried on the kit, not imported at the top of this file: it lives in
+     * environments/variants.ts, which imports `three`, and this shell is the
+     * eagerly-loaded half that must not pull the renderer into the initial
+     * bundle. sceneMod has already paid for three by the time we are here.
+     */
+    setTimeOfDay: sceneMod.setTimeOfDay,
     GameCanvas: sceneMod.GameCanvas,
     wireControlsTest: sceneMod.wireControlsTest,
     GameSimulation: simMod.GameSimulation,
@@ -566,6 +575,13 @@ export function ScrapstormApp() {
         saveMeta(next);
         setMeta(next);
         sim.state.scrapEarned = earned;
+        /*
+         * A free race got NO result clip at all, which is why the two paths
+         * looked inconsistent: a mission ended on a victory or a defeat and a
+         * quick heat just stopped. Here the verdict is simply the finishing
+         * position — there are no objectives to satisfy — so a podium is a win.
+         */
+        playCutscene(place === 1 ? "victory" : "defeat", () => {});
       }
       setMenuState(snapshotMenu(sim.state));
     }
@@ -931,6 +947,20 @@ export function ScrapstormApp() {
             runRef.current = null;
             missionDefRef.current = null;
           }
+          /*
+           * The hour, applied HERE rather than in armMission.
+           *
+           * environments/variants.ts imports `three`, so armMission — which
+           * runs headless in mission-smoke — cannot reach it. The hour has no
+           * physics term, so nothing in the sim needs it; this is the right
+           * side of the line for it to live on.
+           *
+           * Always set, `null` for free play and for events that do not ask,
+           * or the previous mission's night would follow the player onto a
+           * circuit authored for daylight — the same leak `setWeather("dry")`
+           * closes for rain.
+           */
+          k.setTimeOfDay(def?.timeOfDay ?? null);
           radioRef.current = [];
           /*
            * The cold open plays BEFORE the countdown starts, not over it.
@@ -1233,14 +1263,22 @@ export function ScrapstormApp() {
         CutsceneLoop fails silently, so a missing file yields a plain menu
         rather than a broken one.
       */}
-      {!inRace && (shellPhase === "menu" || shellPhase === "garage") && (
-        <CutsceneLoop
-          id={shellPhase === "garage" ? "garage" : "menu-loop"}
-          // Was 0.4, which read as a stain behind the panels rather than as
-          // footage. The menu panels carry their own dark backing, so the
-          // backdrop can sit much higher without costing any legibility.
-          opacity={0.85}
-        />
+      {/*
+        MENU ONLY, AND FULLY OPAQUE. Both halves of that are bug fixes.
+
+        This used to mount in the garage too, which put the backdrop video ON
+        TOP of the very car the garage exists to show — the canvas is under
+        every overlay, so a "backdrop" here is really a curtain. The garage now
+        has no video and the showcase car is the picture.
+
+        And it ran at 0.85, which left the menu's rotating showcase car ghosting
+        through the remaining fifteen percent: a car turning slowly behind the
+        cold-open footage, which reads as a compositing fault rather than as
+        depth. Opacity 1 covers it. The panels carry their own dark backing, so
+        nothing needed the video dimmed for legibility in the first place.
+      */}
+      {!inRace && shellPhase === "menu" && (
+        <CutsceneLoop id="menu-loop" opacity={1} />
       )}
 
       <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(10,10,11,0.55)_100%)]" />
