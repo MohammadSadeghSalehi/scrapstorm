@@ -117,7 +117,22 @@ function variantKey(classId: VehicleClassId, vehicleId: string): string {
 }
 
 function roofOf(v: VehicleState): RoofProfile {
-  return ROOF[variantKey(v.classId, v.id)] ?? ROOF_FALLBACK[v.classId];
+  /*
+   * The player is always in the class's CANONICAL body, never a hashed variant
+   * — GltfCar picks `hero ? MODEL_URL[class] : variantFor(class, id)` so the
+   * class stays recognisable. This mirror hashed unconditionally, so it agreed
+   * with the renderer only by coincidence: FNV("player") % 2 happens to be 0,
+   * which is index 0, which is the canonical car.
+   *
+   * That coincidence is worth exactly nothing. Rename the player vehicle id,
+   * add a third body to any class, or change the hash, and the mount is
+   * suddenly measured against the wrong roof — on the Trickster that is
+   * CustomWidebodyHatchback (1.21m) against ArmoredBattleCar (2.18m), very
+   * nearly a metre of daylight under a turret on the one car the player is
+   * looking at.
+   */
+  const key = v.isPlayer ? VARIANT_KEYS[v.classId][0]! : variantKey(v.classId, v.id);
+  return ROOF[key] ?? ROOF_FALLBACK[v.classId];
 }
 
 /**

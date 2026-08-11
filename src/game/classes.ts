@@ -123,6 +123,22 @@ import type { VehicleClassDef, VehicleClassId } from "./types";
  * engine note, camera FOV at speed, what the speedometer reads — not this
  * number. Changing it here has been tried three ways and costs the game its
  * balance every time.
+ *
+ * ── DURABILITY: HULL x1.22, DAMAGE x1.12 ─────────────────────────────
+ *
+ * 145/215/192 -> 177/262/234 and 16/34/21 -> 18/38/24. Cars were still being
+ * cooked faster than a player can learn a circuit, so every fight is now about
+ * 9% longer end to end.
+ *
+ * Both columns move, and by the SAME ratio within each column, which is the
+ * only reason this is safe to do without a re-tune: balance here is a function
+ * of the ratios between the classes, and scaling a column uniformly leaves
+ * every one of them untouched. Raising hull ALONE is not neutral and has the
+ * receipts to prove it — +45% hull on its own once took the Bruiser from 34.5%
+ * to 13% and blew the spread to 23.6, because a longer fight is worth less than
+ * a faster lap and the class that wins by fighting pays for the difference.
+ * Damage rises alongside it at a slightly lower rate so the net is more
+ * tolerance rather than a different game.
  */
 export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
   interceptor: {
@@ -146,7 +162,7 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
      * cannot survive it. Ratios between the classes are preserved, so nothing
      * in the balance sweep moves; everything simply lasts longer.
      */
-    health: 145,
+    health: 177,
     primaryCooldown: 0.2,
     /*
      * Damage rises WITH hull, but not as fast.
@@ -160,7 +176,7 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
      * 12% longer, which is the durability that was asked for, without quietly
      * converting the game into a pure pace contest.
      */
-    primaryDamage: 16,
+    primaryDamage: 18,
     primarySpeed: 110,
     // Longest reach in the game. Being able to open fire before anyone else can
     // answer is what the thin hull is buying.
@@ -197,13 +213,13 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     grip: 0.82,
     slideBias: 1.18,
     mass: 1.55,
-    health: 215,
+    health: 262,
     // Slow, heavy, and it hurts: one hit is worth two Interceptor bolts. But
     // 42 DPS against the Interceptor's 60 and half the reach — the Bruiser is
     // not the damage class, it is the class that is still there at the flag.
     // Dropping this from 34 at 0.48s is what took its win rate from 51% to 35%.
     primaryCooldown: 0.62,
-    primaryDamage: 34,
+    primaryDamage: 38,
     primarySpeed: 78,
     primaryRange: 36,
     defenseCooldown: 5.4,
@@ -256,9 +272,9 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
     grip: 0.88,
     slideBias: 0.7,
     mass: 0.95,
-    health: 192,
+    health: 234,
     primaryCooldown: 0.28,
-    primaryDamage: 21,
+    primaryDamage: 24,
     primarySpeed: 82,
     primaryRange: 54,
     defenseCooldown: 5.6,

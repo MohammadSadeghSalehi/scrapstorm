@@ -589,12 +589,45 @@ class AudioEngine {
       void this.ctx.resume();
     }
     this.unlocked = true;
+    /*
+     * Replay whatever was asked for while we were locked.
+     *
+     * The branch above handles the FIRST unlock, where the sample bank is still
+     * decoding and its `.then` does the replay. This handles every other route
+     * in: a context that already existed, a bank already decoded, an unlock
+     * arriving from the visibility handler rather than a click. Without it the
+     * menu bed would still be dropped on any path that did not happen to
+     * construct the context on this call.
+     */
+    const pending = this.pendingMusic;
+    if (pending && this.samplesReady) {
+      this.pendingMusic = null;
+      this.playMusic(pending.id, pending.fade);
+    }
   }
 
   /** Crossfade looped music beds (menu / race / victory) */
   playMusic(id: MusicId, fade = 0.6) {
-    if (!this.ctx || !this.unlocked || !this.musicGain) return;
     if (this.musicId === id && this.musicTrack) return;
+    /*
+     * LOCKED IS A REASON TO REMEMBER, NOT A REASON TO DROP.
+     *
+     * This used to `return` outright when the engine had no context or had not
+     * been unlocked, and that is why the menu was silent. Autoplay policy means
+     * the engine is ALWAYS locked on the front screen — that is the one place
+     * where no gesture has happened yet — so the anthem was requested exactly
+     * once, discarded, and never asked for again, because a menu does not
+     * change state while you look at it.
+     *
+     * The `pendingMusic` slot below already existed for the neighbouring case
+     * (context up, sample bank still decoding). It just was not reached for the
+     * case that actually mattered. Both now park the request, and `unlock`
+     * replays it.
+     */
+    if (!this.ctx || !this.unlocked || !this.musicGain) {
+      this.pendingMusic = { id, fade };
+      return;
+    }
     // Don't claim the id until we know we can actually play it, otherwise a
     // request made before the bank decoded would be remembered as "playing"
     // and never retried.

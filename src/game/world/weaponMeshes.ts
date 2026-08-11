@@ -213,6 +213,51 @@ function pointsBackward(geo: THREE.BufferGeometry): boolean {
  * of by the missing-attribute default of (0,0,0). See the header: this is the
  * difference between an authored body rendering and rendering solid black.
  */
+/**
+ * Bounding box of the MESH THE EYE SEES, discarding outlier vertices.
+ *
+ * These assets are surface reconstructions: thousands of disconnected shells,
+ * fewer triangles than vertices, and — the part that matters here — the odd
+ * speck floating clear of the body that no amount of decimation removes,
+ * because meshoptimizer preserves component count. `computeBoundingBox` is a
+ * strict min/max, so one such speck 40cm above a turret makes the box 40cm
+ * taller than the turret.
+ *
+ * That is what put hardware in the air. WeaponMounts seats a prop by adding
+ * HALF THE BOX HEIGHT to the roof, which is exactly right for a mesh whose box
+ * is its silhouette and wrong by half the error for one whose box is inflated
+ * by debris — and since each asset was reconstructed separately, it is wrong by
+ * a different amount on each, which is why only some of them looked wrong.
+ *
+ * A 1st/99th percentile box ignores the specks and keeps the body. Deliberately
+ * not a tighter percentile: these meshes are legitimately spiky (a rocket has a
+ * nose, a mine has spikes) and clipping real extremities would sink the prop
+ * into the bodywork instead, which is the same bug facing the other way.
+ */
+function robustBox(geo: THREE.BufferGeometry): THREE.Box3 {
+  const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+  const n = pos.count;
+  if (n === 0) {
+    geo.computeBoundingBox();
+    return geo.boundingBox!.clone();
+  }
+  const axis = (get: (i: number) => number) => {
+    const v = new Float64Array(n);
+    for (let i = 0; i < n; i++) v[i] = get(i);
+    v.sort();
+    const lo = v[Math.floor((n - 1) * 0.01)]!;
+    const hi = v[Math.ceil((n - 1) * 0.99)]!;
+    return [lo, hi] as const;
+  };
+  const [x0, x1] = axis((i) => pos.getX(i));
+  const [y0, y1] = axis((i) => pos.getY(i));
+  const [z0, z1] = axis((i) => pos.getZ(i));
+  return new THREE.Box3(
+    new THREE.Vector3(x0, y0, z0),
+    new THREE.Vector3(x1, y1, z1),
+  );
+}
+
 function addWhiteColors(geo: THREE.BufferGeometry): void {
   if (geo.getAttribute("color")) return;
   const count = geo.getAttribute("position").count;
@@ -253,8 +298,10 @@ export function loadWeaponGeometry(
         if (spec.align === "x") geo.rotateY(Math.PI / 2);
         else if (spec.align === "y") geo.rotateX(-Math.PI / 2);
 
-        geo.computeBoundingBox();
-        const bb = geo.boundingBox!;
+        // Robust, not strict — see robustBox. Centring on a box inflated by
+        // reconstruction debris offsets the visible body inside its own
+        // instance, on top of getting the height wrong.
+        const bb = robustBox(geo);
         const c = bb.getCenter(new THREE.Vector3());
         // Centre on the origin: an instance is positioned at the projectile's
         // centre, and an off-centre body would orbit it as the instance turns.
@@ -278,7 +325,9 @@ export function loadWeaponGeometry(
         addWhiteColors(geo);
         geo.computeBoundingSphere();
         geo.computeBoundingBox();
-        sizes.set(id, geo.boundingBox!.getSize(new THREE.Vector3()));
+        // The size WeaponMounts seats against, measured the same robust way.
+        // Reporting the strict box here would undo the centring above.
+        sizes.set(id, robustBox(geo).getSize(new THREE.Vector3()));
         cache.set(id, geo);
         resolve(geo);
       },
