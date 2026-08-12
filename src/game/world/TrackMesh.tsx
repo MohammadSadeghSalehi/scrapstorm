@@ -26,7 +26,12 @@ import {
   type RoadSegment,
   type RoadBuildResult,
 } from "./culling";
-import { RoadsideFurniture, ScatterField, VergeDrift } from "./scatter";
+import {
+  RoadsideFurniture,
+  RoadsideLighting,
+  ScatterField,
+  VergeDrift,
+} from "./scatter";
 import { Setpieces } from "./setpieces";
 import { getActiveEnvironment } from "./environments";
 import type { SurfaceDef } from "./environments";
@@ -456,13 +461,21 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
       <GltfDebris />
 
       {/*
-        World density (punch list §1.2). Six draw calls between them: three
-        instanced desert fields, guard rail, sponsor hoardings, and the sand
-        drift that ties the tarmac edge into the sand. Mounted last so the
-        blended drift sorts after the opaque road it sits on.
+        World density (punch list §1.2). Ten draw calls between them at the high
+        tier: four instanced desert fields (rock, scrub, scrap drift, cactus),
+        guard rail, sponsor hoardings, chevron boards, lamp columns, the
+        catenary between them, the lamps' additive glow, and the sand drift that
+        ties the tarmac edge into the sand. Mounted last so the blended drift
+        sorts after the opaque road it sits on.
+
+        The low tier draws exactly one of the new ones — the lamp columns, which
+        are the only new family with a collider and therefore the only one that
+        cannot be thinned away without leaving something solid and invisible.
+        See RoadsideLighting for the argument.
       */}
       <ScatterField />
       <RoadsideFurniture />
+      <RoadsideLighting />
 
       {/*
         Per-circuit built structure — the thing that makes a circuit a place

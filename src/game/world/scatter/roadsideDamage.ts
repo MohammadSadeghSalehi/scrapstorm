@@ -21,11 +21,18 @@
  */
 const railDown = new Set<number>();
 const boardDown = new Set<number>();
+const lampDown = new Set<number>();
 let version = 0;
 
 export function downRailModule(i: number): void {
   if (railDown.has(i)) return;
   railDown.add(i);
+  version += 1;
+}
+
+export function downLamp(i: number): void {
+  if (lampDown.has(i)) return;
+  lampDown.add(i);
   version += 1;
 }
 
@@ -43,6 +50,10 @@ export function isBoardDown(i: number): boolean {
   return boardDown.size > 0 && boardDown.has(i);
 }
 
+export function isLampDown(i: number): boolean {
+  return lampDown.size > 0 && lampDown.has(i);
+}
+
 /**
  * Bumped on each new casualty.
  *
@@ -56,8 +67,9 @@ export function roadsideDamageVersion(): number {
 
 /** Call when a grid is built — the rail stands again. */
 export function resetRoadsideDamage(): void {
-  if (railDown.size === 0 && boardDown.size === 0) return;
+  if (railDown.size === 0 && boardDown.size === 0 && lampDown.size === 0) return;
   railDown.clear();
   boardDown.clear();
+  lampDown.clear();
   version += 1;
 }

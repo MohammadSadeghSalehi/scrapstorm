@@ -60,12 +60,14 @@ import { spawnDebrisBurst } from "./world/debris";
 import { linkedRuns, meanSpacing } from "./world/scatter/placement";
 import {
   downBoard,
+  downLamp,
   downRailModule,
   resetRoadsideDamage,
 } from "./world/scatter/roadsideDamage";
 import {
   BOARD_CAPSULE_R,
   BOARD_HALF_X,
+  LAMP_CAPSULE_R,
   RAIL_CAPSULE_R,
   roadsideLayout,
 } from "./world/scatter/roadsideLayout";
@@ -347,6 +349,25 @@ function familyColliders(family: SetpieceFamily, out: StaticCollider[]): void {
  */
 const RAIL_BREAK_SPEED = 9;
 const BOARD_BREAK_SPEED = 2.5;
+/**
+ * Lamp columns, and why they are the ONE thing here that shears without
+ * resisting.
+ *
+ * A highway lighting column is not incidentally frangible, it is REQUIRED to be:
+ * the whole point of a shear coupling at the base is that the column separates
+ * and passes over the car instead of stopping it, because a rigid 8m mast is
+ * lethal. That is a design property of the real object, so `resistOnBreak` is
+ * false — the same setting the hoardings get, for a related reason. Charging a
+ * car the rail's 92% of its speed for a post engineered to come off its base
+ * would be the identical complaint this pass answers, only inverted.
+ *
+ * 4 m/s, not the hoarding's 2.5: a steel column is not plywood, and the band
+ * below the threshold is what stops a car creeping through an intact one. And
+ * unlike the rail there is no cascade — the columns stand 30m apart, and the
+ * catenary between two of them going down when one does is a RENDERER concern
+ * (see RoadsideLighting), not a second collider failing.
+ */
+const LAMP_BREAK_SPEED = 4;
 
 /**
  * Metres of rail either side of the impact that fail with it.
@@ -420,6 +441,35 @@ function roadsideColliders(out: StaticCollider[]): void {
       destroyed: false,
     });
   }
+
+  /*
+   * Lamp columns. A circle, which a capsule expresses as a zero-length segment.
+   *
+   * The renderer thins these by DRAW RANGE and never by density, and that is
+   * what makes it safe for them to be solid on a tier that barely draws them:
+   * a density prefix would leave the back of the list invisible and collidable
+   * — the invisible wall BOARD_DENSITY's note is about — whereas a range cut
+   * can only ever hide something further away than the car, and anything close
+   * enough to hit is by definition close enough to draw.
+   */
+  for (let i = 0; i < layout.lamps.length; i++) {
+    const l = layout.lamps[i]!;
+    out.push({
+      x0: l.x,
+      z0: l.z,
+      x1: l.x,
+      z1: l.z,
+      r: LAMP_CAPSULE_R,
+      family: "lampPost",
+      stamp: 0,
+      breakAt: LAMP_BREAK_SPEED,
+      module: i,
+      run: -1,
+      resistOnBreak: false,
+      y: l.y,
+      destroyed: false,
+    });
+  }
 }
 
 /**
@@ -434,6 +484,7 @@ function fell(c: StaticCollider): void {
   if (c.destroyed) return;
   c.destroyed = true;
   if (c.family === "guardRail") downRailModule(c.module);
+  else if (c.family === "lampPost") downLamp(c.module);
   else downBoard(c.module);
 }
 
@@ -816,14 +867,16 @@ export function capsuleContact(
     if (qdx * qdx + qdz * qdz < 4) {
       const velN = liveProbe.vx * contact.nx + liveProbe.vz * contact.nz;
       if (velN > c.breakAt) {
-        const rail = c.family === "guardRail";
+        // Armco and a sheared lamp column are both heavy: slabs and steel that
+        // go where the car was going, low spin, and stay put afterwards. A
+        // hoarding is sheet material that planes away, and it is hit two metres
+        // higher because at car height a board is only its legs.
+        const heavy = c.family === "guardRail" || c.family === "lampPost";
         const spread = breakRoadside(c, px, pz);
         spawnDebrisBurst(
-          // Armco goes where the car was going (slabs, low spin, they stay put
-          // afterwards); a hoarding is sheet material that planes away.
-          rail ? "barrier" : "panel",
+          heavy ? "barrier" : "panel",
           px,
-          c.y + (rail ? 0.9 : 2),
+          c.y + (heavy ? 0.9 : 2),
           pz,
           liveProbe.vx,
           liveProbe.vz,

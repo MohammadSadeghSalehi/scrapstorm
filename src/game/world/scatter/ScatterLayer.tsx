@@ -80,6 +80,20 @@ export function ScatterLayer({
     // Nothing is drawn until the first cull runs, so a layer never flashes at
     // full density on the frame it mounts.
     m.count = 0;
+    /*
+     * A layer with nothing to draw is switched OFF, not merely emptied.
+     *
+     * `renderInstances` early-returns on a count of zero, so an empty layer
+     * issues no draw — but three has already traversed it, tested it against
+     * the frustum, pushed it onto the render list, bound its program and
+     * uploaded its uniforms by then. `projectObject` bails on `visible === false`
+     * before any of that. ScatterField's own note calls a zero-count layer "a
+     * draw call's worth of state setup for nothing" and avoids it by not
+     * mounting empty fields at all; that only works for a layer that is empty
+     * for the whole circuit. This is the same saving for a layer that is empty
+     * because of where the camera is, or because the tier switched it off.
+     */
+    m.visible = false;
     return m;
   }, [data]);
 
@@ -131,6 +145,7 @@ export function ScatterLayer({
 
     if (n === 0) {
       mesh.count = 0;
+      mesh.visible = false;
       return;
     }
 
@@ -173,6 +188,7 @@ export function ScatterLayer({
     }
 
     mesh.count = k;
+    mesh.visible = k > 0;
     if (k > 0) {
       // Upload the packed prefix only. Without this every repack pushes the
       // full buffer, which for the scrub field is ~140KB a go for a few hundred

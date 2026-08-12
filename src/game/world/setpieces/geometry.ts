@@ -33,7 +33,12 @@
  * tinting that lets one material draw a dark footing and a bright coping.
  */
 import * as THREE from "three";
-import { coloredBox, mergeOrThrow } from "../scatter/geometry";
+import {
+  coloredBox,
+  facetedRock,
+  mergeOrThrow,
+  paintVertices,
+} from "../scatter/geometry";
 import type { SetpieceShape } from "./types";
 
 type Rgb = [number, number, number];
@@ -56,6 +61,45 @@ function part(
   if (rotY) g.rotateY(rotY);
   g.translate(pos[0], pos[1], pos[2]);
   return g;
+}
+
+/**
+ * A warped rock lump — the natural-form counterpart to `part`.
+ *
+ * `part` is right for everything anybody built and wrong for everything nobody
+ * did, and this file had been using it for both. A box is a wall, a container, a
+ * pylon or a girder; it is not a boulder, a spoil heap or a basalt remnant, and
+ * the difference is not subtle at 20 triangles because the eye reads a hard 90°
+ * silhouette edge as "manufactured" before it reads anything else.
+ *
+ * Same primitive the desert boulders are made of (`facetedRock`), so a spire in
+ * the mid ground and the gravel at your wheels are the same rock.
+ *
+ * `paint` is a function of the part's LOCAL y after placement, so a caller can
+ * put contact darkening at the bottom of the lump and a sun-caught face at the
+ * top without knowing how the warp happened to land.
+ */
+function lump(
+  seed: number,
+  size: [number, number, number],
+  pos: [number, number, number],
+  paint: (y: number) => Rgb,
+  opts: { rot?: [number, number, number]; squashY?: number; lo?: number; range?: number } = {},
+): THREE.BufferGeometry {
+  const g = facetedRock(seed, {
+    squashY: opts.squashY ?? 1,
+    lo: opts.lo ?? 0.58,
+    range: opts.range ?? 0.72,
+  });
+  g.scale(size[0], size[1], size[2]);
+  const rot = opts.rot;
+  if (rot) {
+    g.rotateX(rot[0]);
+    g.rotateY(rot[1]);
+    g.rotateZ(rot[2]);
+  }
+  g.translate(pos[0], pos[1], pos[2]);
+  return paintVertices(g, (_x, y) => paint(y));
 }
 
 /**
@@ -264,16 +308,55 @@ function craneArm(): THREE.BufferGeometry {
  * These sit 100-230m out, far enough that they never pass close, and they exist
  * for one reason — with nothing between the car and the ridge there is no
  * parallax, and with no parallax a 400m-wide playa and a 4km one look identical.
+ *
+ * ── this was four boxes, and that was the bug ─────────────────────────
+ *
+ * The rest of this file is boxes because the rest of this file is things people
+ * welded. A remnant is not. Four axis-aligned cuboids with a whole-object yaw —
+ * every face still vertical, every silhouette edge still a hard right angle —
+ * is the single most conspicuous "primitive mesh" in the world, and it was
+ * conspicuous in the worst available place: sixteen instances at up to 1.9x
+ * scale, drawn out to 460m, on the one circuit that has nothing else to look at
+ * and whose entire job is to make you believe in the distance.
+ *
+ * Now four warped lumps of the same primitive the desert boulders use, stacked
+ * with generous overlap so the joins are inside the solid, each yawed and
+ * tilted independently. 80 triangles against the boxes' 48 — 1,280 against 768
+ * across the circuit's sixteen instances, on a family that is already the only
+ * geometry Sable Run draws.
  */
 function monolith(): THREE.BufferGeometry {
-  const foot: Rgb = [0.34, 0.32, 0.3];
-  const rock: Rgb = [0.6, 0.57, 0.54];
-  const sun: Rgb = [0.86, 0.82, 0.76];
+  /*
+   * Vertical ramp from a buried, unlit foot to a sun-caught cap, with a faint
+   * horizontal banding on top of it.
+   *
+   * The banding is the cheapest thing in this function and it is doing real
+   * work: an unbroken gradient over 13m of rock reads as a painted cone, while
+   * even a 6% ripple at roughly two-metre intervals reads as bedding. It is the
+   * same argument `bandHeight` makes for the ridge ranges, at one-hundredth of
+   * the cost, and unlike them it survives being seen from 40m away.
+   */
+  const shade = (y: number): Rgb => {
+    const t = Math.min(1, Math.max(0, (y + 0.8) / 13.6));
+    const band = 1 + Math.sin(y * 1.55) * 0.055;
+    const v = (0.33 + t * t * 0.56) * band;
+    return [v, v * 0.965, v * 0.925];
+  };
+
   return mergeOrThrow([
-    part(3.4, 1.4, 2.6, [0, -0.3, 0], foot, 0.3),
-    part(2.4, 9.0, 1.7, [0, 4.8, 0], rock, 0.12),
-    part(1.7, 3.2, 1.2, [0.3, 10.4, 0.1], rock, -0.2),
-    part(1.1, 1.6, 0.8, [0.5, 12.6, 0.15], sun, 0.4),
+    // Buried skirt. Same rule as every plinth here: the ground under a 3m
+    // footprint is not flat, and a metre below y = 0 hides the disagreement.
+    lump(0x4b1d77, [1.45, 1.15, 1.18], [0, -0.15, 0], shade, {
+      rot: [0.05, 0.4, -0.06],
+      squashY: 0.9,
+    }),
+    lump(0x91c2e5, [1.0, 4.2, 0.74], [0, 4.1, 0], shade, { rot: [0, 0.2, 0.04] }),
+    lump(0x2f7ab4, [0.78, 2.2, 0.58], [0.22, 9.0, 0.1], shade, {
+      rot: [0.03, -0.5, -0.1],
+    }),
+    lump(0xd3410a, [0.46, 1.15, 0.36], [0.42, 11.6, 0.16], shade, {
+      rot: [0, 1.1, 0.22],
+    }),
   ]);
 }
 
@@ -358,12 +441,24 @@ function kilnShell(): THREE.BufferGeometry {
   const base: Rgb = [0.3, 0.26, 0.24];
   const shell: Rgb = [0.56, 0.46, 0.4];
   const burnt: Rgb = [0.36, 0.3, 0.28];
-  const ash: Rgb = [0.72, 0.66, 0.6];
   return mergeOrThrow([
     cyl(4.4, 1.6, [0, 0.2, 0], base),
     cyl(3.6, 6.4, [0, 4.2, 0], shell),
     part(3.0, 1.2, 2.0, [1.6, 7.2, 0.6], burnt, 0.4),
-    part(4.0, 0.8, 2.6, [-4.6, 0.5, 1.4], ash, 0.9),
+    // The spill was a 4.0 x 0.8 x 2.6 box, which is a crate of ash rather than a
+    // heap of it. A squashed lump costs the same 20 triangles and is the one
+    // part of this family that is not something anybody built.
+    lump(
+      0x5ea72c,
+      [2.3, 0.62, 1.5],
+      [-4.6, 0.28, 1.4],
+      (y) => {
+        const t = Math.min(1, Math.max(0, y / 0.9));
+        const v = 0.46 + t * 0.34;
+        return [v, v * 0.94, v * 0.86];
+      },
+      { rot: [0, 0.9, 0.08], squashY: 0.7, lo: 0.62, range: 0.6 },
+    ),
     part(1.0, 3.4, 1.0, [-2.6, 6.0, -2.2], burnt, 0.2),
   ]);
 }

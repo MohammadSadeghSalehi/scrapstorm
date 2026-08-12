@@ -25,8 +25,8 @@
  */
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
-import { getTrackEpoch } from "../../track";
-import { boardGeometry, railModuleGeometry } from "./geometry";
+import { boardGeometry, railModuleGeometry, signGeometry } from "./geometry";
+import { getActiveEnvironment, getEnvironmentEpoch } from "../environments";
 import {
   packLayer,
   type ScatterItem,
@@ -67,6 +67,20 @@ const RAIL_RANGE: TierScale = { low: 0.45, medium: 0.75, high: 1 };
  */
 const BOARD_DENSITY: TierScale = { low: 1, medium: 1, high: 1 };
 const BOARD_RANGE: TierScale = { low: 0.5, medium: 0.8, high: 1 };
+/**
+ * Chevron boards. Unlike the two above these are thinned to nothing at the low
+ * tier, and that is safe here for the one reason it is not safe there: a sign
+ * has NO COLLIDER, so a hidden one cannot become an invisible wall.
+ *
+ * The precedent for leaving it uncollidable is already in setpieceColliders —
+ * the Dead Mile's distance markers, `distanceMarker: null`, whose note reads "a
+ * stick that stops the car is worse than a stick that does nothing". This is the
+ * same object: a 0.14m post carrying a plate whose lower edge is at 2.0m, which
+ * is above the roof of every car in the game. At any height a car occupies,
+ * there is nothing here but the stick.
+ */
+const SIGN_DENSITY: TierScale = { low: 0, medium: 0.7, high: 1 };
+const SIGN_RANGE: TierScale = { low: 0, medium: 0.8, high: 1 };
 
 /** Shared damage views. Index-keyed, matching roadsideLayout()'s two lists. */
 const RAIL_DAMAGE = { isDown: isRailDown, version: roadsideDamageVersion };
@@ -187,21 +201,94 @@ function buildBoards(): { data: ScatterLayerData; dispose: () => void } | null {
   };
 }
 
+function buildSigns(): { data: ScatterLayerData; dispose: () => void } | null {
+  const { signs } = roadsideLayout();
+  if (!signs.length) return null;
+
+  const geo = signGeometry();
+  const q = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const one = new THREE.Vector3(1, 1, 1);
+  const yAxis = new THREE.Vector3(0, 1, 0);
+
+  const items: ScatterItem[] = signs.map((s) => {
+    q.setFromAxisAngle(yAxis, s.yaw);
+    pos.set(s.x, s.y, s.z);
+    return {
+      matrix: new THREE.Matrix4().compose(pos, q, one),
+      x: s.x,
+      y: s.y + 1.7,
+      z: s.z,
+      r: 2.4,
+      limit: 210,
+    };
+  });
+
+  const mat = new THREE.MeshStandardMaterial({
+    /*
+     * The signs wear `surfaces.stripe`, and that is the whole retroreflective
+     * trick.
+     *
+     * Lane paint is the one colour in the environment authored to get BRIGHTER
+     * relative to everything else as the hour darkens (`stripeLift` in
+     * variants.ts, +0.34 at night). Sign faces behave the same way in real life
+     * and for the same reason — they are retroreflective sheeting, not white
+     * paint — so taking that colour rather than a literal gives them the
+     * behaviour for free, on every hour and every weather condition, without
+     * this file knowing what an hour is.
+     *
+     * It lands on the right parts because three multiplies material colour by
+     * vertex colour: the plate's face is 1.0 and takes the whole lift, while the
+     * post is 0.28 and takes a quarter of it. An `emissive` would not work here
+     * at all — three does not multiply emissive by vertex colour, so the post
+     * would glow as hard as the plate.
+     */
+    color: getActiveEnvironment().surfaces.stripe,
+    vertexColors: true,
+    roughness: 0.55,
+    metalness: 0.08,
+    envMapIntensity: 0.9,
+  });
+
+  reportDensity("signs", 1, items.length, items.length * triCount(geo));
+  return {
+    data: packLayer({ geometry: geo, material: mat, items }),
+    dispose: () => {
+      geo.dispose();
+      mat.dispose();
+    },
+  };
+}
+
 export function RoadsideFurniture() {
-  const epoch = getTrackEpoch();
+  /*
+   * Environment epoch rather than track epoch.
+   *
+   * Placement is derived from TRACK_SAMPLES, which is swapped wholesale on a
+   * track change — but the sign material reads `surfaces.stripe`, and that
+   * moves with the HOUR and the WEATHER, neither of which bumps the track
+   * epoch. Keyed on the track alone, a rematch on the same circuit at night
+   * would keep the daytime sign colour and nothing would say so.
+   *
+   * The expensive half of a rebuild is the verge solve, and that is cached
+   * inside `roadsideLayout()` on the track epoch, so the extra rebuilds cost a
+   * few hundred matrix compositions between races.
+   */
+  const epoch = getEnvironmentEpoch();
   const built = useMemo(() => {
     const rail = buildRail();
     const boards = buildBoards();
+    const signs = buildSigns();
     return {
       rail,
       boards,
+      signs,
       dispose: () => {
         rail?.dispose();
         boards?.dispose();
+        signs?.dispose();
       },
     };
-    // Placement is derived from TRACK_SAMPLES, which is swapped wholesale on a
-    // track change; the epoch is the only signal that happened.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [epoch]);
 
@@ -223,6 +310,14 @@ export function RoadsideFurniture() {
           density={BOARD_DENSITY}
           range={BOARD_RANGE}
           phase={1}
+        />
+      )}
+      {built.signs && (
+        <ScatterLayer
+          data={built.signs.data}
+          density={SIGN_DENSITY}
+          range={SIGN_RANGE}
+          phase={2}
         />
       )}
     </group>

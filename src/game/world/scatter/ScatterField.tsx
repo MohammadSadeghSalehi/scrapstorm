@@ -83,13 +83,44 @@ function makeMaterials() {
     side: THREE.DoubleSide,
   });
 
-  return { rock, scrub, drift };
+  /*
+   * The cactus colour is the SCRUB's colour, multiplied by a fixed green.
+   *
+   * A literal green would be right at noon on Ash Spire and wrong everywhere
+   * else — every other albedo in the world is put through `relight()` per hour
+   * and per weather condition, so a hardcoded plant would sit in a blue-grey
+   * night still lit for midday. Multiplying instead of mixing is what preserves
+   * that: the hour's transform is itself a multiply plus a chromatic pull, and
+   * a second multiply commutes with it. Mixing toward a constant green would
+   * not — it would drag the night cactus back toward daylight.
+   */
+  const cactus = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(env.scrub.color).multiply(
+      new THREE.Color(0.58, 0.92, 0.52),
+    ),
+    vertexColors: true,
+    roughness: 0.82,
+    metalness: 0.0,
+    envMapIntensity: 0.55,
+  });
+
+  return { rock, scrub, drift, cactus };
 }
 
 /** Tier fractions, applied as a prefix of each shuffled field. */
 const ROCK_DENSITY: TierScale = { low: 0.24, medium: 0.55, high: 1 };
 const SCRUB_DENSITY: TierScale = { low: 0.16, medium: 0.44, high: 1 };
 const DRIFT_DENSITY: TierScale = { low: 0.15, medium: 0.42, high: 1 };
+/**
+ * Zero at the low tier, and zero rather than small.
+ *
+ * That tier has been measured at 25fps and this layer is new geometry on it, so
+ * it does not get any. Nothing here has a collider, so unlike the lamp columns
+ * there is no drawn-versus-solid disagreement to worry about — and with
+ * ScatterLayer's `visible` gate a density of 0 means the mesh is never even
+ * traversed, so the cost is not "small", it is nothing.
+ */
+const CACTUS_DENSITY: TierScale = { low: 0, medium: 0.5, high: 1 };
 /** Draw-distance multipliers. The cheapest triangle is the one not submitted. */
 const NEAR_RANGE: TierScale = { low: 0.5, medium: 0.74, high: 1 };
 const WIDE_RANGE: TierScale = { low: 0.55, medium: 0.8, high: 1 };
@@ -127,6 +158,11 @@ function buildLayers(): { layers: ScatterLayerData[]; dispose: () => void } {
       material: mats.drift,
       items: fields.drift,
     }),
+    packLayer({
+      geometry: fields.geometries.cactus,
+      material: mats.cactus,
+      items: fields.cactus,
+    }),
   ];
   return {
     layers,
@@ -145,7 +181,7 @@ export function ScatterField() {
   const built = useMemo(() => buildLayers(), [epoch]);
 
   useEffect(() => {
-    const names = ["rock", "scrub", "scrapDrift"];
+    const names = ["rock", "scrub", "scrapDrift", "cactus"];
     for (let i = 0; i < built.layers.length; i++) {
       const l = built.layers[i]!;
       reportDensity(names[i]!, 1, l.total, l.total * triCount(l.geometry));
@@ -165,6 +201,7 @@ export function ScatterField() {
     [built.layers[0]!, ROCK_DENSITY, WIDE_RANGE],
     [built.layers[1]!, SCRUB_DENSITY, NEAR_RANGE],
     [built.layers[2]!, DRIFT_DENSITY, NEAR_RANGE],
+    [built.layers[3]!, CACTUS_DENSITY, WIDE_RANGE],
   ];
 
   return (

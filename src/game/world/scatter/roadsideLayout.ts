@@ -77,6 +77,66 @@ const RAIL_CLEAR_R = 0.7;
 /** Nominal metres between the run-off edge and the rail's post line. */
 const RAIL_OFFSET = 1;
 
+/**
+ * Lamp column collider radius.
+ *
+ * At car height a lamp is its SHAFT — 0.175m at the base, tapering — plus the
+ * 0.15m shear collar at 0.6m. The 0.66m footing is wider but only 0.15m tall,
+ * which is under axle height and not something a car is stopped by. So 0.22
+ * puts the collider face 4.5cm proud of the widest thing you can hit, which is
+ * the same small skin RAIL_CAPSULE_R carries, and it is deliberately NOT the
+ * footing's 0.33: a collider sized to a kerb you drive over is an invisible
+ * bollard.
+ */
+export const LAMP_CAPSULE_R = 0.22;
+
+/**
+ * Sign post collider radius.
+ *
+ * Same rule again, and it lands somewhere that looks wrong until you check the
+ * heights: the plate is 2.5m across, but its lower edge is at 2.0m and a car is
+ * 1.4m tall, so at any height a car occupies the sign IS its 0.14m post.
+ * Half-diagonal 0.099 plus a skin.
+ */
+export const SIGN_CAPSULE_R = 0.14;
+
+/**
+ * Metres out from the run-off edge, per family.
+ *
+ * The ordering is the whole design: rail at 1 (it has to be the thing you hit),
+ * signs at 1.9 behind it, lamps at 3 behind those, hoardings at 5.5. Each band
+ * clears the one inside it by more than the two capsule radii involved, so no
+ * two pieces of furniture can ever be solid in the same place — which is a
+ * property worth having by construction rather than by inspection, because the
+ * verge solver pushes anchors OUTWARD when the loop doubles back and two
+ * families pushed by different amounts would otherwise cross.
+ */
+const SIGN_OFFSET = 1.9;
+const LAMP_OFFSET = 3;
+
+/**
+ * Track samples between lamps on one verge.
+ *
+ * Sample spacing runs 3.5-4.3m across the six circuits, so 8 gives 28-34m —
+ * motorway lighting spacing, and close enough that the rhythm reads at speed
+ * without the columns merging into a fence.
+ */
+const LAMP_STRIDE = 8;
+/** Samples between signs. Chevron boards want to be an event, not a texture. */
+const SIGN_STRIDE = 11;
+
+/**
+ * Clearance half-footprints handed to the verge solver.
+ *
+ * Larger than the colliders on purpose, and for the reason RAIL_CLEAR_R is:
+ * this is what turns "it looks like it clears the run-off" into "the COLLIDER
+ * clears the run-off by `CLEAR - CAPSULE` metres on every circuit, by
+ * construction". The lamp's is sized to its footing rather than its shaft,
+ * because the footing is the part that would visibly sit on drivable gravel.
+ */
+const LAMP_CLEAR_R = 0.75;
+const SIGN_CLEAR_R = 0.55;
+
 /** One beam span: post at `a`, beam running to the next post at `b`. */
 export type RailModule = {
   ax: number;
@@ -112,14 +172,60 @@ export type BoardSite = {
   index: number;
 };
 
+/**
+ * One lamp column. Yawed so its local +Z — the arm, and therefore the light —
+ * points at the racing line.
+ */
+export type LampSite = {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  /** -1 / +1 in the EDGE_MARKERS convention. Which verge it stands on. */
+  side: number;
+  index: number;
+};
+
+/**
+ * One catenary span, as a pair of indices into `lamps`.
+ *
+ * Indices rather than coordinates because a span has to disappear when EITHER
+ * of its columns is knocked down. A wire left hanging from a post that is no
+ * longer there is the most obvious kind of broken, and it is the failure mode a
+ * span that carried its own copy of the endpoints would produce.
+ */
+export type WireSpan = { a: number; b: number };
+
+/** One chevron board. Same facing convention as a hoarding, plus a toe-in. */
+export type SignSite = {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  index: number;
+};
+
 export type RoadsideLayout = {
   rail: RailModule[];
   boards: BoardSite[];
+  lamps: LampSite[];
+  wires: WireSpan[];
+  signs: SignSite[];
   /** Authored beam length; per-instance X scale takes up the local variation. */
   spacing: number;
+  /** Authored catenary span; same deal for the wire geometry. */
+  wireSpacing: number;
 };
 
-const EMPTY: RoadsideLayout = { rail: [], boards: [], spacing: 6 };
+const EMPTY: RoadsideLayout = {
+  rail: [],
+  boards: [],
+  lamps: [],
+  wires: [],
+  signs: [],
+  spacing: 6,
+  wireSpacing: 30,
+};
 
 let cache: RoadsideLayout = EMPTY;
 /** `${trackId}#${epoch}` the cached layout was derived for. */
@@ -197,6 +303,120 @@ function buildBoards(): BoardSite[] {
 }
 
 /**
+ * Toe-in of a sign plate toward oncoming traffic, in radians.
+ *
+ * A hoarding faces square across the road because it is an advertisement and it
+ * is read from anywhere. A chevron board is read from ONE direction, on the
+ * approach, so it is turned 14 degrees back up the circuit.
+ *
+ * The sign of this is derived, not guessed, and it is the kind of thing that is
+ * 50/50 by inspection: `buildSamples` sets `yaw = atan2(-dx, -dz)`, so the
+ * direction of travel is -(sin yaw, cos yaw). A three.js rotation about +Y by
+ * `yaw - side*PI/2` puts the plate's local +Z on -side*(cos yaw, -sin yaw),
+ * which is the run across the road toward the racing line; differentiating that
+ * in the rotation angle gives -side * travel. So adding `+side*TOE` rotates the
+ * normal toward -travel, i.e. into the oncoming car, on BOTH verges.
+ */
+const SIGN_TOE = 0.24;
+
+function buildLamps(): {
+  lamps: LampSite[];
+  wires: WireSpan[];
+  wireSpacing: number;
+} {
+  const points = vergePoints({
+    stride: LAMP_STRIDE,
+    offset: LAMP_OFFSET,
+    radius: LAMP_CLEAR_R,
+    // Both verges, every kind of section. Lighting is infrastructure: a circuit
+    // lit only through its corners reads as a corner that has been decorated,
+    // not as a road that has lamps on it.
+    phase: 5,
+  });
+  if (points.length < 2) return { lamps: [], wires: [], wireSpacing: 30 };
+
+  const lamps: LampSite[] = points.map((p) => ({
+    x: p.x,
+    y: p.y,
+    z: p.z,
+    // Same rule as a hoarding: turn the module's local +Z onto the racing line.
+    // The sign flips with the verge, or half the lamps light the desert.
+    yaw: p.yaw - p.side * Math.PI * 0.5,
+    side: p.side,
+    index: p.index,
+  }));
+
+  /*
+   * Runs are built PER VERGE, and that is not a tidiness point.
+   *
+   * `vergePoints` emits side -1 then side +1 at every anchor, so consecutive
+   * entries in the list ALWAYS differ in side. Handing that straight to
+   * `linkedRuns` — which is what the guard rail does, because the rail is
+   * outside-only and therefore single-sided — joins nothing at all: every run
+   * is length one and every one of them is discarded. The result is a circuit
+   * of lamp posts with no wire between any of them, which looks like the wires
+   * simply were not implemented.
+   */
+  const perSide = [-1, 1].map((side) =>
+    lamps
+      .map((l, lamp) => ({ x: l.x, z: l.z, side: l.side, lamp }))
+      .filter((l) => l.side === side),
+  );
+
+  // Median consecutive gap, over both verges. Median rather than mean for the
+  // same reason `meanSpacing` is: the list has deliberate holes where the
+  // solver could not place a column, and two 90m jumps drag a mean far off the
+  // span that actually occurs — which would then stretch every wire on the
+  // circuit.
+  const gaps: number[] = [];
+  for (const own of perSide) {
+    for (let i = 1; i < own.length; i++) {
+      gaps.push(
+        Math.hypot(own[i]!.x - own[i - 1]!.x, own[i]!.z - own[i - 1]!.z),
+      );
+    }
+  }
+  gaps.sort((a, b) => a - b);
+  const wireSpacing = gaps.length ? gaps[Math.floor(gaps.length * 0.5)]! : 30;
+
+  const wires: WireSpan[] = [];
+  for (const own of perSide) {
+    for (const run of linkedRuns(own, wireSpacing * 1.9)) {
+      for (let i = 0; i < run.length - 1; i++) {
+        const a = run[i]!;
+        const b = run[i + 1]!;
+        if (Math.hypot(b.x - a.x, b.z - a.z) < 0.4) continue;
+        wires.push({ a: a.lamp, b: b.lamp });
+      }
+    }
+  }
+
+  return { lamps, wires, wireSpacing };
+}
+
+function buildSigns(): SignSite[] {
+  // Outside of the bend, on the more curved half of the circuit. A chevron
+  // board is not decoration that happens to be near a corner — it is the sign
+  // that means "the road goes this way", and it belongs on the outside of the
+  // turn it is warning about and nowhere else.
+  const points = vergePoints({
+    stride: SIGN_STRIDE,
+    offset: SIGN_OFFSET,
+    radius: SIGN_CLEAR_R,
+    minCurve: curvatureThreshold(0.55),
+    outsideOnly: true,
+    phase: 3,
+  });
+  return points.map((p) => ({
+    x: p.x,
+    y: p.y,
+    z: p.z,
+    yaw: p.yaw - p.side * (Math.PI * 0.5 - SIGN_TOE),
+    index: p.index,
+  }));
+}
+
+/**
  * The active circuit's furniture layout.
  *
  * Cached on `${trackId}#${epoch}`, single entry, for the same reason the
@@ -209,7 +429,16 @@ export function roadsideLayout(): RoadsideLayout {
   const key = `${getActiveTrackId()}#${getTrackEpoch()}`;
   if (key === cachedFor) return cache;
   const { modules, spacing } = buildRail();
-  cache = { rail: modules, boards: buildBoards(), spacing };
+  const { lamps, wires, wireSpacing } = buildLamps();
+  cache = {
+    rail: modules,
+    boards: buildBoards(),
+    lamps,
+    wires,
+    signs: buildSigns(),
+    spacing,
+    wireSpacing,
+  };
   cachedFor = key;
   return cache;
 }

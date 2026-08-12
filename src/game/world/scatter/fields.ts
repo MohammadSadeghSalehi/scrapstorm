@@ -7,7 +7,12 @@
  * asserted without a canvas.
  */
 import * as THREE from "three";
-import { driftGeometry, rockGeometry, scrubGeometry } from "./geometry";
+import {
+  cactusGeometry,
+  driftGeometry,
+  rockGeometry,
+  scrubGeometry,
+} from "./geometry";
 import { scatterPoints, type ScatterPoint } from "./placement";
 import { getActiveEnvironment } from "../environments";
 import type { ScatterLayerDef, Vec3 } from "../environments";
@@ -140,11 +145,38 @@ function instancesFrom(
 }
 
 export type ScatterFields = {
-  geometries: { rock: THREE.BufferGeometry; scrub: THREE.BufferGeometry; drift: THREE.BufferGeometry };
+  geometries: {
+    rock: THREE.BufferGeometry;
+    scrub: THREE.BufferGeometry;
+    drift: THREE.BufferGeometry;
+    cactus: THREE.BufferGeometry;
+  };
   rock: ScatterItem[];
   scrub: ScatterItem[];
   drift: ScatterItem[];
+  cactus: ScatterItem[];
 };
+
+/**
+ * Cacti are planted where the scrub is, at a fraction of it.
+ *
+ * There is deliberately no `cactus` entry in ScatterDef, and that is a design
+ * choice rather than a shortcut. The question every preset would have to answer
+ * — how much cactus does this circuit have — has exactly one sane answer on all
+ * six, and it is "however much anything grows here". The Foundry Pit's scrub
+ * density is 0 because nothing grows in a slag pit, and a cactus layer keyed to
+ * its own number is a sixth chance to forget that and plant a saguaro in the
+ * smelter. Derived, it cannot be forgotten: `perSampleFor` returns 0 for a
+ * density of 0 and the layer is never mounted.
+ *
+ * The same argument carries the COLOUR, further down: the cactus material is the
+ * scrub's environment colour multiplied by a fixed green, so every hour and
+ * weather transform that relights the scrub relights the cactus with it. Mixing
+ * toward a literal green instead would have looked identical by day and left a
+ * daylight-green cactus standing in a blue-grey night.
+ */
+const CACTUS_PER_SAMPLE = 2;
+const CACTUS_CAP = 90;
 
 export function buildScatterFields(): ScatterFields {
   /*
@@ -163,10 +195,12 @@ export function buildScatterFields(): ScatterFields {
     rock: rockGeometry(),
     scrub: scrubGeometry(),
     drift: driftGeometry(),
+    cactus: cactusGeometry(),
   };
   const fpRock = footprintOf(geometries.rock);
   const fpScrub = footprintOf(geometries.scrub);
   const fpDrift = footprintOf(geometries.drift);
+  const fpCactus = footprintOf(geometries.cactus);
 
   /*
    * Outcrops come FIRST in the rock layer and gravel after, because tier
@@ -278,5 +312,47 @@ export function buildScatterFields(): ScatterFields {
     },
   );
 
-  return { geometries, rock, scrub, drift };
+  /*
+   * Cacti stand further out than the scrub and they do not crowd the verge.
+   *
+   * `near: 3.5` rather than the scrub's 0.4 is the whole difference between a
+   * desert and a hedge. A 4m saguaro half a metre off the gravel is a thing the
+   * eye tracks past at 40 m/s and reads as clutter; the same plant at 10-60m is
+   * the mid-ground that tells you how fast you are going. The bias below 1
+   * pushes the distribution outward rather than pulling it in, which is the
+   * opposite of every other layer here and is the point.
+   */
+  const cactus = instancesFrom(
+    scatterPoints({
+      seed: 0x6ac13f,
+      perSample: perSampleFor(CACTUS_PER_SAMPLE, env.scrub.density),
+      near: 3.5,
+      far: 62,
+      radius: 1.6 * 0.55 * fpCactus,
+      bias: 0.8,
+      jitter: 11,
+    }).slice(0, Math.round(CACTUS_CAP * env.scrub.density)),
+    fpCactus,
+    (p) => {
+      // Squared, like the gravel: most of a stand is knee-high young growth and
+      // a handful are the four-metre columns that carry the silhouette.
+      const h = 1.55 + p.a * p.a * 2.9;
+      const w = h * (0.82 + p.b * 0.3);
+      return {
+        sx: w,
+        sy: h,
+        sz: w,
+        // Barely buried. Unlike a boulder, a cactus grows out of the ground
+        // rather than resting on it, and sinking one reads as a stump.
+        sink: 0.02,
+        // Almost upright. A leaning saguaro is a dead saguaro, and at 0.22 —
+        // the gravel's tilt — a field of them looks blown over.
+        tilt: 0.05,
+        limit: 190,
+        color: rampTint(env.scrub, p.c),
+      };
+    },
+  );
+
+  return { geometries, rock, scrub, drift, cactus };
 }
