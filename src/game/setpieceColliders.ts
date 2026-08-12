@@ -56,7 +56,9 @@
  * is what lets mission-smoke drive it headlessly.
  */
 import { getActiveTrackId, getTrackEpoch } from "./track";
+import { carrierCapsules } from "./world/carrier";
 import { spawnDebrisBurst } from "./world/debris";
+import { tunnelCapsules } from "./world/tunnels";
 import { linkedRuns, meanSpacing } from "./world/scatter/placement";
 import {
   downBoard,
@@ -123,6 +125,23 @@ export interface StaticCollider {
   /** Ground height, for the debris burst. Unused unless `breakAt` > 0. */
   y: number;
   destroyed: boolean;
+  /**
+   * World height above which this capsule is NOT solid. Absent = solid always.
+   *
+   * The only vertical information in a system that is otherwise pure XZ, and it
+   * exists for exactly one situation: structure a car can be ON TOP OF. The car
+   * carrier's trailer flank has to stop a car at road level and be transparent
+   * to the same car four metres up on its own deck, and those are the same
+   * capsule in plan view. Without this the deck would be unusable — every car
+   * that drove up the ramp would be deflected by the sides of the truck it was
+   * standing on.
+   *
+   * Deliberately a CEILING and not a band: everything else in this registry is
+   * solid from the ground up, and "solid below y" is the whole of what a
+   * drivable roof needs. A general min/max band invites somebody to model a
+   * bridge soffit with it, which would then be a wall to anything airborne.
+   */
+  yTop?: number;
 }
 
 /**
@@ -472,6 +491,58 @@ function roadsideColliders(out: StaticCollider[]): void {
   }
 }
 
+/* ── one-off structure ────────────────────────────────────────────────
+ *
+ * The tunnel bores and the car carrier are not families: there is one of each on
+ * the circuits that have them, they are placed by hand at an arc length rather
+ * than solved onto the verge, and neither has anything to say about the
+ * FOOTPRINT table (a bore's collidable width IS its drawn width, and a carrier's
+ * is a height field, not a silhouette). They mirror their own modules the way
+ * the set pieces mirror `build.ts` — `world/tunnels.ts` and `world/carrier.ts`
+ * are the single source for both the geometry and these capsules, so the wall
+ * you see and the wall you hit cannot be two different walls.
+ *
+ * Both modules are renderer-free by construction, which is what lets this stay
+ * importable by the headless sim.
+ */
+function bespokeColliders(out: StaticCollider[]): void {
+  for (const t of tunnelCapsules()) {
+    out.push({
+      x0: t.x0,
+      z0: t.z0,
+      x1: t.x1,
+      z1: t.z1,
+      r: t.r,
+      family: "tunnelWall",
+      stamp: 0,
+      breakAt: 0,
+      module: -1,
+      run: -1,
+      resistOnBreak: true,
+      y: t.y,
+      destroyed: false,
+    });
+  }
+  for (const c of carrierCapsules()) {
+    out.push({
+      x0: c.x0,
+      z0: c.z0,
+      x1: c.x1,
+      z1: c.z1,
+      r: c.r,
+      family: "carrier",
+      stamp: 0,
+      breakAt: 0,
+      module: -1,
+      run: -1,
+      resistOnBreak: true,
+      y: c.y,
+      destroyed: false,
+      yTop: c.yTop,
+    });
+  }
+}
+
 /**
  * Take a module out of the world.
  *
@@ -640,6 +711,7 @@ export function rebuildSetpieceColliders(): void {
   const out: StaticCollider[] = [];
   for (const family of def.families) familyColliders(family, out);
   roadsideColliders(out);
+  bespokeColliders(out);
 
   colliders = out.concat(rockColliders);
   reindex();

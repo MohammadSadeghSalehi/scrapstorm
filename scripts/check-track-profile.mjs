@@ -15,6 +15,17 @@ import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url, { interopDefault: true });
 const track = await jiti.import("../src/game/track.ts");
+/*
+ * g comes from the integrator, not from a literal here.
+ *
+ * The launch figure below is `sqrt(g R)`, and for as long as `integratePos`
+ * descended at a fixed 18 m/s with no upward phase it was a claim about a road
+ * that the physics never honoured — every crest in the catalogue produced at
+ * most 0.09m of air at 40 m/s, measured. The integrator is ballistic now, so
+ * this number is a prediction the sim can be held to; importing the constant is
+ * what stops the two drifting apart again.
+ */
+const { GRAVITY_MS2 } = await jiti.import("../src/game/physics.ts");
 
 const arg = process.argv.indexOf("--max-grade");
 /** rise/run. 0.30 is a 17-degree slope — steeper than any real road ramp. */
@@ -121,7 +132,9 @@ for (const id of IDS) {
     const R = 1 / -yPP;
     if (R < tightest) tightest = R;
   }
-  const launchMs = Number.isFinite(tightest) ? Math.sqrt(9.81 * tightest) : Infinity;
+  const launchMs = Number.isFinite(tightest)
+    ? Math.sqrt(GRAVITY_MS2 * tightest)
+    : Infinity;
   console.log(
     `  crest radius   ${Number.isFinite(tightest) ? tightest.toFixed(0) + "m" : "none"}` +
       `  -> launches above ${Number.isFinite(launchMs) ? launchMs.toFixed(1) + " m/s (" + (launchMs * 2.237).toFixed(0) + " mph)" : "never"}`,

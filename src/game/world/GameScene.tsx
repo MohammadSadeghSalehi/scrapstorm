@@ -11,6 +11,8 @@ import {
 } from "../vehicles/GltfCar";
 import { ModularVehicleMesh } from "../vehicles/meshes";
 import { TrackMesh } from "./TrackMesh";
+import { StartLineGantry } from "./StartGantry";
+import { hasTunnels, tunnelCeiling, tunnelCover } from "./tunnels";
 import { Atmosphere } from "./Atmosphere";
 import {
   DraftWake,
@@ -385,10 +387,24 @@ function ChaseCamera({ sim }: { sim: GameSimulation }) {
     const lookAhead =
       CHASE.lookBase + CHASE.lookGain * s01 + boostPunch.current * 1.5;
 
+    const camX = target.x - fx * dist;
+    const camZ = target.z - fz * dist;
+    /*
+     * Duck under a tunnel slab.
+     *
+     * The rig rides 7.75-9.45m above the road, which is higher than any tunnel
+     * a 20m road wants — so without this the camera spends the whole bore
+     * inside the overburden looking at the back faces of the roof. The ceiling
+     * is evaluated at the RIG's own XZ, not the car's, and `tunnelCeiling` ramps
+     * it in over 14m before the portal, so the drop is already finished by the
+     * time the camera is under concrete. Infinity everywhere else, and an AABB
+     * reject on circuits with no bore.
+     */
+    const ceil = tunnelCeiling(camX, camZ);
     desired.current.set(
-      target.x - fx * dist,
-      target.y + height,
-      target.z - fz * dist,
+      camX,
+      Math.min(target.y + height, ceil),
+      camZ,
     );
 
     if (!ready.current) {
@@ -1516,8 +1532,71 @@ function CascadedSun({ q }: { q: QualitySettings }) {
   return null;
 }
 
-function SunLight({ sim, q }: { sim: GameSimulation; q: QualitySettings }) {
-  const ref = useRef<THREE.DirectionalLight>(null);
+/**
+ * Pull the scene lights down while the CAMERA is under a tunnel.
+ *
+ * Keyed on the camera and not on the car: the chase rig trails by 13-17m, so
+ * the car is a third of the way through a 38m bore before the camera reaches
+ * the portal, and dimming on the car's position darkens the open road you are
+ * still looking down. `tunnelCover` already ramps over the portal length, so
+ * this is a multiply and nothing else.
+ *
+ * The floor is not zero. A black frame is not a dark tunnel, it is a lost
+ * frame — and the strip lights inside the bore are unlit MeshBasic, so they
+ * carry the read at the bottom of the ramp.
+ *
+ * Costs one `tunnelCover` call per frame, which is an AABB reject on every
+ * circuit that has no bore.
+ */
+const TUNNEL_FLOOR = 0.17;
+
+function TunnelAtmosphere({
+  sim,
+  ambient,
+  hemi,
+  sun,
+  env,
+}: {
+  sim: GameSimulation;
+  ambient: React.RefObject<THREE.AmbientLight | null>;
+  hemi: React.RefObject<THREE.HemisphereLight | null>;
+  sun: React.RefObject<THREE.DirectionalLight | null>;
+  env: ReturnType<typeof getActiveEnvironment>;
+}) {
+  const { camera } = useThree();
+  const level = useRef(1);
+  useFrame((_, dt) => {
+    void sim;
+    if (!hasTunnels()) {
+      if (level.current === 1) return;
+      level.current = 1;
+    } else {
+      const cover = tunnelCover(camera.position.x, camera.position.z);
+      const want = 1 - (1 - TUNNEL_FLOOR) * cover;
+      // Smoothed as well as ramped: `cover` is continuous in space but the
+      // camera is not — a hitstop or a respawn can move it several metres in
+      // one frame, and an exposure step is the most visible artefact there is.
+      level.current += (want - level.current) * Math.min(1, dt * 9);
+    }
+    const k = level.current;
+    if (ambient.current) ambient.current.intensity = env.light.ambient.intensity * k;
+    if (hemi.current) hemi.current.intensity = env.light.hemisphere.intensity * k;
+    if (sun.current) sun.current.intensity = env.light.intensity * k;
+  }, FRAME.LATE);
+  return null;
+}
+
+function SunLight({
+  sim,
+  q,
+  lightRef,
+}: {
+  sim: GameSimulation;
+  q: QualitySettings;
+  lightRef?: React.RefObject<THREE.DirectionalLight | null>;
+}) {
+  const own = useRef<THREE.DirectionalLight>(null);
+  const ref = lightRef ?? own;
   /*
    * Direction only — magnitude just needs to clear the shadow-camera near
    * plane. Note this is the KEY LIGHT direction, deliberately not the same as
@@ -1581,6 +1660,12 @@ function RaceWorld({
 }) {
   const q = qualityManager.get();
   const trackEpoch = getTrackEpoch();
+  // Handed to TunnelAtmosphere so it can pull all three down together. Refs
+  // rather than state: this is a per-frame value and re-rendering the world
+  // tree sixty times a second to dim a light is not a thing to do.
+  const ambientRef = useRef<THREE.AmbientLight>(null);
+  const hemiRef = useRef<THREE.HemisphereLight>(null);
+  const sunRef = useRef<THREE.DirectionalLight>(null);
 
   useEffect(() => {
     /*
@@ -1616,15 +1701,30 @@ function RaceWorld({
       <color attach="background" args={[env.sky.background]} />
       <fog attach="fog" args={[env.fog.color, fogNear, fogFar]} />
       <ambientLight
+        ref={ambientRef}
         intensity={env.light.ambient.intensity}
         color={env.light.ambient.color}
       />
       <hemisphereLight
+        ref={hemiRef}
         args={[
           env.light.hemisphere.sky,
           env.light.hemisphere.ground,
           env.light.hemisphere.intensity,
         ]}
+      />
+      {/*
+        Under a tunnel the three scene lights come down together. There is no GI
+        and one shadow cascade (AGENTS.md §8.3), so a roof over the road changes
+        nothing about how a wall under it is lit — a bore stays as bright as the
+        desert and reads as a bridge. See TunnelAtmosphere.
+      */}
+      <TunnelAtmosphere
+        sim={sim}
+        ambient={ambientRef}
+        hemi={hemiRef}
+        sun={sunRef}
+        env={env}
       />
       {/*
         REVERTED to the single following cascade.
@@ -1645,7 +1745,7 @@ function RaceWorld({
         the fact. Until that plumbing exists, one tight player-following
         cascade is both cheaper and better looking.
       */}
-      <SunLight sim={sim} q={q} />
+      <SunLight sim={sim} q={q} lightRef={sunRef} />
       <ShaderWarmup />
       {/* Holds the countdown at three until this tree has stopped changing. */}
       <WorldWarmup />
@@ -1680,6 +1780,13 @@ function RaceWorld({
       <PbrBootstrap>
         <TrackMesh trackEpoch={trackEpoch} />
       </PbrBootstrap>
+      {/*
+        Mounted here rather than in TrackMesh because its light tree reads the
+        countdown, and TrackMesh is deliberately never handed the sim. Keyed by
+        epoch so a track change rebuilds the merged geometry for the new
+        start-line width, which TrackMesh's own keyed group would have done.
+      */}
+      <StartLineGantry key={`gantry-${trackEpoch}`} sim={sim} trackEpoch={trackEpoch} />
       {q.tier === "high" && <SceneryDecor />}
       <LiveVehicles sim={sim} />
       <LiveFx sim={sim} />

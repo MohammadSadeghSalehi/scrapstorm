@@ -1,9 +1,11 @@
 import type { CheckpointGate, SurfaceInfo, SurfaceKind, TrackSample } from "./types";
+import { carrierSurfaceAt, setActiveCarriers } from "./world/carrier";
 import { sampleDuneField, sampleRockMask } from "./world/terrainHeight";
 import {
   getTerrainProfile,
   setActiveTerrainProfile,
 } from "./world/terrainProfiles";
+import { setActiveTunnels } from "./world/tunnels";
 
 /**
  * The two launch circuits — and deliberately ONLY those.
@@ -828,6 +830,19 @@ function rebuild(id: AnyTrackId) {
    * the new one.
    */
   setActiveTerrainProfile(id, circuitAnchor(samples));
+  /*
+   * Set pieces that own a piece of the GROUND, resolved in the same place and
+   * for the same reason as the terrain profile: `getGroundHeight` consults the
+   * carrier deck, and `settleScenery` runs later in this very call. A carrier
+   * pushed after it would be a ramp the ground query knows about and the world
+   * placement does not.
+   *
+   * (Scenery cannot land on a deck anyway — settleScenery pushes every item to
+   * at least half + 26m from the centreline and the deck lives inside 12m — but
+   * the ordering is the contract, not the current margin.)
+   */
+  setActiveCarriers(id, samples);
+  setActiveTunnels(id, samples);
   const length = samples[samples.length - 1]?.s
     ? samples[samples.length - 1]!.s +
       Math.hypot(
@@ -1103,13 +1118,29 @@ export function getSurfaceAt(
  */
 export function getGroundHeight(x: number, z: number): number {
   const surf = getSurfaceAt(x, z);
-  return duneProfile(
+  const ground = duneProfile(
     surf.sample.y,
     sampleDuneField(x, z),
     sampleRockMask(x, z),
     surf.dist,
     surf.half,
   );
+  /*
+   * Drivable structure is part of the GROUND, not a collider.
+   *
+   * `integratePos` lifts a car by exactly one mechanism: the value this function
+   * returns. A ramp expressed as a capsule would be something you scrape along —
+   * `deflectOffStatic` has no vertical axis and cannot be given one without
+   * becoming the impulse solver this project already removed twice. Expressed
+   * here it costs an axis-aligned box reject per query and the suspension,
+   * airborne test and landing all work with no further plumbing.
+   *
+   * `max`, not a replacement: the deck is above the desert or it is not there
+   * (`carrierSurfaceAt` returns -Infinity outside its footprint), and a deck
+   * that could ever LOWER the ground would be a hole in the world.
+   */
+  const deck = carrierSurfaceAt(x, z);
+  return deck > ground ? deck : ground;
 }
 
 /**

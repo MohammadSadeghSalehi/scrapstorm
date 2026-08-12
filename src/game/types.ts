@@ -135,6 +135,19 @@ export interface VehicleState {
   impactFlash: number;
   lockTargetId: string | null;
   airTime: number;
+  /**
+   * Vertical velocity, m/s. Optional for the same reason `lastHitBy` is —
+   * `world/GameScene.tsx` and the app shell both build placeholder vehicles by
+   * hand, and a required field there is four edits in files that have nothing to
+   * do with flight. `integratePos` owns it and treats absent as zero.
+   *
+   * Before this existed the airborne case was `v.y += -18 * dt`: a constant 18
+   * m/s descent with no memory of how the car left the ground. That is not a
+   * jump, it is a lift going down — a car cresting a ramp got no upward velocity
+   * from the ramp at all, so `check-track-profile`'s launch-speed figure was a
+   * property of the road that the physics never actually honoured.
+   */
+  vy?: number;
   nearMissBoost: number;
   alive: boolean;
   hitStun: number;

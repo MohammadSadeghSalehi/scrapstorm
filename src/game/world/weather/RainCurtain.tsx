@@ -48,6 +48,7 @@ import * as THREE from "three";
 import { FRAME } from "../framePriority";
 import { qualityManager } from "../quality";
 import { mulberry32 } from "../scatter/placement";
+import { getTunnels } from "../tunnels";
 import { RAIN_BUDGET, type WeatherRainDef } from "./conditions";
 
 const VERT = /* glsl */ `
@@ -56,6 +57,19 @@ uniform float uHeight;
 uniform float uFall;
 uniform vec2  uWind;
 uniform float uSize;
+/*
+ * The nearest tunnel bore, as an oriented box: uCoverC is (cx, roofY, cz),
+ * uCoverF is the heading in XZ, uCoverE is (halfLen, halfWidth, floorY) and
+ * uCoverOn is 0 when there is no bore. See world/tunnels.ts — the box is the
+ * straight-line stand-in for a swept bore, which is exact enough for rain and
+ * far cheaper than walking a polyline per drop.
+ */
+uniform vec3  uCoverC;
+uniform vec2  uCoverF;
+uniform vec3  uCoverE;
+uniform float uCoverOn;
+/** World position of the curtain's anchor, since the column follows the camera. */
+uniform vec3  uAnchor;
 attribute float aSeed;
 attribute float aSpeed;
 varying float vFade;
@@ -85,6 +99,25 @@ void main() {
    */
   float d = -mv.z;
   vFade = smoothstep(1.5, 5.0, d) * (1.0 - smoothstep(0.75, 1.0, fall) * 0.85);
+
+  /*
+   * Rain does not fall inside a tunnel.
+   *
+   * Killed per DROP rather than by fading the whole curtain, because the
+   * curtain is anchored to the camera: fading it out would also stop the rain
+   * you can see through the portal ahead of you, which is the shot the tunnel
+   * exists for. A drop inside the box is simply not drawn.
+   */
+  if (uCoverOn > 0.5) {
+    vec3 w = p + uAnchor;
+    vec2 rel = w.xz - uCoverC.xz;
+    float along = dot(rel, uCoverF);
+    float side  = dot(rel, vec2(-uCoverF.y, uCoverF.x));
+    if (abs(along) < uCoverE.x && abs(side) < uCoverE.y &&
+        w.y < uCoverC.y && w.y > uCoverE.z - 2.0) {
+      vFade = 0.0;
+    }
+  }
 
   gl_Position = projectionMatrix * mv;
   // Attenuated, so distant rain thins out instead of tiling the sky with dots.
@@ -161,6 +194,11 @@ export function RainCurtain({ rain }: { rain: WeatherRainDef | null }) {
         uColor: { value: new THREE.Color(rain.color) },
         uOpacity: { value: rain.opacity },
         uAspect: { value: rain.streakWidth / Math.max(0.01, rain.streakLength) },
+        uCoverC: { value: new THREE.Vector3() },
+        uCoverF: { value: new THREE.Vector2(1, 0) },
+        uCoverE: { value: new THREE.Vector3() },
+        uCoverOn: { value: 0 },
+        uAnchor: { value: new THREE.Vector3() },
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -192,6 +230,46 @@ export function RainCurtain({ rain }: { rain: WeatherRainDef | null }) {
     ref.current.position.x = state.camera.position.x;
     ref.current.position.z = state.camera.position.z;
     ref.current.position.y = state.camera.position.y;
+    (mat.uniforms.uAnchor!.value as THREE.Vector3).copy(ref.current.position);
+
+    /*
+     * Publish the NEAREST bore, not all of them.
+     *
+     * The curtain's radius is tens of metres and the circuits that have tunnels
+     * have one apiece; carrying a list into the shader would be a uniform array
+     * and a loop per drop for a case that does not exist. Picking per frame on
+     * the CPU is three subtractions.
+     */
+    const bores = getTunnels();
+    if (!bores.length) {
+      mat.uniforms.uCoverOn!.value = 0;
+      return;
+    }
+    let near = bores[0]!;
+    if (bores.length > 1) {
+      let best = Infinity;
+      for (const t of bores) {
+        const d =
+          (t.box.cx - ref.current.position.x) ** 2 +
+          (t.box.cz - ref.current.position.z) ** 2;
+        if (d < best) {
+          best = d;
+          near = t;
+        }
+      }
+    }
+    mat.uniforms.uCoverOn!.value = 1;
+    (mat.uniforms.uCoverC!.value as THREE.Vector3).set(
+      near.box.cx,
+      near.box.roofY,
+      near.box.cz,
+    );
+    (mat.uniforms.uCoverF!.value as THREE.Vector2).set(near.box.fx, near.box.fz);
+    (mat.uniforms.uCoverE!.value as THREE.Vector3).set(
+      near.box.halfLen,
+      near.box.halfW,
+      near.box.floorY,
+    );
   }, FRAME.LATE);
 
   if (!geo || !mat) return null;

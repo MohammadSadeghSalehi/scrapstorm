@@ -385,6 +385,7 @@ function makeVehicle(
     impactFlash: 0,
     lockTargetId: null,
     airTime: 0,
+    vy: 0,
     nearMissBoost: 0,
     alive: true,
     hitStun: 0,
@@ -689,6 +690,9 @@ function updateWrecks(state: SimState, dt: number) {
         v.yaw = s.yaw;
         v.speed = 0;
         v.lateral = 0;
+        // A respawn is a teleport, and a teleport must not inherit the fall it
+        // was rescued from — `integratePos` would spend the stale vy as a launch.
+        v.vy = 0;
         v.health = v.maxHealth * COMBAT.wreckRespawnHp;
         v.damageVisual = Math.min(0.55, v.damageVisual);
         v.invuln = COMBAT.wreckInvuln;

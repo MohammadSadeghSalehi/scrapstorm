@@ -800,29 +800,121 @@ export function stepVehicle(
   };
 }
 
+/**
+ * Gravity, m/s².
+ *
+ * Real g rather than an arcade multiple, and that is a decision with a check
+ * behind it: `scripts/check-track-profile.mjs` sizes every jump zone in the
+ * catalogue by `v² / R > g` and prints the speed each crest launches at. That
+ * figure was fiction while the airborne case was a constant descent rate; now it
+ * is a prediction the sim can be held to, and the script imports THIS constant
+ * so the two cannot drift apart. Raising it to make jumps snappier would
+ * silently invalidate six circuits' worth of ramp tuning.
+ */
+export const GRAVITY_MS2 = 9.81;
+
+/**
+ * Steepest slope a surface is allowed to throw a car off, as rise/run.
+ *
+ * The ground-supplied vertical speed is measured as the rise the surface just
+ * delivered, and `getGroundHeight` is sampled at the car's CENTRE — so any
+ * height-field discontinuity (a deck edge, a crater lip, a respawn) reads as an
+ * enormous rise in one step and would fire the car into orbit. A real ramp
+ * converts forward speed to vertical at `sin(angle)`; capping the measured slope
+ * at 0.6 (31°) is the same statement, and it is well above the 0.31 exit grade
+ * of the steepest thing in the game.
+ */
+const MAX_LAUNCH_SLOPE = 0.6;
+
+/** Ride height: the car's origin sits this far above the surface. */
+const RIDE_HEIGHT = 0.55;
+
 function integratePos(v: VehicleState, dt: number) {
   const fx = -Math.sin(v.yaw);
   const fz = -Math.cos(v.yaw);
   const rx = Math.cos(v.yaw);
   const rz = -Math.sin(v.yaw);
-  v.x += (fx * v.speed + rx * v.lateral) * dt;
-  v.z += (fz * v.speed + rz * v.lateral) * dt;
-  const ground = getGroundHeight(v.x, v.z);
-  const targetY = ground + 0.55;
-  if (v.y < targetY - 0.02) {
-    v.y = targetY;
-    v.airTime = 0;
-  } else if (v.y > targetY + 0.15) {
-    v.airTime += dt;
-    v.y += -18 * dt;
-    if (v.y < targetY) {
+  const dx = (fx * v.speed + rx * v.lateral) * dt;
+  const dz = (fz * v.speed + rz * v.lateral) * dt;
+  v.x += dx;
+  v.z += dz;
+  const targetY = getGroundHeight(v.x, v.z) + RIDE_HEIGHT;
+  let vy = v.vy ?? 0;
+
+  /*
+   * ── airborne ──────────────────────────────────────────────────────
+   *
+   * A plain ballistic step. This used to be `v.y += -18 * dt`, i.e. a fixed 18
+   * m/s sink with no upward phase at all, which meant a car could not be thrown
+   * by anything: leaving a crest at 40 m/s and leaving it at 5 m/s produced the
+   * same descent. Everything the ramps in this game are tuned for — the arc
+   * length of a jump zone, the crest radius, `JUMP_SHAPE` — is a statement about
+   * a trajectory that was never integrated.
+   */
+  if (v.airTime > 0) {
+    vy -= GRAVITY_MS2 * dt;
+    const ny = v.y + vy * dt;
+    if (ny <= targetY) {
       v.y = targetY;
+      v.vy = 0;
       v.airTime = 0;
+    } else {
+      v.y = ny;
+      v.vy = vy;
+      v.airTime += dt;
     }
-  } else {
-    v.y += (targetY - v.y) * Math.min(1, 14 * dt);
-    v.airTime = 0;
+    return;
   }
+
+  const run = Math.hypot(dx, dz);
+  const cap = run * MAX_LAUNCH_SLOPE;
+
+  /*
+   * A stopped car cannot be launched by a climb it is no longer making.
+   *
+   * Collision response runs AFTER `stepVehicle`, so a car that hits something
+   * hard while on a slope enters the next step with the previous step's climb
+   * rate still in `vy` and with almost no forward speed — and is then pushed
+   * back DOWN the slope by `deflectOffStatic`, which drops the ground out from
+   * under it. Measured before this clamp: the probe's car hit the carrier's lip
+   * cap at 22 m/s and left the ramp at 88.6 degrees with 7.4 m/s of vertical.
+   *
+   * Re-capping against THIS step's travel says the same thing the clamp below
+   * says, one step earlier: a slope can only convert forward motion, and there
+   * is none.
+   */
+  if (vy * dt > cap) vy = cap / dt;
+
+  /*
+   * ── does the ground still hold the car? ───────────────────────────
+   *
+   * Not a slope threshold and not a speed threshold: take one free-flight step
+   * from where the car is, and if it ends ABOVE the surface then the surface has
+   * dropped away faster than gravity can pull the car after it. That is the
+   * textbook condition for leaving the ground (it is `v²/R > g` written as a
+   * difference rather than as a curvature) and it needs nothing but the height
+   * the query already returned.
+   */
+  const ballistic = v.y + vy * dt - 0.5 * GRAVITY_MS2 * dt * dt;
+  if (ballistic > targetY + 0.02) {
+    v.airTime = dt;
+    v.vy = vy - GRAVITY_MS2 * dt;
+    v.y = ballistic;
+    return;
+  }
+
+  const prevY = v.y;
+  if (v.y < targetY - 0.02) v.y = targetY;
+  else v.y += (targetY - v.y) * Math.min(1, 14 * dt);
+  v.airTime = 0;
+
+  /*
+   * Carry the surface's own climb rate as the car's vertical velocity, so that
+   * when the surface ends the car keeps what the ramp gave it. Clamped against
+   * the distance actually travelled — see MAX_LAUNCH_SLOPE.
+   */
+  const rise = v.y - prevY;
+  v.vy = (rise > cap ? cap : rise < -cap ? -cap : rise) / dt;
 }
 
 export function applyDamage(

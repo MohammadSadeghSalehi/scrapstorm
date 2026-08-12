@@ -33,6 +33,8 @@ import {
   VergeDrift,
 } from "./scatter";
 import { Setpieces } from "./setpieces";
+import { CarrierRigs } from "./CarrierRig";
+import { TunnelBores } from "./TunnelBores";
 import { getActiveEnvironment } from "./environments";
 import type { SurfaceDef } from "./environments";
 
@@ -185,76 +187,6 @@ function makeYardMaterial(
     attachGpuDetail(mat, { kind: "dirt", detailScale: 9, quality: q });
   }
   return mat;
-}
-
-/**
- * Compact start gantry — poles + small overhead board only.
- * NO wide ground planes (they filled the chase FOV as a white/red wall).
- */
-function StartGantry({
-  x,
-  y,
-  z,
-  yaw,
-  width,
-}: {
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-  width: number;
-}) {
-  // Poles must stand OUTSIDE the tarmac. At width*0.42 against a half-width of
-  // width*0.5 they were planted ~2m inside the road edge — a solid column in
-  // the driving line that you had to swerve around.
-  const half = width * 0.5 + 1.6;
-  const bannerW = Math.min(7.5, width * 0.42);
-  return (
-    <group position={[x, y + 0.02, z]} rotation={[0, yaw, 0]}>
-      <mesh position={[-half, 4.3, 0]} castShadow>
-        <boxGeometry args={[0.28, 8.6, 0.28]} />
-        <meshStandardMaterial color="#292524" metalness={0.55} roughness={0.5} />
-      </mesh>
-      <mesh position={[half, 4.3, 0]} castShadow>
-        <boxGeometry args={[0.28, 8.6, 0.28]} />
-        <meshStandardMaterial color="#292524" metalness={0.55} roughness={0.5} />
-      </mesh>
-      <mesh position={[0, 8.5, 0]} castShadow>
-        <boxGeometry args={[half * 2 + 0.4, 0.28, 0.28]} />
-        <meshStandardMaterial color="#1c1917" metalness={0.45} roughness={0.55} />
-      </mesh>
-      {/*
-        Board sits above the chase camera (which rides ~7.8 world units up), so
-        you drive *under* the gantry instead of into it. At the old 5.55 it was
-        below the camera and filled the frame for the whole opening straight.
-        No emissive either: a white emissive slab feeding bloom was blowing out
-        to a solid glowing wall.
-      */}
-      <mesh position={[0, 8.95, 0.35]}>
-        <boxGeometry args={[bannerW, 1.1, 0.08]} />
-        <meshStandardMaterial color="#e7e5e4" roughness={0.7} metalness={0.05} />
-      </mesh>
-      <mesh position={[0, 8.25, 0.38]}>
-        <boxGeometry args={[bannerW, 0.28, 0.06]} />
-        <meshStandardMaterial color="#dc2626" roughness={0.55} metalness={0.1} />
-      </mesh>
-      {/* Road paint — thin boxes on the asphalt, not full-width planes */}
-      <mesh position={[0, 0.04, 1.4]} receiveShadow>
-        <boxGeometry args={[Math.min(width * 0.55, 12), 0.04, 0.55]} />
-        <meshStandardMaterial color="#fafaf9" roughness={0.85} metalness={0.02} />
-      </mesh>
-      <mesh position={[0, 0.04, 2.15]} receiveShadow>
-        <boxGeometry args={[Math.min(width * 0.55, 12), 0.04, 0.28]} />
-        <meshStandardMaterial
-          color="#dc2626"
-          emissive="#991b1b"
-          emissiveIntensity={0.2}
-          roughness={0.8}
-          metalness={0.05}
-        />
-      </mesh>
-    </group>
-  );
 }
 
 export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
@@ -430,8 +362,6 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
   }, [tier, pbrKey, surfaces, epoch]);
 
   const markers = useMemo(() => getEdgeMarkers().slice(), [epoch]);
-  const s0 = getTrackSamples()[0] ?? { x: 0, y: 0, z: 0, yaw: 0, width: 26 };
-  const startYaw = s0.yaw ?? 0;
 
   return (
     <group key={`track-${epoch}`}>
@@ -447,13 +377,20 @@ export function TrackMesh({ trackEpoch }: { trackEpoch?: number }) {
         <lineBasicMaterial color="#f5f5f4" transparent opacity={0.62} />
       </lineSegments>
 
-      <StartGantry
-        x={s0.x}
-        y={s0.y}
-        z={s0.z}
-        yaw={startYaw}
-        width={s0.width ?? 26}
-      />
+      {/*
+        Set pieces that own a piece of the ground or the sky above it. Two draw
+        calls at the low tier and three above it, on the circuits that have
+        them: a merged tunnel bore (+1 more for its strip lights above low), and
+        a merged car carrier. Both take their geometry from the same modules the
+        physics reads — `world/tunnels.ts` and `world/carrier.ts` — so the wall
+        you hit and the deck you climb cannot be a different shape from the ones
+        you can see.
+
+        The start gantry moved to GameScene: its light tree needs the countdown,
+        and TrackMesh is deliberately not handed the sim.
+      */}
+      <TunnelBores trackEpoch={epoch} />
+      <CarrierRigs trackEpoch={epoch} />
 
       <CulledEdgePosts markers={markers} />
       <CulledBeacons />

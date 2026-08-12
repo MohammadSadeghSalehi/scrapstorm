@@ -5,6 +5,34 @@
  */
 import type { Particle, VehicleState } from "./types";
 import { VEHICLE_HITBOX } from "./physics";
+/*
+ * ⚠ THESE THREE ARE THE `export let` BINDINGS, AND THAT IS A KNOWN DEFECT.
+ *
+ * AGENTS.md §4 says to use `getTrackSamples()` / `getEdgeMarkers()` /
+ * `getScenery()`, and this file is the last place that does not. Live bindings
+ * under real ESM, so THE BROWSER IS CORRECT — but jiti transpiles to CJS and
+ * snapshots the namespace property at module init, which is always ash_spire.
+ * Every headless run that changes circuit therefore places ASH SPIRE's props,
+ * verge posts and scenery blockers on the new one.
+ *
+ * MEASURED, not suspected. scripts/probe-setpieces.mjs drove the Rustline bore
+ * and the car was stopped from 38 m/s to 2.8 m/s in a single step by nothing
+ * the collider registry could see: a `barrier` prop of radius 2.08 at
+ * (103, 12), which is an Ash Spire tower 400m from where it lives. Swapping the
+ * three reads for the accessors moved the headless numbers a long way — Cinder
+ * Bowl's AI went from a 3.9-22.8 m/s crawl to a clean 44 m/s, the Foundry Pit
+ * race from 204s to 86s, the Dead Mile from 186s to 132s — which is to say the
+ * mission ladder's deadlines and its difficulty ordering are all calibrated
+ * against a harness that scatters an obstacle course over five of six circuits.
+ *
+ * NOT FIXED HERE ON PURPOSE. The one-line change is correct and turns
+ * mission-smoke red on four checks that are properties of the LADDER
+ * (`fp_overtime`'s deadline, `dm_widowmaker`'s survival clock, `cb_clean`'s pace
+ * target and the board's difficulty ordering), and re-deriving those needs the
+ * missions layer and a balance run. Whoever takes that on: change these three
+ * imports to the accessors FIRST, then re-tune, and the numbers above are the
+ * scale of the move to expect.
+ */
 import {
   EDGE_MARKERS,
   TRACK_SAMPLES,
@@ -12,6 +40,7 @@ import {
   getGroundHeight,
 } from "./track";
 import { VEHICLE_CLASSES } from "./classes";
+import { carrierBlocks } from "./world/carrier";
 import {
   capsuleContact,
   querySetpieceColliders,
@@ -145,6 +174,11 @@ export function spawnWorldProps(): PhysProp[] {
     const markerClear = Math.max(10, Math.floor(EDGE_MARKERS.length * 0.06));
     if (i < markerClear || i > EDGE_MARKERS.length - markerClear) continue;
     const m = EDGE_MARKERS[i];
+    // A carrier is parked half on the apron and stands over the verge markers
+    // on its stretch. Leaving them there costs the player 1-2.3 m/s of broken
+    // post every time they use the ramp — measured — for a stick that a
+    // forty-tonne transporter would have flattened when it stopped.
+    if (carrierBlocks(m.x, m.z)) continue;
     props.push({
       id: nid("bar"),
       kind: "barrier",
@@ -184,6 +218,11 @@ export function spawnWorldProps(): PhysProp[] {
     const off = s.width * 0.42 + 0.9 + (i % 4) * 0.15;
     const kind: PropKind = i % 3 === 0 ? "crate" : i % 3 === 1 ? "barrel" : "scrap";
     const r = kind === "crate" ? 0.78 : kind === "barrel" ? 0.52 : 0.9;
+    const px0 = s.x + rx * side * off;
+    const pz0 = s.z + rz * side * off;
+    // Same reason as the verge markers above: a barrel inside the trailer is a
+    // barrel you cannot see and cannot avoid.
+    if (carrierBlocks(px0, pz0)) continue;
     props.push({
       id: nid(kind),
       kind,
@@ -637,6 +676,25 @@ export function collideVehiclesWithProps(
         continue;
       }
 
+      /*
+       * A car in the air does not hit a barrel on the ground.
+       *
+       * This never mattered while the airborne case was a fixed 18 m/s sink —
+       * nothing in the game got more than about 0.15m off the deck, so every
+       * prop was effectively infinitely tall and nobody noticed. Now that
+       * `integratePos` is ballistic, a car leaving the carrier is twelve metres
+       * up, and the probe caught it: a verge post standing on the tarmac UNDER
+       * the trailer's deck took 3.7 m/s off a car that was four metres above it.
+       *
+       * The two heights come from the same discriminator the break test already
+       * uses (see `breakable`): a static, unbreakable prop is a scenery footprint
+       * standing for a 6-10m tower or crane kit, and everything else is a barrel,
+       * a crate, a pallet of scrap or a 1.1m verge post whose centre sits about
+       * half a metre up.
+       */
+      const clearAbove = !p.dynamic && !p.breakable ? 11 : 1.2;
+      if (v.y - p.y > clearAbove) continue;
+
       // OBB-aware radius: expand circle by yaw-projected half-extents so
       // long cars don't clip corners through barrels.
       const c = Math.abs(Math.cos(v.yaw));
@@ -896,6 +954,11 @@ export function collideVehiclesWithProps(
       0.92;
     const statics = querySetpieceColliders(v.x, v.z, carR);
     for (const sc of statics) {
+      // Structure you can be on top of. `yTop` is absent on everything except
+      // the car carrier's trailer body; see StaticCollider in setpieceColliders.
+      // The test is on the car's y rather than on airTime because a car parked
+      // on the deck is not airborne and must still be inside its own truck.
+      if (sc.yTop !== undefined && v.y > sc.yTop) continue;
       const hit = capsuleContact(sc, v.x, v.z, carR);
       if (!hit.hit) continue;
       // Static, so the closing speed is just the car's velocity along the normal.
