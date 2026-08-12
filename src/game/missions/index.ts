@@ -27,9 +27,11 @@ export {
   applyMissionEffects,
   createMissionRun,
   disarmMission,
+  missionVerdict,
   stepMission,
   summarise,
   type MissionRun,
+  type MissionVerdict,
 } from "./runtime";
 export { EVENT_MISSIONS, MISSIONS_BY_ID } from "./catalog";
 export { RIVALS, RIVALS_BY_RANK, DUEL_MISSIONS, duelMission, rivalById } from "./rivals";

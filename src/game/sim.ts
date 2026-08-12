@@ -470,6 +470,7 @@ function createState(
     selectedClass: classId,
     selectedTrack: trackId,
     finishedOrder: [],
+    weaponsHot: false,
     cameraShake: 0,
     cameraKick: null,
     lastHitFlash: 0,
@@ -970,6 +971,20 @@ export class GameSimulation {
 
     state.raceTime += dt;
 
+    /*
+     * The guns come live, once, and everybody is told.
+     *
+     * Announced rather than silent because a rule the player cannot see is
+     * indistinguishable from a bug: pressing fire and getting nothing for ten
+     * seconds reads as broken input, not as a rolling start. The event goes
+     * through the same channel as the lap and finish callouts, so it gets the
+     * announcer line and the HUD radio strip without a special case.
+     */
+    if (!state.weaponsHot && state.raceTime >= COMBAT.weaponsHotAt) {
+      state.weaponsHot = true;
+      pushEvent(state, "weapons", "WEAPONS FREE");
+    }
+
     for (const v of state.vehicles) {
       if (v.finished) {
         v.speed *= Math.max(0, 1 - 1.8 * dt);
@@ -1026,11 +1041,20 @@ export class GameSimulation {
 
       const def = VEHICLE_CLASSES[v.classId];
       v.lockTargetId = findLockTarget(v, state.vehicles, def.primaryRange * 1.12);
-      tryPrimary(v, input, state.projectiles, state.vehicles);
+      /*
+       * WEAPONS COLD FOR THE OPENING SECONDS. See COMBAT.weaponsHotAt.
+       *
+       * Locks still resolve while the hold is on, so the HUD can show a target
+       * being tracked and the moment the guns come live is a release rather
+       * than a search. Defence is also left available: it is the one input that
+       * cannot start a fight, and taking it away would mean a car rammed off
+       * the line has no answer at all.
+       */
+      if (state.weaponsHot) {
+        tryPrimary(v, input, state.projectiles, state.vehicles);
+        tryUltimate(v, input, state.mines, state.vehicles, state.projectiles);
+      }
       tryDefense(v, input, state.vehicles);
-      // Vehicles and projectiles reach the ultimate now: the bruiser fires a
-      // homing salvo rather than only buffing itself.
-      tryUltimate(v, input, state.mines, state.vehicles, state.projectiles);
       updateCheckpoints(v, state, dt);
     }
 

@@ -311,7 +311,11 @@ export type MissionEventKind =
   | "lap"
   | "finish"
   | "boost"
-  | "pickup";
+  | "pickup"
+  // Mirrors GameEvent in ../types. simCompat.ts asserts the two stay identical,
+  // which is what turned adding this into a compile error rather than a silent
+  // divergence.
+  | "weapons";
 
 /**
  * SimState satisfies this structurally — pass `sim.state` straight in. Read-only

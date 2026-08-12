@@ -33,6 +33,7 @@ import {
   markBeatSeen,
   missionById,
   missionCost,
+  missionVerdict,
   pendingIntroBeat,
   resetCareer,
   saveCareer,
@@ -235,6 +236,9 @@ function makeShellState(
     resumePhase: null,
     time: 0,
     raceTime: 0,
+    // The shell state is a menu backdrop, never a race, so the opening hold is
+    // simply where a race would start from.
+    weaponsHot: false,
     countdown: 3,
     vehicles: [player],
     projectiles: [],
@@ -618,8 +622,10 @@ export function ScrapstormApp() {
          * Taking the flag is a victory. Being told otherwise by a video is what
          * made the result logic read as broken.
          */
-        const wonOutright = summary.place === 1;
-        playCutscene(summary.outcome === "complete" || wonOutright ? "victory" : "defeat", () => {
+        // Same helper the results card reads, so the reel and the stamp can no
+        // longer contradict each other. See missionVerdict.
+        const verdict = missionVerdict(summary);
+        playCutscene(verdict === "lost" ? "defeat" : "victory", () => {
           setMissionResult({ def, summary, award });
         });
         if (award.beats.length > 0) setBeatQueue(award.beats);

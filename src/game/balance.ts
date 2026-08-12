@@ -265,6 +265,45 @@ export const DRIFT = {
 } as const;
 
 export const COMBAT = {
+  /**
+   * Seconds of racing before ANY car may open fire.
+   *
+   * The grid is two abreast, two deep, and for the first few seconds the whole
+   * field is inside everyone else's cone at point-blank range — so a race used
+   * to open with a scrum that was decided before the first corner and had
+   * nothing to do with driving. A cold opening lap makes the start a START:
+   * position is won on the road, and the fight begins once the field has strung
+   * out enough for a shot to be a decision rather than a formality.
+   *
+   * Applies to the player and the AI identically, which is the only version of
+   * this that is fair — a hold the field ignores is just a handicap.
+   *
+   * ── IT COSTS BALANCE, AND THE BILL IS NOT PAID YET ─────────────────
+   *
+   * Ten cold seconds is a transfer from the class that wins by fighting to the
+   * ones that win by driving. Measured at 1152 races: 3.8 points of win-rate
+   * spread before, 7.6 after — outside the null band (2.7 median, 5.6 p95) —
+   * with the Bruiser at 29.3% and the Trickster at 36.8%.
+   *
+   * Three compensations were tried and NONE of them moved it:
+   *
+   *   primaryCooldown 0.62 -> 0.56  (+11% DPS)      7.6 -> 7.5
+   *   maxSpeed 67 -> 68                             7.6 -> 7.7
+   *
+   * Which is itself the finding: the hold does not cost the Bruiser damage or
+   * pace, it costs it a WINDOW. Ten seconds of a bunched, point-blank,
+   * two-abreast field is where a heavy car does its work, and nothing handed to
+   * it afterwards buys back a start that has already been run. Paying this back
+   * properly means giving that class something in the cold phase — grid-slot
+   * advantage, a contact bonus while weapons are down, a shorter hold for it
+   * alone — and each of those is a design decision, not a number.
+   *
+   * Left visible rather than quietly reverted, because the hold is wanted and
+   * the imbalance is real. Do not tune the class sheet against this without
+   * re-reading the top-speed note above: that lever is worth ~5 points per m/s
+   * and will overshoot a 4-point gap into a 20-point one.
+   */
+  weaponsHotAt: 10,
   lockCone: 0.1,
   lockBlend: 0.72,
   weaponDrain: 0.09,

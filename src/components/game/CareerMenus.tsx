@@ -33,6 +33,7 @@ import {
   currentRank,
   duelMission,
   missionCost,
+  missionVerdict,
   nextRival,
   TRACK_UNLOCKS,
   type BoardEntry,
@@ -916,7 +917,16 @@ export function MissionResults({
   onRetry: () => void;
   onBoard: () => void;
 }) {
-  const won = summary.outcome === "complete";
+  /*
+   * `missionVerdict`, not `outcome === "complete"`, and the third state is the
+   * point: a race won on the road with an objective broken is neither a pass
+   * nor "Run lost", and calling it the latter over a victory reel is what read
+   * as the result screen being wrong. The objective list below still says
+   * exactly which clause failed, and the award is unchanged.
+   */
+  const verdict = missionVerdict(summary);
+  const won = verdict === "clear";
+  const raceWon = verdict === "race-won";
   return (
     <div className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-bg/80 p-4 backdrop-blur-sm">
       <Grain opacity={0.13} />
@@ -928,23 +938,42 @@ export function MissionResults({
           className={`animate-sweep relative overflow-hidden rounded-t-[5px] border-b px-4 py-3.5 ${
             won
               ? "border-[var(--color-verdigris)]/40 bg-[linear-gradient(100deg,rgba(95,163,139,0.22),transparent_70%)]"
-              : "border-[var(--color-ember)]/40 bg-[linear-gradient(100deg,rgba(226,84,60,0.22),transparent_70%)]"
+              : raceWon
+                ? "border-[var(--color-signal)]/40 bg-[linear-gradient(100deg,rgba(242,165,22,0.22),transparent_70%)]"
+                : "border-[var(--color-ember)]/40 bg-[linear-gradient(100deg,rgba(226,84,60,0.22),transparent_70%)]"
           }`}
         >
           <p className="eyebrow">{def.name}</p>
           <h2
             className={`stencil mt-0.5 text-[2.4rem] leading-none ${
-              won ? "text-[var(--color-verdigris)]" : "text-[var(--color-ember)]"
+              won
+                ? "text-[var(--color-verdigris)]"
+                : raceWon
+                  ? "text-[var(--color-signal)]"
+                  : "text-[var(--color-ember)]"
             }`}
           >
-            {won ? "Objectives clear" : "Run lost"}
+            {won ? "Objectives clear" : raceWon ? "Won on the road" : "Run lost"}
           </h2>
-          <Stamp
-            name={won ? "stamp-cleared" : "stamp-lost"}
-            label={won ? "Cleared" : "Lost"}
-            tone={won ? "var(--color-verdigris)" : "var(--color-ember)"}
-            className="right-4 top-1/2 h-11 w-auto -translate-y-1/2"
-          />
+          {/*
+            A race won with the brief unmet keeps the CLEARED stamp off — it was
+            not cleared and the purse says so — but it does not get branded LOST
+            either. The subline names the trade instead of leaving the player to
+            work out why first place is wearing a failure stamp.
+          */}
+          {raceWon && (
+            <p className="mt-1 font-mono text-[0.68rem] text-muted">
+              First across the line · the brief went unmet
+            </p>
+          )}
+          {!raceWon && (
+            <Stamp
+              name={won ? "stamp-cleared" : "stamp-lost"}
+              label={won ? "Cleared" : "Lost"}
+              tone={won ? "var(--color-verdigris)" : "var(--color-ember)"}
+              className="right-4 top-1/2 h-11 w-auto -translate-y-1/2"
+            />
+          )}
         </div>
 
         <div className="p-4">

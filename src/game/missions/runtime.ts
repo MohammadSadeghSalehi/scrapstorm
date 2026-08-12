@@ -999,6 +999,38 @@ export function disarmMission(): void {
   setWeather("dry");
 }
 
+/**
+ * The one verdict, so the reel and the card cannot disagree.
+ *
+ * They did. The clip asked `outcome === "complete" || place === 1` and the
+ * results card asked `outcome === "complete"`, so a race won on the road with a
+ * hull floor broken somewhere in lap two played the VICTORY reel and then
+ * stamped RUN LOST over it. Reported both ways round on different runs — "wrong
+ * clip", then "I won and it showed I lost" — because which half looked wrong
+ * depended on which one the player read first.
+ *
+ * Three states rather than two, because there are genuinely three things that
+ * can happen and collapsing them is what forced the lie in either direction:
+ *
+ *   clear     every required objective met. The mission is passed and paid.
+ *   race-won  first across the line, objectives not all met. A real thing to
+ *             have done, and not a loss — but not a pass either, and the
+ *             reward still belongs to the objectives.
+ *   lost      neither.
+ *
+ * Progression is deliberately NOT changed by this: `outcome` still drives the
+ * award, so "race-won" pays exactly what it did before. This decides what the
+ * player is TOLD, and the objective list underneath still shows precisely which
+ * clause failed.
+ */
+export type MissionVerdict = "clear" | "race-won" | "lost";
+
+export function missionVerdict(summary: MissionRunSummary): MissionVerdict {
+  if (summary.outcome === "complete") return "clear";
+  if (summary.place === 1) return "race-won";
+  return "lost";
+}
+
 export function summarise(
   run: MissionRun,
   snap: MissionSnapshot,

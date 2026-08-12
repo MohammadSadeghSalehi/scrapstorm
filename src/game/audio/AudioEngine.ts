@@ -1644,6 +1644,21 @@ class AudioEngine {
     // as kind "lap" too. sim.ts emits gate crossings as `Lap <n>`, so requiring
     // a digit is what separates the counter from a sentence about one.
     if (kind === "lap" && LAP_MESSAGE.test(msg)) this.playUi("lap");
+    /*
+     * The weapons hold lifting is the other event with no sound of its own.
+     *
+     * It is a RULE CHANGE rather than something that happened in the world, so
+     * unlike every case above there is no physical noise for it to double — the
+     * guns going live is silent by construction, and a silent rule change is
+     * one the player discovers by pressing fire and being confused. This is the
+     * announcement.
+     *
+     * `go` rather than a new asset: it is the start-lights stinger, already in
+     * the bank, and it means the same thing here — the thing you were waiting
+     * for is now allowed. Emitted once per race by sim.ts, so it needs no
+     * throttle of its own.
+     */
+    if (kind === "weapons") this.playUi("go");
   }
 }
 

@@ -241,7 +241,16 @@ export interface Particle {
 
 export interface GameEvent {
   t: number;
-  kind: "hit" | "wreck" | "respawn" | "lap" | "finish" | "boost" | "pickup";
+  kind:
+    | "hit"
+    | "wreck"
+    | "respawn"
+    | "lap"
+    | "finish"
+    | "boost"
+    | "pickup"
+    /** The opening weapons hold lifting. Fires once per race. */
+    | "weapons";
   message: string;
 }
 
@@ -271,6 +280,11 @@ export interface SimState {
   resumePhase: MatchPhase | null;
   time: number;
   raceTime: number;
+  /**
+   * False for the opening seconds of a race — nobody may fire. Flips once, at
+   * COMBAT.weaponsHotAt, and the flip is announced. See the guard in sim.ts.
+   */
+  weaponsHot: boolean;
   countdown: number;
   vehicles: VehicleState[];
   projectiles: Projectile[];
