@@ -932,7 +932,23 @@ export function MissionResults({
       <Grain opacity={0.13} />
       <Plate
         primary
-        className="max-h-[92dvh] w-full max-w-md animate-plate overflow-y-auto p-0"
+        className={
+          /*
+           * overflow-x-hidden, and it is not redundant with overflow-y-auto.
+           *
+           * Setting only the y axis leaves x at `visible`, and "visible on one
+           * axis, scrollable on the other" is not a combination CSS permits —
+           * the spec promotes the visible axis to `auto`. So any child a
+           * fraction of a pixel wider than the plate grows a full-width
+           * horizontal scrollbar along the bottom of the results card, which is
+           * the grey bar under RUN IT AGAIN. The overhanging child is the
+           * verdict stamp: absolutely positioned, rotated, and deliberately
+           * hanging off the right edge.
+           *
+           * Nothing on this card is meant to scroll sideways, so say so.
+           */
+          "max-h-[92dvh] w-full max-w-md animate-plate overflow-y-auto overflow-x-hidden p-0"
+        }
       >
         <div
           className={`animate-sweep relative overflow-hidden rounded-t-[5px] border-b px-4 py-3.5 ${
