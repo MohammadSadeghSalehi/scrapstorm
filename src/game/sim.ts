@@ -867,6 +867,15 @@ export class GameSimulation {
     this.state.events = [];
     this.state.finishedOrder = [];
     this.state.raceTime = 0;
+    /*
+     * The hold has to be re-armed with the clock it is measured against.
+     *
+     * `raceTime` is reset here and `weaponsHot` was not, so the flag survived
+     * into the next heat: the opening hold worked exactly once per session and
+     * every restart after that began with the guns already live and no WEAPONS
+     * FREE call. A latch keyed to a counter that resets must be reset beside it.
+     */
+    this.state.weaponsHot = false;
     this.state.countdown = RACE.countdownSec;
     this.state.cameraShake = 0;
     this.state.cameraKick = null;
@@ -1085,6 +1094,32 @@ export class GameSimulation {
       preVx = pv.vx;
       preVz = pv.vz;
       preStun = player.hitStun;
+    }
+
+    /*
+     * A landing is an impact, so it goes through the impact reactions.
+     *
+     * `landingImpact` is published by the integrator for exactly one step (see
+     * physics.ts). Drained here rather than read, so a frame in which the sim
+     * does not reach this point cannot leave a stale value to fire twice.
+     *
+     * Only the player shakes the camera — it is the player's camera — but every
+     * car throws dust, because a rival slamming down off the carrier ahead of
+     * you is one of the few things in this game that says how big the jump was.
+     */
+    for (const v of state.vehicles) {
+      const land = v.landingImpact ?? 0;
+      if (land <= 0) continue;
+      v.landingImpact = 0;
+      if (land > 3) {
+        spawnDamageSmoke(v, state.particles, Math.min(0.05, land * 0.004));
+        if (v.isPlayer) {
+          sharedTrauma.add(Math.min(0.4, land * 0.03));
+          // Loud enough to be a beat, quiet enough not to read as a crash: a
+          // clean landing is a good thing that happened, not a mistake.
+          if (land > 6) pushEvent(state, "hit", "Landed");
+        }
+      }
     }
 
     // Two-pass collisions: first with FX, second resolve residual

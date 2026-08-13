@@ -176,7 +176,28 @@ export type ScatterFields = {
  * daylight-green cactus standing in a blue-grey night.
  */
 const CACTUS_PER_SAMPLE = 2;
-const CACTUS_CAP = 90;
+/*
+ * 0 — THE CACTUS IS OFF.
+ *
+ * It was asked for, built, and rejected on sight: "the green primitives around
+ * the road are ugly, remove them". That is a fair verdict on what this actually
+ * is. A saguaro here is a capsule with two smaller capsules stuck on it at an
+ * angle, and no amount of placement, density or colour work fixes a silhouette
+ * that reads as plumbing — which is the same complaint that retired monolith()
+ * in the commit that introduced this.
+ *
+ * Disabled rather than deleted, and the distinction matters. The plumbing is
+ * the part that was hard and the part that is right: density and colour derive
+ * from the scrub layer, so the Foundry Pit correctly grows nothing and the hour
+ * and weather transforms relight it for free. None of that is worth rewriting
+ * when the only thing wrong is the mesh. Point `cactusGeometry()` at a real
+ * generated asset (refs/mesh + scripts/import-meshgen.mjs, loaded through
+ * createGltfLoader) and set this back to 90.
+ *
+ * Costs nothing while off: ScatterLayer's `visible` gate makes projectObject
+ * skip an empty layer before the frustum test, so it is not even traversed.
+ */
+const CACTUS_CAP = 0;
 
 export function buildScatterFields(): ScatterFields {
   /*

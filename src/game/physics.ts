@@ -855,6 +855,28 @@ function integratePos(v: VehicleState, dt: number) {
     vy -= GRAVITY_MS2 * dt;
     const ny = v.y + vy * dt;
     if (ny <= targetY) {
+      /*
+       * ── THE LANDING ───────────────────────────────────────────────
+       *
+       * This used to be three assignments: snap to the ground, zero the
+       * vertical, clear the timer. Correct, and completely weightless — a car
+       * fell ninety centimetres onto tarmac and arrived at the same speed,
+       * level, in silence. The jump was integrated; the arrival was not.
+       *
+       * The impact is the vertical velocity being destroyed, so that is what
+       * everything scales from. It costs SPEED, because a suspension absorbing
+       * a metre of drop is not also driving the car forward, and it is
+       * deliberately gentle — 9 m/s of sink, which is a big jump, takes about
+       * 7% — because a landing that stops the car turns every ramp into a trap
+       * and players stop using them.
+       */
+      const impact = Math.max(0, -vy);
+      v.speed *= 1 - Math.min(0.14, impact * 0.008);
+      // Suspension squats, then unloads through the usual bodyPitch decay.
+      v.bodyPitch = Math.min(0.3, (v.bodyPitch ?? 0) + impact * 0.014);
+      // Handed to the collision layer, which already turns an impact number
+      // into camera trauma and a tyre bark. A landing is an impact.
+      v.landingImpact = impact;
       v.y = targetY;
       v.vy = 0;
       v.airTime = 0;
@@ -862,6 +884,22 @@ function integratePos(v: VehicleState, dt: number) {
       v.y = ny;
       v.vy = vy;
       v.airTime += dt;
+      /*
+       * ── ATTITUDE IN THE AIR ───────────────────────────────────────
+       *
+       * The body follows its own trajectory: nose up while the car is still
+       * climbing, nose down once it is falling. Without this a jump is a
+       * level car sliding along an invisible arc, which reads as the car being
+       * carried rather than thrown, and it is most of why the flight looked
+       * wrong even after the physics underneath it was right.
+       *
+       * bodyPitch is positive nose-DOWN (see the braking dive below), hence the
+       * negation. Chased rather than set, so the rotation has weight and the
+       * transition through the apex is a roll rather than a switch.
+       */
+      const along = Math.max(6, Math.abs(v.speed));
+      const want = Math.max(-0.32, Math.min(0.32, -Math.atan2(vy, along)));
+      v.bodyPitch = (v.bodyPitch ?? 0) + (want - (v.bodyPitch ?? 0)) * Math.min(1, 5 * dt);
     }
     return;
   }

@@ -176,12 +176,32 @@ export function structureGeometry(width: number): {
    * the far side. Everything overhead is above GANTRY_CLEAR by construction —
    * the only panel below it is the road decal, which is on the tarmac.
    */
+  /*
+   * EVERY PANEL GETS A ROTATED TWIN, and none of them may be double-sided.
+   *
+   * A back face does not show the texture reversed by accident — it shows it
+   * reversed by definition: the same UVs sampled while the winding is flipped
+   * is a mirror. So a DoubleSide panel with WORDS on it is readable from one
+   * side and mirror-written from the other, which is what put START·FINISH on
+   * backwards over the line. The banner already had a twin and read correctly;
+   * the start/finish plate and the two sector boards did not, and were being
+   * read through their own backs.
+   *
+   * A rotation is not a mirror — it carries the front face round with it — so
+   * two quads back to back at 180 degrees is a sign with two correct faces.
+   * signMat is FrontSide for the same reason: with twins everywhere, a visible
+   * back face can only ever be a mistake, and it should disappear rather than
+   * silently print backwards.
+   */
   const signs: THREE.BufferGeometry[] = [
     panel(bannerW, bannerH, [0, bannerY, -0.3], UV.banner),
     panel(bannerW, bannerH, [0, bannerY, 0.3], UV.banner, [0, Math.PI]),
     panel(3.4, 1.15, [0, top + 0.75, -0.62], UV.startFinish),
+    panel(3.4, 1.15, [0, top + 0.75, -0.44], UV.startFinish, [0, Math.PI]),
     panel(4.6, 1.55, [-half - 0.24, 5.4, 0], UV.sector, [0, -Math.PI / 2]),
+    panel(4.6, 1.55, [-half - 0.30, 5.4, 0], UV.sector, [0, Math.PI / 2]),
     panel(4.6, 1.55, [half + 0.24, 5.4, 0], UV.sector, [0, Math.PI / 2]),
+    panel(4.6, 1.55, [half + 0.30, 5.4, 0], UV.sector, [0, -Math.PI / 2]),
     // Chevron strip laid flat on the tarmac, ahead of the two paint bars.
     panel(paintW, 1.1, [0, 0.055, 3.2], UV.lap, [-Math.PI / 2, 0]),
   ];

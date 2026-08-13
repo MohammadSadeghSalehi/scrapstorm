@@ -186,7 +186,16 @@ export function StartLineGantry({
         color: tex ? 0xffffff : 0xd8d4cc,
         roughness: 0.78,
         metalness: 0.05,
-        side: THREE.DoubleSide,
+        /*
+         * FrontSide, not DoubleSide. A back face samples the same UVs with the
+         * winding reversed, which is a MIRROR — so a double-sided panel with
+         * lettering on it reads backwards from behind, and that is exactly what
+         * put START·FINISH on backwards over the line. Every panel in
+         * setpieceGeometry now has a rotated twin instead, so a visible back
+         * face can only be a mistake and should vanish rather than print in
+         * reverse.
+         */
+        side: THREE.FrontSide,
         envMapIntensity: 0.6,
       }),
     [tex],

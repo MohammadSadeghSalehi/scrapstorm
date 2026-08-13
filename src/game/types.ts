@@ -155,6 +155,16 @@ export interface VehicleState {
   surface: SurfaceKind;
   bodyRoll: number;
   bodyPitch: number;
+  /**
+   * Vertical speed destroyed by the most recent touchdown, in m/s, for one
+   * step. Zero except on the frame a jump lands.
+   *
+   * Published rather than handled inside the integrator because the reaction to
+   * an impact — camera trauma, the tyre bark, the dust — already lives in the
+   * collision layer, and a landing is an impact. Optional so the UI layer, which
+   * builds VehicleState literals of its own, does not have to know about it.
+   */
+  landingImpact?: number;
   tires: TireState[];
   steerAngle: number;
   tireLoad: number;

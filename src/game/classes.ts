@@ -253,7 +253,7 @@ export const VEHICLE_CLASSES: Record<VehicleClassId, VehicleClassDef> = {
      * The trim is straight-line only. Taking rotation instead would have closed
      * the same gap and deleted the class.
      */
-    maxSpeed: 78,
+    maxSpeed: 75,
     accel: 2.94,
     // Highest turn rate by a wide margin — this is the number the class is
     // built on. It changes direction where the other two have to brake.
