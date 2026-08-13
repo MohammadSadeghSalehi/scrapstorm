@@ -19,6 +19,12 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { mulberry32 } from "./placement";
+import {
+  FACE_V_BOARD,
+  FACE_V_SIGN,
+  STRUCT_UV_BOARD,
+  STRUCT_UV_SIGN,
+} from "./signFaces";
 
 /**
  * Uniformly coloured box, ready to merge into a module.
@@ -394,23 +400,96 @@ export function railModuleGeometry(beamLen: number): THREE.BufferGeometry {
   ]);
 }
 
+/* ── atlas-mapped faces ───────────────────────────────────────────────
+ *
+ * Both signage families are ONE InstancedMesh each, and three has no
+ * per-instance UV — so the shader is patched to push every vertex's `vMapUv`
+ * through a per-instance rect (see signFaces.ts). That transform hits the whole
+ * module, not just the plate, so a module has exactly two kinds of vertex:
+ *
+ *  - ARTWORK, whose uv spans the cell's face region, and
+ *  - STRUCTURE, whose uv is pinned to a single point in the cell's white band.
+ *
+ * The two helpers below are the only places either is written. A structural part
+ * that kept BoxGeometry's own 0..1 uv would sample the whole cell across each of
+ * its six faces, which is a post with a chevron printed down it.
+ */
+
+/** Pin every vertex of a geometry to one texel of its cell. */
+function pinUv(
+  g: THREE.BufferGeometry,
+  at: readonly [number, number],
+): THREE.BufferGeometry {
+  const uv = g.attributes.uv as THREE.BufferAttribute | undefined;
+  if (!uv) return g;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, at[0], at[1]);
+  uv.needsUpdate = true;
+  return g;
+}
+
+/**
+ * A quad carrying a cell's artwork, facing local +Z.
+ *
+ * SINGLE-SIDED and single, with no rotated twin, which is a deliberate
+ * departure from the gantry's rule. The gantry's panels hang in the air and are
+ * approached from both directions, so they need a second correctly-wound copy;
+ * these stand just proud of an opaque backing box, so there is no back face to
+ * read the texture through and therefore no mirror to produce. A sign is blank
+ * on the back, which is also what a sign is actually like.
+ */
+function facePanel(
+  w: number,
+  h: number,
+  pos: [number, number, number],
+  vRange: readonly [number, number],
+): THREE.BufferGeometry {
+  const g = new THREE.PlaneGeometry(w, h);
+  const uv = g.attributes.uv as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, uv.getX(i), vRange[0] + uv.getY(i) * (vRange[1] - vRange[0]));
+  }
+  uv.needsUpdate = true;
+  g.translate(pos[0], pos[1], pos[2]);
+  // White, so the artwork arrives at material colour x 1 and the retroreflective
+  // trick below still lands on the sheeting rather than on a tint of it.
+  const n = uv.count;
+  const c = new Float32Array(n * 3).fill(1);
+  g.setAttribute("color", new THREE.BufferAttribute(c, 3));
+  g.clearGroups();
+  return g;
+}
+
+/** Panel proportions. The atlas cell's face region is derived from these. */
+export const BOARD_PANEL_W = 4.6;
+export const BOARD_PANEL_H = 1.55;
+
 /**
  * Roadside hoarding, panel facing local +Z, feet at y = 0.
  *
- * The panel takes the full per-instance colour while the frame and the logo bar
- * are dark in vertex colour, so instancing one geometry still yields a row of
- * differently-liveried sponsor boards from a single draw call.
+ * The panel used to be white in vertex colour and take a per-instance livery
+ * tint, which was the only variety one geometry could carry. It now carries a
+ * PRINTED face out of the shared atlas instead — a league banner, a circuit
+ * board, two traders, a timing notice — so the livery has been dropped rather
+ * than multiplied over the artwork, and `packLayer` no longer allocates an
+ * instanced colour buffer for this layer at all.
  */
 export function boardGeometry(): THREE.BufferGeometry {
   const frame: [number, number, number] = [0.20, 0.19, 0.18];
-  const panel: [number, number, number] = [1, 1, 1];
+  // The panel box is now only ever seen from BEHIND — the printed quad covers
+  // its front — so it is painted as the back of a hoarding: bare sheet.
+  const panel: [number, number, number] = [0.46, 0.44, 0.41];
   const bar: [number, number, number] = [0.1, 0.1, 0.11];
-  return mergeOrThrow([
+  const body = mergeOrThrow([
     coloredBox(0.16, 2.5, 0.16, [-1.85, 1.25, 0], frame),
     coloredBox(0.16, 2.5, 0.16, [1.85, 1.25, 0], frame),
-    coloredBox(4.6, 1.55, 0.12, [0, 2.4, 0.02], panel),
+    coloredBox(BOARD_PANEL_W, BOARD_PANEL_H, 0.12, [0, 2.4, 0.02], panel),
     coloredBox(4.62, 0.34, 0.17, [0, 1.95, 0.02], bar),
     coloredBox(4.8, 0.14, 0.2, [0, 3.26, 0.02], frame),
+  ]);
+  pinUv(body, STRUCT_UV_BOARD);
+  return mergeOrThrow([
+    body,
+    facePanel(BOARD_PANEL_W, BOARD_PANEL_H, [0, 2.4, 0.085], FACE_V_BOARD),
   ]);
 }
 
@@ -700,46 +779,70 @@ export function catenaryWireGeometry(span: number): THREE.BufferGeometry {
  */
 export const SIGN_PLATE_HALF_X = 1.21;
 export const SIGN_PLATE_BASE_Y = 2.0;
+/**
+ * Plate height. 2.42 x 1.32 is an aspect of 1.8333, and `SIGN_FACE_FRAC` in
+ * signFaces.ts divides the cell width by exactly that to size the artwork
+ * region. Change one without the other and every legend arrives stretched.
+ */
+export const SIGN_PLATE_H = 1.32;
 
 /**
- * Circuit furniture: a chevron board on a single post. ~96 triangles.
+ * Circuit furniture: a printed plate on a single post. 62 triangles.
  *
- * Deliberately UNTEXTURED, and the choice is worth recording because generated
- * sign artwork was the obvious alternative. Instanced signs need per-instance
- * atlas cells to say anything different from one another, three has no
- * per-instance UV without patching the shader, and a patch that silently fails
- * to apply gives every sign on the circuit the same face — a failure this
- * project has already shipped twice in the equivalent form (a fallback masking a
- * mesh that never decoded). Vertex-coloured devices cannot fail that way: the
- * chevron either exists in the buffer or the geometry does not build.
+ * ── this used to be untextured, and the note said it should stay that way ──
  *
- * The plate's face is left at vertex colour 1 so the MATERIAL colour comes
- * through unchanged, and the material takes `surfaces.stripe` — the one colour
- * in the environment that is authored as retroreflective and lifts back toward
- * white as the hour darkens. The post is at 0.28 so it takes only a quarter of
- * that lift, which is exactly how a sign behaves in headlights.
+ * The old note argued that instanced signs cannot say anything different from
+ * one another without per-instance UVs, that three has none, and that a shader
+ * patch which silently fails to apply gives every sign on the circuit the same
+ * face — a failure this project has already shipped twice in the equivalent
+ * form. All three points are true. The conclusion no longer follows, because
+ * the third one is now GUARDED: the patch is a pure function of the shader
+ * source that THROWS when its anchor is missing, and
+ * `scripts/check-setpiece-footprints.mjs` runs it against
+ * `THREE.ShaderLib.standard` — the very string the renderer hands it — so a
+ * chunk rename in three fails a gate instead of flattening the signage.
+ *
+ * What that buys is the whole point of the exercise: sixteen different plates
+ * out of one draw call, saying which corner it is, how hard, how far away, and
+ * which circuit you are on.
+ *
+ * It is also CHEAPER. The vertex-coloured chevron cost three extra boxes to draw
+ * one device; the printed face is two triangles and draws any of them. 96 down
+ * to 62.
+ *
+ * The retroreflective trick is untouched and now makes physical sense rather
+ * than approximate sense. The material takes `surfaces.stripe` — the one colour
+ * in the environment authored to lift back toward white as the hour darkens —
+ * and the artwork multiplies it, so the bleached SHEETING lifts at night while
+ * the charcoal legend printed on it stays dark. That is what retroreflective
+ * sheeting actually does, and the old uniform plate could only ever approximate
+ * it by lifting everything at once.
  */
 export function signGeometry(): THREE.BufferGeometry {
   const dark: [number, number, number] = [0.24, 0.23, 0.22];
   const post: [number, number, number] = [0.28, 0.27, 0.26];
-  const face: [number, number, number] = [1, 1, 1];
+  // Seen from behind only; the printed quad covers its front.
+  const plate: [number, number, number] = [0.42, 0.41, 0.39];
   const rail: [number, number, number] = [0.18, 0.17, 0.16];
-  const amber: [number, number, number] = [1.0, 0.58, 0.1];
-  const hazard: [number, number, number] = [0.92, 0.16, 0.08];
 
   const midY = SIGN_PLATE_BASE_Y + 0.66;
-  return mergeOrThrow([
+  const postH = SIGN_PLATE_BASE_Y + 1.4;
+  const body = mergeOrThrow([
     coloredBox(0.46, 0.54, 0.46, [0, -0.18, 0], dark),
-    coloredBox(0.14, SIGN_PLATE_BASE_Y + 1.4, 0.14, [0, (SIGN_PLATE_BASE_Y + 1.4) * 0.5, 0], post),
-    coloredBox(SIGN_PLATE_HALF_X * 2, 1.32, 0.07, [0, midY, 0.1], face),
+    coloredBox(0.14, postH, 0.14, [0, postH * 0.5, 0], post),
+    coloredBox(SIGN_PLATE_HALF_X * 2, SIGN_PLATE_H, 0.07, [0, midY, 0.1], plate),
     coloredBox(SIGN_PLATE_HALF_X * 2 + 0.1, 0.1, 0.11, [0, midY + 0.7, 0.1], rail),
     coloredBox(SIGN_PLATE_HALF_X * 2 + 0.1, 0.1, 0.11, [0, midY - 0.7, 0.1], rail),
-    // Chevron: an upper bar falling to the right and a lower one rising to it.
-    // A rotation about +Z takes local +X to (cos a, sin a), so the signs of
-    // these two angles are what point the device rather than splay it.
-    orientedBox(1.5, 0.22, 0.04, [-0.06, midY + 0.26, 0.155], amber, [0, 0, -0.62]),
-    orientedBox(1.5, 0.22, 0.04, [-0.06, midY - 0.26, 0.155], amber, [0, 0, 0.62]),
-    coloredBox(SIGN_PLATE_HALF_X * 2, 0.16, 0.05, [0, midY - 0.53, 0.155], hazard),
+  ]);
+  pinUv(body, STRUCT_UV_SIGN);
+  return mergeOrThrow([
+    body,
+    facePanel(
+      SIGN_PLATE_HALF_X * 2,
+      SIGN_PLATE_H,
+      [0, midY, 0.142],
+      FACE_V_SIGN,
+    ),
   ]);
 }
 

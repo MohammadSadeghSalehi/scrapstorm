@@ -22,13 +22,22 @@
  *
  * No three import, deliberately. This module is on the sim's side of the line.
  */
-import { getActiveTrackId, getTrackEpoch } from "../../track";
+import { getActiveTrackId, getTrackEpoch, getTrackSamples } from "../../track";
 import {
   curvatureThreshold,
   linkedRuns,
   meanSpacing,
+  signedCurvature,
+  solveAnchor,
   vergePoints,
+  type VergePoint,
 } from "./placement";
+import {
+  BOARD_FACE,
+  BOARD_FACE_COUNT,
+  SIGN_FACE,
+  SIGN_FACE_COUNT,
+} from "./signFaces";
 
 /**
  * Half-thickness of the guard rail's collider, in metres.
@@ -168,8 +177,10 @@ export type BoardSite = {
   /** Unit XZ direction of the panel's long axis (its local +X). */
   ax: number;
   az: number;
-  /** Track sample index, kept only so the livery pick is unchanged. */
+  /** Track sample index. */
   index: number;
+  /** Cell of the signage atlas the panel wears. See signFaces.ts. */
+  face: number;
 };
 
 /**
@@ -196,13 +207,15 @@ export type LampSite = {
  */
 export type WireSpan = { a: number; b: number };
 
-/** One chevron board. Same facing convention as a hoarding, plus a toe-in. */
+/** One post-mounted plate. Same facing convention as a hoarding, plus a toe-in. */
 export type SignSite = {
   x: number;
   y: number;
   z: number;
   yaw: number;
   index: number;
+  /** Cell of the signage atlas the plate wears. See signFaces.ts. */
+  face: number;
 };
 
 export type RoadsideLayout = {
@@ -271,6 +284,27 @@ function buildRail(): { modules: RailModule[]; spacing: number } {
   return { modules, spacing };
 }
 
+/**
+ * Which hoarding wears which face, by position in the list.
+ *
+ * A cycle rather than a hash of the index, and a deliberately uneven one: the
+ * league banner and the two traders should recur, while the circuit board and
+ * the notice are one-offs you meet occasionally. A uniform `i % 6` gives every
+ * circuit the same tidy rotation, which reads as wallpaper.
+ */
+const BOARD_CYCLE = [
+  BOARD_FACE.circuit,
+  BOARD_FACE.traderA,
+  BOARD_FACE.league,
+  BOARD_FACE.traderB,
+  BOARD_FACE.notice,
+  BOARD_FACE.traderA,
+  BOARD_FACE.league,
+  BOARD_FACE.timing,
+  BOARD_FACE.traderB,
+  BOARD_FACE.league,
+];
+
 function buildBoards(): BoardSite[] {
   // Flattest ~45% of the circuit: a hoarding wants to be read at speed on
   // approach, which only works down a straight.
@@ -282,7 +316,7 @@ function buildBoards(): BoardSite[] {
     phase: 3,
     reach: 4,
   });
-  return points.map((p) => {
+  return points.map((p, i) => {
     // Panel normal is local +Z; turn it to face the racing line. Sign flips
     // with the verge, or half the boards would advertise to the desert.
     const yaw = p.yaw - p.side * Math.PI * 0.5;
@@ -298,6 +332,7 @@ function buildBoards(): BoardSite[] {
       ax: Math.cos(yaw),
       az: -Math.sin(yaw),
       index: p.index,
+      face: BOARD_CYCLE[i % BOARD_CYCLE.length]! % BOARD_FACE_COUNT,
     };
   });
 }
@@ -394,25 +429,255 @@ function buildLamps(): {
   return { lamps, wires, wireSpacing };
 }
 
+/**
+ * Metres between one plate and the next, anywhere on the circuit.
+ *
+ * Five families now choose anchors independently — corner warnings from a
+ * curvature percentile, braking boards from arc length before a corner, sector
+ * boards from lap fraction, route markers from a fixed interval, zone warnings
+ * from the sample's own `zone`. Nothing stops two of them landing on the same
+ * three metres of verge, and two plates occupying each other reads as a bug
+ * rather than as dense signage. 9m is a little over the plate's own 2.4m width
+ * plus the gap that makes two signs read as two signs.
+ */
+const SIGN_MIN_GAP = 9;
+
+/**
+ * Braking boards, in metres before the corner they serve.
+ *
+ * Real distances, and the plates say the same numbers — which is worth stating
+ * because the tempting alternative was to print the conventional 300/200/100 on
+ * boards that are nowhere near 300m apart. A sign that lies about a distance is
+ * worse than no sign: the one thing a braking board is for is calibrating how
+ * long you have left.
+ */
+const BRAKE_BOARDS: [number, number][] = [
+  [150, SIGN_FACE.brake150],
+  [100, SIGN_FACE.brake100],
+  [50, SIGN_FACE.brake50],
+];
+
+/** Metres between league route markers down a straight. */
+const ROUTE_INTERVAL = 210;
+
+/**
+ * A sign that has cleared the spacing test, ready to be turned into a site.
+ *
+ * The toe-in is applied at the end for every family at once, so a new family
+ * cannot forget it and end up with one plate on the circuit facing across the
+ * road instead of up it.
+ */
+type SignPick = { p: VergePoint; face: number };
+
 function buildSigns(): SignSite[] {
-  // Outside of the bend, on the more curved half of the circuit. A chevron
-  // board is not decoration that happens to be near a corner — it is the sign
-  // that means "the road goes this way", and it belongs on the outside of the
-  // turn it is warning about and nowhere else.
-  const points = vergePoints({
+  const S = getTrackSamples();
+  const n = S.length;
+  if (n < 8) return [];
+
+  const picks: SignPick[] = [];
+  const add = (p: VergePoint | null, face: number) => {
+    if (!p) return;
+    for (const q of picks) {
+      const dx = q.p.x - p.x;
+      const dz = q.p.z - p.z;
+      if (dx * dx + dz * dz < SIGN_MIN_GAP * SIGN_MIN_GAP) return;
+    }
+    picks.push({ p, face });
+  };
+
+  /** Planar gap between consecutive samples, wrapping. */
+  const gap = (i: number) => {
+    const a = S[((i % n) + n) % n]!;
+    const b = S[((i + 1) % n + n) % n]!;
+    return Math.hypot(b.x - a.x, b.z - a.z);
+  };
+  /**
+   * The sample `metres` of road BEFORE `i`.
+   *
+   * Walked rather than derived from `sample.s`, because `s` is arc length along
+   * the centreline and wraps at the start/finish line — subtracting through the
+   * wrap silently sends a braking board to the far side of the circuit.
+   */
+  const back = (i: number, metres: number) => {
+    let j = i;
+    let d = 0;
+    for (let k = 0; k < n && d < metres; k++) {
+      j = (j - 1 + n) % n;
+      d += gap(j);
+    }
+    return j;
+  };
+
+  const cornerCurve = curvatureThreshold(0.55);
+  const chevronCurve = curvatureThreshold(0.32);
+  const hairpinCurve = curvatureThreshold(0.1);
+  const straightCurve = curvatureThreshold(0.62);
+  /*
+   * "The approach is not itself a corner", and it is a LOOSER test than
+   * `straightCurve`.
+   *
+   * The first version reused the straight threshold and placed exactly ZERO
+   * braking boards on all six circuits, which read as the family not being
+   * implemented. `curvatureThreshold(f)` returns the value the top `f` of
+   * samples exceed, so 0.62 demands every one of the ~45 samples in a 150m run
+   * be in the flattest 38% — on a closed loop that is never true. These are
+   * road circuits scratched into a desert, not a drag strip: the run down to a
+   * corner drifts. Measured over the six circuits, 0.15 (i.e. "stay out of the
+   * top 15% of curvature") is the loosest test that still refuses to put a
+   * braking board inside the PREVIOUS corner, and it yields 1/2/2/3/4/6 sets.
+   */
+  const approachCurve = curvatureThreshold(0.15);
+
+  /*
+   * 1. Corner warnings — unchanged in WHERE they stand.
+   *
+   * Outside of the bend, on the more curved half of the circuit. A chevron
+   * board is not decoration that happens to be near a corner: it is the sign
+   * that means "the road goes this way", and it belongs on the outside of the
+   * turn it is warning about and nowhere else. What is new is that the plate now
+   * says WHICH way and how hard, instead of carrying one generic device.
+   *
+   * The direction is derived, not guessed. `vergePoints(outsideOnly)` puts the
+   * anchor on `curve > 0 ? -1 : +1`, and side +1 is the right of travel — so a
+   * positive curvature means the outside is on the LEFT, which means the road
+   * turns RIGHT. Getting this backwards points every chevron on the circuit into
+   * the infield, and it is exactly 50/50 by inspection.
+   */
+  for (const p of vergePoints({
     stride: SIGN_STRIDE,
     offset: SIGN_OFFSET,
     radius: SIGN_CLEAR_R,
-    minCurve: curvatureThreshold(0.55),
+    minCurve: cornerCurve,
     outsideOnly: true,
     phase: 3,
-  });
-  return points.map((p) => ({
+  })) {
+    const curve = signedCurvature(p.index);
+    const mag = Math.abs(curve);
+    const right = curve > 0 ? 1 : 0;
+    const base =
+      mag >= hairpinCurve
+        ? SIGN_FACE.hairpinL
+        : mag >= chevronCurve
+          ? SIGN_FACE.chevronL
+          : SIGN_FACE.bendL;
+    add(p, base + right);
+  }
+
+  /*
+   * 2. Braking boards, at the end of a straight.
+   *
+   * Only for corners with a genuinely clear approach — the run back to 150m has
+   * to be below the straight threshold the whole way. Otherwise the boards land
+   * inside the PREVIOUS corner, where they are both unreadable and wrong.
+   */
+  const majors: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const mag = Math.abs(signedCurvature(i));
+    if (mag < chevronCurve) continue;
+    // Local maximum only, and never within 18 samples of the last one kept — a
+    // long corner is one corner and wants one set of boards.
+    if (mag < Math.abs(signedCurvature(i - 2)) || mag < Math.abs(signedCurvature(i + 2))) {
+      continue;
+    }
+    const last = majors[majors.length - 1];
+    if (last !== undefined && i - last < 18) continue;
+    majors.push(i);
+  }
+  for (const i of majors) {
+    const outside = signedCurvature(i) > 0 ? -1 : 1;
+    const first = back(i, BRAKE_BOARDS[0]![0]);
+    // Stop the test 20m short of the corner. The last few metres of an approach
+    // are the corner ENTRY and are legitimately curving; including them is the
+    // other half of why the first version placed none at all.
+    const stop = back(i, 20);
+    let clear = true;
+    for (let j = first; j !== stop; j = (j + 1) % n) {
+      if (Math.abs(signedCurvature(j)) > approachCurve) {
+        clear = false;
+        break;
+      }
+    }
+    if (!clear) continue;
+    for (const [metres, face] of BRAKE_BOARDS) {
+      add(
+        solveAnchor(back(i, metres), outside, SIGN_OFFSET, SIGN_CLEAR_R),
+        face,
+      );
+    }
+  }
+
+  /*
+   * 3. Sector boards. Thirds of the lap, on the left verge, which is the side a
+   * timing board sits on everywhere else in this project (the gantry hangs its
+   * sector plate on both columns, so there is no convention to break).
+   */
+  let lap = 0;
+  for (let i = 0; i < n; i++) lap += gap(i);
+  for (let k = 0; k < 3; k++) {
+    const want = lap * (0.04 + k / 3);
+    let d = 0;
+    let at = 0;
+    for (let i = 0; i < n && d < want; i++) {
+      d += gap(i);
+      at = i;
+    }
+    add(
+      solveAnchor(at, -1, SIGN_OFFSET, SIGN_CLEAR_R) ??
+        solveAnchor(at, 1, SIGN_OFFSET, SIGN_CLEAR_R),
+      SIGN_FACE.sector1 + k,
+    );
+  }
+
+  /*
+   * 4. League route markers, down the straights, alternating verges.
+   *
+   * This is the family that guarantees a circuit has written signage at all: the
+   * three above are conditional on curvature and the one below on zone tags, and
+   * a circuit with gentle corners and no hazard zones would otherwise end up
+   * with almost nothing to read.
+   */
+  let since = ROUTE_INTERVAL;
+  let flip = 1;
+  for (let i = 0; i < n; i++) {
+    since += gap(i);
+    if (since < ROUTE_INTERVAL) continue;
+    if (Math.abs(signedCurvature(i)) > straightCurve) continue;
+    const before = picks.length;
+    add(solveAnchor(i, flip, SIGN_OFFSET, SIGN_CLEAR_R), SIGN_FACE.route);
+    if (picks.length === before) continue;
+    since = 0;
+    flip = -flip;
+  }
+
+  /*
+   * 5. Zone warnings. A crest board before a jump, a narrows board before a
+   * pinch, a hazard board before a hazard zone — placed at the RUN START, 45m
+   * upstream, on both verges where there is room, because a warning you pass
+   * while already in the thing it warns about is decoration.
+   */
+  const ZONE_FACE: Partial<Record<string, number>> = {
+    jump: SIGN_FACE.crest,
+    narrow: SIGN_FACE.narrows,
+    hazard: SIGN_FACE.hazard,
+  };
+  for (let i = 0; i < n; i++) {
+    const z = S[i]!.zone;
+    const face = ZONE_FACE[z];
+    if (face === undefined) continue;
+    if (S[(i - 1 + n) % n]!.zone === z) continue;
+    const at = back(i, 45);
+    for (const side of [-1, 1] as const) {
+      add(solveAnchor(at, side, SIGN_OFFSET, SIGN_CLEAR_R), face);
+    }
+  }
+
+  return picks.map(({ p, face }) => ({
     x: p.x,
     y: p.y,
     z: p.z,
     yaw: p.yaw - p.side * (Math.PI * 0.5 - SIGN_TOE),
     index: p.index,
+    face: Math.min(SIGN_FACE_COUNT - 1, Math.max(0, face)),
   }));
 }
 

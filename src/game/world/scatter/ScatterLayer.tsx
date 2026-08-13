@@ -35,6 +35,14 @@ import { FRAME } from "../framePriority";
 import { qualityManager } from "../quality";
 import type { ScatterLayerData, TierScale } from "./layerData";
 
+/**
+ * Attribute name the signage vertex insert reads. Must match the `attribute
+ * vec4` declaration in `signFaces.patchSignVertexShader`; there is no way for
+ * GLSL to complain about a name that is never supplied, it simply reads zero and
+ * every sign draws the atlas's bottom-left texel.
+ */
+const SIGN_UV_ATTR = "aSignUv";
+
 /** Frames between repacks. Phase-offset per layer by the caller. */
 const REBUILD_EVERY = 3;
 /** Frustum slack, in metres, covering camera motion between repacks. */
@@ -77,6 +85,25 @@ export function ScatterLayer({
       attr.setUsage(THREE.DynamicDrawUsage);
       m.instanceColor = attr;
     }
+    /*
+     * Per-instance atlas rect, for the signage layers.
+     *
+     * It goes on the GEOMETRY rather than on the mesh, because three only
+     * special-cases `instanceColor` and everything else is a plain instanced
+     * attribute. That is safe here and only here: every scatter layer owns its
+     * own geometry, built in its field component's memo, and exactly one mesh is
+     * made per `data`. A geometry shared between two layers would get one
+     * layer's rects on both, so the cleanup below deletes it rather than leaving
+     * a stale buffer bound to a geometry that outlives this mesh.
+     */
+    if (data.uvs) {
+      const attr = new THREE.InstancedBufferAttribute(
+        new Float32Array(data.total * 4),
+        4,
+      );
+      attr.setUsage(THREE.DynamicDrawUsage);
+      data.geometry.setAttribute(SIGN_UV_ATTR, attr);
+    }
     // Nothing is drawn until the first cull runs, so a layer never flashes at
     // full density on the frame it mounts.
     m.count = 0;
@@ -100,10 +127,12 @@ export function ScatterLayer({
   useEffect(() => {
     return () => {
       // Disposes the instance buffers only. Geometry and material are owned by
-      // the field component's memo and outlive any single mesh.
+      // the field component's memo and outlive any single mesh — which is why
+      // the instanced attribute this layer added has to come off again.
+      if (data.uvs) data.geometry.deleteAttribute(SIGN_UV_ATTR);
       mesh.dispose();
     };
-  }, [mesh]);
+  }, [mesh, data]);
 
   const frame = useRef(0);
   const lastActive = useRef(-1);
@@ -157,6 +186,13 @@ export function ScatterLayer({
     const dst = mesh.instanceMatrix.array as Float32Array;
     const srcC = data.colors;
     const dstC = (mesh.instanceColor?.array as Float32Array | undefined) ?? null;
+    const uvAttr = data.uvs
+      ? (data.geometry.getAttribute(SIGN_UV_ATTR) as
+          | THREE.InstancedBufferAttribute
+          | undefined)
+      : undefined;
+    const srcU = data.uvs;
+    const dstU = (uvAttr?.array as Float32Array | undefined) ?? null;
     const sphere = { x: 0, y: 0, z: 0, r: 0 };
     // Only consulted when the layer has a damage view at all, and the registry
     // itself short-circuits on an empty set, so an undamaged circuit pays one
@@ -184,6 +220,12 @@ export function ScatterLayer({
         dstC[k * 3 + 1] = srcC[i * 3 + 1]!;
         dstC[k * 3 + 2] = srcC[i * 3 + 2]!;
       }
+      if (srcU && dstU) {
+        dstU[k * 4] = srcU[i * 4]!;
+        dstU[k * 4 + 1] = srcU[i * 4 + 1]!;
+        dstU[k * 4 + 2] = srcU[i * 4 + 2]!;
+        dstU[k * 4 + 3] = srcU[i * 4 + 3]!;
+      }
       k++;
     }
 
@@ -200,6 +242,11 @@ export function ScatterLayer({
         mesh.instanceColor.clearUpdateRanges();
         mesh.instanceColor.addUpdateRange(0, k * 3);
         mesh.instanceColor.needsUpdate = true;
+      }
+      if (uvAttr) {
+        uvAttr.clearUpdateRanges();
+        uvAttr.addUpdateRange(0, k * 4);
+        uvAttr.needsUpdate = true;
       }
     }
   }, FRAME.LATE);

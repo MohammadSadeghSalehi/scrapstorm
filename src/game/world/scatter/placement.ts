@@ -280,47 +280,89 @@ export function vergePoints(opts: {
 
   for (let k = opts.phase ?? 0; k < n; k += stride) {
     const i = k % n;
-    const s = samples[i]!;
     const curve = curvatureAt(i, reach);
     const mag = Math.abs(curve);
     if (mag < minCurve || mag > maxCurve) continue;
 
-    const [rx, rz] = rightOf(s);
     const sides = opts.outsideOnly ? [curve > 0 ? -1 : 1] : [-1, 1];
-
     for (const side of sides) {
-      /*
-       * Same whole-loop clearance rule as the scatter fields, but SOLVED rather
-       * than tested.
-       *
-       * Continuous furniture cannot use the fields' reject-on-failure policy: a
-       * dropped module is a hole in a guard rail, which reads as broken in a
-       * way that a missing rock does not. The offset is nominal — the anchor's
-       * own half-width plus the run-off — while the test uses the half-width of
-       * whichever sample turns out to be nearest, and the track's width varies
-       * from 24m to 32m. Where those disagree the rail simply bulges outward
-       * until it clears, which is invisible; the first version rejected instead
-       * and produced two rail modules on the entire circuit.
-       */
-      let off = s.width * 0.5 + APRON_M + opts.offset;
-      let placed = false;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const x = s.x + rx * side * off;
-        const z = s.z + rz * side * off;
-        const surf = getSurfaceAt(x, z);
-        const need = surf.half + APRON_M + opts.radius + 0.15;
-        if (surf.dist >= need) {
-          out.push({ x, z, y: settle(x, z, surf), yaw: s.yaw, side, index: i });
-          placed = true;
-          break;
-        }
-        off += Math.max(0.5, need - surf.dist + 0.2);
-      }
-      // Genuinely nowhere to put it — the loop doubles back on itself here.
-      void placed;
+      const p = solveAnchor(i, side, opts.offset, opts.radius);
+      if (p) out.push(p);
     }
   }
   return out;
+}
+
+/**
+ * One verge anchor, at a chosen sample and a chosen side.
+ *
+ * Split out of `vergePoints` rather than copied, because the retry loop below is
+ * a CONTRACT — `check-setpiece-footprints.mjs` asserts that every solid roadside
+ * capsule clears the drivable apron, and it can only do that if there is exactly
+ * one place the clearance is decided. The signage layer needs anchors at
+ * arbitrary indices (a braking board goes 150m before a corner, not on a stride)
+ * and a second solver written to serve it is how two families end up disagreeing
+ * about where the road edge is.
+ *
+ * Returns null where there is genuinely nowhere to put it — the loop doubles
+ * back on itself and the verge belongs to the other carriageway.
+ */
+export function solveAnchor(
+  index: number,
+  side: number,
+  offset: number,
+  radius: number,
+): VergePoint | null {
+  const samples = getTrackSamples();
+  const n = samples.length;
+  if (n < 8) return null;
+  const i = ((index % n) + n) % n;
+  const s = samples[i]!;
+  const [rx, rz] = rightOf(s);
+
+  /*
+   * Same whole-loop clearance rule as the scatter fields, but SOLVED rather
+   * than tested.
+   *
+   * Continuous furniture cannot use the fields' reject-on-failure policy: a
+   * dropped module is a hole in a guard rail, which reads as broken in a way
+   * that a missing rock does not. The offset is nominal — the anchor's own
+   * half-width plus the run-off — while the test uses the half-width of
+   * whichever sample turns out to be nearest, and the track's width varies from
+   * 24m to 32m. Where those disagree the rail simply bulges outward until it
+   * clears, which is invisible; the first version rejected instead and produced
+   * two rail modules on the entire circuit.
+   */
+  let off = s.width * 0.5 + APRON_M + offset;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const x = s.x + rx * side * off;
+    const z = s.z + rz * side * off;
+    const surf = getSurfaceAt(x, z);
+    const need = surf.half + APRON_M + radius + 0.15;
+    if (surf.dist >= need) {
+      return { x, z, y: settle(x, z, surf), yaw: s.yaw, side, index: i };
+    }
+    off += Math.max(0.5, need - surf.dist + 0.2);
+  }
+  return null;
+}
+
+/**
+ * Signed curvature at a sample, over `reach` samples either side.
+ *
+ * Exported so the signage layer can ask "which way does this corner go, and how
+ * hard" at a sample it chose itself. Same function `vergePoints` filters on, so
+ * a chevron and the rail behind it cannot disagree about which side is the
+ * outside of the bend.
+ */
+export function signedCurvature(index: number, reach = 3): number {
+  // Wrapped here and not inside `curvatureAt`, which is only ever handed an
+  // already-valid index by `vergePoints`. Callers that scan for a local maximum
+  // read i-2 and i+2 and WILL go negative at the start/finish line; without this
+  // the lookup returns undefined and the layout throws on sample zero.
+  const n = getTrackSamples().length;
+  if (n < 8) return 0;
+  return curvatureAt(((index % n) + n) % n, reach);
 }
 
 /**

@@ -236,6 +236,8 @@ let worstGap = Infinity;
 let worstGapAt = "";
 let roadsideFails = 0;
 const totals = { lamps: 0, wires: 0, signs: 0, rail: 0, boards: 0, cactus: 0 };
+/** Per-circuit face histogram, filled in the loop below and reported after it. */
+const faceHist = {};
 
 console.log(
   "\n  circuit        lamps  wires  signs   rail  boards  cactus   min clear  min gap",
@@ -251,6 +253,13 @@ for (const id of TRACKS) {
   totals.rail += L.rail.length;
   totals.boards += L.boards.length;
   totals.cactus += fields.cactus.length;
+  faceHist[id] = { sign: {}, board: {} };
+  for (const s of L.signs) {
+    faceHist[id].sign[s.face] = (faceHist[id].sign[s.face] ?? 0) + 1;
+  }
+  for (const b of L.boards) {
+    faceHist[id].board[b.face] = (faceHist[id].board[b.face] ?? 0) + 1;
+  }
 
   /*
    * Every wire span must join two columns on the SAME verge.
@@ -340,6 +349,420 @@ console.log(
   `  tightest clearance ${worstClear.toFixed(2)}m (${worstClearAt}), ` +
     `tightest lamp-to-rail gap ${worstGap.toFixed(2)}m (${worstGapAt})`,
 );
+
+/* ── roadside signage ──────────────────────────────────────────────────
+ *
+ * Three things about the sign atlas cannot be seen by reading the source, and
+ * all three fail SILENTLY — which for signage means "every plate on the circuit
+ * shows the same wrong picture", a state indistinguishable from a deliberate art
+ * choice:
+ *
+ *  1. The shader insert. It is a string surgery on three's `<uv_vertex>` chunk.
+ *     If three renames the chunk the replace is a no-op, the per-instance rect
+ *     is never applied, and every sign draws cell zero. Run the real function
+ *     against the real ShaderLib source.
+ *  2. The atlas layout. Cell rects are arithmetic over two zones with different
+ *     column counts; an overlap or an out-of-range face prints the hoarding copy
+ *     on a chevron board.
+ *  3. The painter. Every legend is positioned in canvas pixels relative to a
+ *     cell origin, and a cell-origin mistake draws one face into its neighbour.
+ *     The gantry atlas has no such check, and its own note records that getting
+ *     the v inversion backwards "puts the sponsor strip on the gantry and the
+ *     league name on the kerb" — visible only in a screenshot.
+ */
+const THREE = await jiti.import("three");
+const faces = await jiti.import("../src/game/world/scatter/signFaces.ts");
+
+console.log("\n── roadside signage ───────────────────────────────────────");
+let signFails = 0;
+
+// 1. The shader insert, against the source the renderer will actually hand it.
+try {
+  const src = THREE.ShaderLib.standard.vertexShader;
+  const patched = faces.patchSignVertexShader(src);
+  const ok =
+    patched.includes("attribute vec4 aSignUv") &&
+    patched.includes("vMapUv = aSignUv.xy + vMapUv * aSignUv.zw") &&
+    patched.length > src.length;
+  console.log(
+    `  ${ok ? "ok  " : "FAIL"} vertex insert applies to THREE.ShaderLib.standard` +
+      ` (three r${THREE.REVISION})`,
+  );
+  if (!ok) signFails++;
+} catch (err) {
+  console.log(`  FAIL vertex insert: ${String(err.message).slice(0, 120)}`);
+  signFails++;
+}
+
+// 2. Atlas rects: inside the texture, correctly sized, and non-overlapping.
+const rects = [];
+for (let i = 0; i < faces.SIGN_FACE_COUNT; i++) {
+  rects.push(["sign" + i, faces.signFaceRect(i)]);
+}
+for (let i = 0; i < faces.BOARD_FACE_COUNT; i++) {
+  rects.push(["board" + i, faces.boardFaceRect(i)]);
+}
+let rectBad = 0;
+for (const [name, r] of rects) {
+  if (r[0] < 0 || r[1] < 0 || r[0] + r[2] > 1.0001 || r[1] + r[3] > 1.0001) {
+    console.log(`  FAIL ${name} rect [${r.join(", ")}] leaves the atlas`);
+    rectBad++;
+  }
+}
+for (let a = 0; a < rects.length; a++) {
+  for (let b = a + 1; b < rects.length; b++) {
+    const [na, ra] = rects[a];
+    const [nb, rb] = rects[b];
+    const ox = Math.min(ra[0] + ra[2], rb[0] + rb[2]) - Math.max(ra[0], rb[0]);
+    const oy = Math.min(ra[1] + ra[3], rb[1] + rb[3]) - Math.max(ra[1], rb[1]);
+    if (ox > 1e-6 && oy > 1e-6) {
+      console.log(`  FAIL ${na} and ${nb} overlap in the atlas`);
+      rectBad++;
+    }
+  }
+}
+console.log(
+  `  ${rectBad ? "FAIL" : "ok  "} ${rects.length} atlas cells, ` +
+    `${faces.SIGN_FACE_COUNT} plate + ${faces.BOARD_FACE_COUNT} hoarding, ` +
+    `${rectBad} bad`,
+);
+signFails += rectBad;
+
+/*
+ * 3. Paint the atlas through a recorder and check containment.
+ *
+ * The recorder honours `clip()`, because two of the devices (the hazard barring
+ * and the weathering pass) deliberately draw well outside their box and rely on
+ * the clip to trim them — flagging those would be flagging correct code, which
+ * is the failure mode `check-setpiece-footprints` already warns about for
+ * narrow collider footprints.
+ *
+ * Text extents are ESTIMATED: there is no font engine here, so a glyph run is
+ * treated as `maxWidth` wide and 0.84em tall about its middle baseline. That is
+ * generous horizontally and about right vertically, which is the correct
+ * direction — this is looking for a legend drawn into the NEXT CELL, an error of
+ * a hundred pixels, not for a two-pixel descender.
+ */
+function recorder() {
+  const ops = [];
+  let clip = { x0: -1e9, y0: -1e9, x1: 1e9, y1: 1e9 };
+  const stack = [];
+  let path = null;
+  let pending = null;
+  let size = 10;
+  const grow = (x, y) => {
+    if (!path) path = { x0: x, y0: y, x1: x, y1: y };
+    else {
+      path.x0 = Math.min(path.x0, x);
+      path.y0 = Math.min(path.y0, y);
+      path.x1 = Math.max(path.x1, x);
+      path.y1 = Math.max(path.y1, y);
+    }
+  };
+  const emit = (b, kind) => {
+    const x0 = Math.max(b.x0, clip.x0);
+    const y0 = Math.max(b.y0, clip.y0);
+    const x1 = Math.min(b.x1, clip.x1);
+    const y1 = Math.min(b.y1, clip.y1);
+    if (x1 - x0 <= 0 || y1 - y0 <= 0) return;
+    ops.push({ x0, y0, x1, y1, kind });
+  };
+  const g = {
+    fillStyle: "", strokeStyle: "", lineWidth: 1, lineJoin: "miter",
+    textAlign: "center", textBaseline: "middle", globalAlpha: 1,
+    set font(v) {
+      // The px size, not the first number in the string — `700 36px Impact`
+      // starts with the WEIGHT, and reading that gives a 700px glyph box that
+      // fails every containment test at once.
+      const m = /([0-9]*\.?[0-9]+)px/.exec(String(v));
+      size = m ? parseFloat(m[1]) : 10;
+    },
+    get font() { return `${size}px`; },
+    save() { stack.push({ ...clip }); },
+    restore() { const c = stack.pop(); if (c) clip = c; },
+    beginPath() { path = null; pending = null; },
+    moveTo(x, y) { grow(x, y); },
+    lineTo(x, y) { grow(x, y); },
+    quadraticCurveTo(cx, cy, x, y) { grow(cx, cy); grow(x, y); },
+    arc(x, y, r) { grow(x - r, y - r); grow(x + r, y + r); },
+    closePath() {},
+    rect(x, y, w, h) {
+      pending = { x0: x, y0: y, x1: x + w, y1: y + h };
+      grow(x, y);
+      grow(x + w, y + h);
+    },
+    clip() {
+      if (!pending) return;
+      clip = {
+        x0: Math.max(clip.x0, pending.x0),
+        y0: Math.max(clip.y0, pending.y0),
+        x1: Math.min(clip.x1, pending.x1),
+        y1: Math.min(clip.y1, pending.y1),
+      };
+    },
+    fill() { if (path) emit(path, "fill"); },
+    stroke() {
+      if (!path) return;
+      const p = this.lineWidth * 0.5;
+      emit({ x0: path.x0 - p, y0: path.y0 - p, x1: path.x1 + p, y1: path.y1 + p }, "stroke");
+    },
+    fillRect(x, y, w, h) { emit({ x0: x, y0: y, x1: x + w, y1: y + h }, "rect"); },
+    fillText(t, x, y, maxWidth) { this.__text(t, x, y, maxWidth); },
+    strokeText(t, x, y, maxWidth) { this.__text(t, x, y, maxWidth); },
+    __text(t, x, y, maxWidth) {
+      const w = maxWidth ?? String(t).length * size * 0.55;
+      const h = size * 0.42;
+      emit({ x0: x - w * 0.5, y0: y - h, x1: x + w * 0.5, y1: y + h }, `text:${t}`);
+    },
+  };
+  return { g, ops };
+}
+
+const cells = [];
+{
+  const A = faces.ATLAS_SIZE;
+  for (let i = 0; i < faces.SIGN_FACE_COUNT; i++) {
+    const r = faces.signFaceRect(i);
+    cells.push({
+      name: `sign${i}`,
+      x0: r[0] * A,
+      y0: (1 - r[1] - r[3]) * A,
+      x1: (r[0] + r[2]) * A,
+      y1: (1 - r[1]) * A,
+    });
+  }
+  for (let i = 0; i < faces.BOARD_FACE_COUNT; i++) {
+    const r = faces.boardFaceRect(i);
+    cells.push({
+      name: `board${i}`,
+      x0: r[0] * A,
+      y0: (1 - r[1] - r[3]) * A,
+      x1: (r[0] + r[2]) * A,
+      y1: (1 - r[1]) * A,
+    });
+  }
+}
+
+const TOL = 4;
+let paintFails = 0;
+let legends = 0;
+const painted = new Set();
+{
+  const { g, ops } = recorder();
+  faces.drawSignAtlas(g, faces.signCopy("ash_spire"));
+  for (const op of ops) {
+    // The one legitimate full-atlas op is the background fill.
+    if (op.x1 - op.x0 >= faces.ATLAS_SIZE - 1) continue;
+    let home = null;
+    for (const c of cells) {
+      if (
+        op.x0 >= c.x0 - TOL && op.x1 <= c.x1 + TOL &&
+        op.y0 >= c.y0 - TOL && op.y1 <= c.y1 + TOL
+      ) {
+        home = c;
+        break;
+      }
+    }
+    if (!home) {
+      if (paintFails < 6) {
+        console.log(
+          `  FAIL ${op.kind} at [${op.x0.toFixed(0)},${op.y0.toFixed(0)} ` +
+            `${op.x1.toFixed(0)},${op.y1.toFixed(0)}] is not inside any one cell`,
+        );
+      }
+      paintFails++;
+      continue;
+    }
+    painted.add(home.name);
+    if (op.kind.startsWith("text:")) legends++;
+  }
+}
+const unpainted = cells.filter((c) => !painted.has(c.name)).map((c) => c.name);
+if (unpainted.length) {
+  console.log(`  FAIL cells never painted: ${unpainted.join(", ")}`);
+  paintFails += unpainted.length;
+}
+console.log(
+  `  ${paintFails ? "FAIL" : "ok  "} atlas painted: every op inside its own cell,` +
+    ` ${legends} legend runs across ${cells.length} cells (${paintFails} bad)`,
+);
+signFails += paintFails;
+
+// 4. Every face the layout actually asks for must exist.
+for (const [id, h] of Object.entries(faceHist)) {
+  for (const k of Object.keys(h.sign)) {
+    if (Number(k) < 0 || Number(k) >= faces.SIGN_FACE_COUNT) {
+      console.log(`  FAIL ${id}: plate face ${k} is outside the atlas`);
+      signFails++;
+    }
+  }
+  for (const k of Object.keys(h.board)) {
+    if (Number(k) < 0 || Number(k) >= faces.BOARD_FACE_COUNT) {
+      console.log(`  FAIL ${id}: hoarding face ${k} is outside the atlas`);
+      signFails++;
+    }
+  }
+}
+
+/*
+ * 5. Do the chevrons point the way the road actually goes?
+ *
+ * This is the check the whole signage pass most needs and the one no amount of
+ * reading settles. The layout picks a direction from the SIGN of `signedCurvature`
+ * and the claim "positive means the outside is on the left, therefore the road
+ * turns right" is 50/50 by inspection — and getting it wrong points every
+ * chevron on every circuit into the infield while looking completely plausible
+ * in the diff and in the histogram.
+ *
+ * So it is re-derived here from a DIFFERENT quantity: take the sample's own
+ * right-of-travel vector, look 6 samples up the road, and project that heading
+ * onto it. Positive means the heading has swung to the driver's right. That
+ * shares no code with `curvatureAt` — no cross product, no percentile — so the
+ * two agreeing is evidence rather than a tautology.
+ */
+const DIR_FACES = new Map([
+  [faces.SIGN_FACE.chevronL, false], [faces.SIGN_FACE.chevronR, true],
+  [faces.SIGN_FACE.bendL, false], [faces.SIGN_FACE.bendR, true],
+  [faces.SIGN_FACE.hairpinL, false], [faces.SIGN_FACE.hairpinR, true],
+]);
+let dirOk = 0;
+let dirBad = 0;
+let toeInto = 0;
+let toeAway = 0;
+for (const id of TRACKS) {
+  track.setActiveTrack(id);
+  const S = track.getTrackSamples();
+  const n = S.length;
+  const L = layoutMod.roadsideLayout();
+  for (const g of L.signs) {
+    const s = S[g.index];
+    // buildSamples authors yaw so forward = -(sin yaw, cos yaw); right of
+    // travel is (cos yaw, -sin yaw), the same vector `rightOf` uses.
+    const rx = Math.cos(s.yaw);
+    const rz = -Math.sin(s.yaw);
+    const a = S[(g.index + 6) % n];
+    const swing = -Math.sin(a.yaw) * rx + -Math.cos(a.yaw) * rz;
+
+    const wantsRight = DIR_FACES.get(g.face);
+    if (wantsRight !== undefined && Math.abs(swing) > 1e-3) {
+      if (swing > 0 === wantsRight) dirOk++;
+      else {
+        if (dirBad < 4) {
+          console.log(
+            `  FAIL ${id}: sample ${g.index} swings ${swing > 0 ? "right" : "left"}` +
+              ` but wears face ${g.face}`,
+          );
+        }
+        dirBad++;
+      }
+    }
+
+    // And the toe: three's rotY(yaw) sends local +Z to (sin yaw, cos yaw), so a
+    // plate turned into oncoming traffic has its normal OPPOSING travel.
+    const nx = Math.sin(g.yaw);
+    const nz = Math.cos(g.yaw);
+    if (nx * -Math.sin(s.yaw) + nz * -Math.cos(s.yaw) < 0) toeInto++;
+    else toeAway++;
+  }
+}
+console.log(
+  `  ${dirBad ? "FAIL" : "ok  "} ${dirOk} direction plates agree with an ` +
+    `independently derived heading swing, ${dirBad} disagree`,
+);
+console.log(
+  `  ${toeAway ? "FAIL" : "ok  "} ${toeInto} plates face oncoming traffic, ${toeAway} face away`,
+);
+signFails += dirBad + toeAway;
+
+/*
+ * 6. The draw-call budget, per tier, from the real tier tables.
+ *
+ * The binding constraint on this whole layer is that the LOW TIER — measured at
+ * 25fps on the integrated GPU — must not gain a draw call. Each roadside family
+ * is one InstancedMesh, so a family costs one draw call unless its tier density
+ * rounds to zero instances, in which case `ScatterLayer` sets `visible = false`
+ * and three's `projectObject` bails before it binds a program.
+ *
+ * Instances are the UPPER bound: they are what survives tier density, before the
+ * per-frame frustum and range cull, which on a 900m circuit removes most of it.
+ * Triangles are that bound times the measured module count. Both are printed
+ * rather than asserted, except the low-tier draw count, which is asserted.
+ */
+const tiers = await jiti.import("../src/game/world/scatter/roadsideTiers.ts");
+const MODULE_TRIS = {
+  rail: tris(railGeo),
+  boards: tris(boardGeo),
+  signs: tris(signGeo),
+};
+const FAMILIES = [
+  ["rail", tiers.RAIL_DENSITY, "rail"],
+  ["boards", tiers.BOARD_DENSITY, "boards"],
+  ["signs", tiers.SIGN_DENSITY, "signs"],
+];
+console.log(
+  "\n  draw calls and triangles per tier (upper bound: after tier density," +
+    " before the frustum/range cull)",
+);
+console.log(
+  `  module triangles: rail ${MODULE_TRIS.rail}, hoarding ${MODULE_TRIS.boards}, plate ${MODULE_TRIS.signs}`,
+);
+console.log("  circuit         tier    draws   rail  boards  plates      tris");
+let lowDrawFail = 0;
+for (const id of TRACKS) {
+  track.setActiveTrack(id);
+  const L = layoutMod.roadsideLayout();
+  const counts = { rail: L.rail.length, boards: L.boards.length, signs: L.signs.length };
+  for (const tier of ["low", "medium", "high"]) {
+    let draws = 0;
+    let triTotal = 0;
+    const per = {};
+    for (const [name, density, key] of FAMILIES) {
+      const n = Math.min(counts[key], Math.round(counts[key] * density[tier]));
+      per[name] = n;
+      if (n > 0) draws++;
+      triTotal += n * MODULE_TRIS[name];
+    }
+    if (tier === "low" && draws > 2) {
+      console.log(
+        `  FAIL ${id}: the low tier draws ${draws} roadside calls; the budget is 2 (rail + hoardings)`,
+      );
+      lowDrawFail++;
+    }
+    console.log(
+      `  ${id.padEnd(14)} ${tier.padEnd(7)}${String(draws).padStart(5)}` +
+        `${String(per.rail).padStart(7)}${String(per.boards).padStart(8)}` +
+        `${String(per.signs).padStart(8)}${String(triTotal).padStart(10)}`,
+    );
+  }
+}
+signFails += lowDrawFail;
+
+// 7. And what each circuit ended up saying. Reported, never failed — the
+//    distribution is a design question, but a circuit that quietly stopped
+//    getting braking boards should be visible without driving it.
+const SIGN_NAME = Object.fromEntries(
+  Object.entries(faces.SIGN_FACE).map(([k, v]) => [v, k]),
+);
+const BOARD_NAME = Object.fromEntries(
+  Object.entries(faces.BOARD_FACE).map(([k, v]) => [v, k]),
+);
+console.log("\n  what each circuit says");
+for (const id of TRACKS) {
+  const h = faceHist[id];
+  if (!h) continue;
+  const s = Object.entries(h.sign)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${SIGN_NAME[k] ?? k}x${v}`)
+    .join(" ");
+  const b = Object.entries(h.board)
+    .sort((a, b2) => b2[1] - a[1])
+    .map(([k, v]) => `${BOARD_NAME[k] ?? k}x${v}`)
+    .join(" ");
+  console.log(`  ${id.padEnd(13)} plates  ${s}`);
+  console.log(`  ${"".padEnd(13)} boards  ${b}`);
+}
+
+failed += signFails;
 
 failed += roadsideFails;
 if (roadsideFails) {
