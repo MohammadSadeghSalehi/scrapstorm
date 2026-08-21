@@ -12,29 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  about:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: set description, homepage, topics
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.repos.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              description: "Browser combat racer. NFS Most Wanted if the fight was the point. React + Three.js. Source here, assets on Hugging Face. Run locally.",
-              homepage: "https://huggingface.co/datasets/Sadegh97/scrapstorm-assets",
-            });
-            await github.rest.repos.replaceAllTopics({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              names: ["threejs", "react", "webgl", "typescript", "game", "racing", "huggingface"],
-            });
-
   gates:
     runs-on: ubuntu-latest
     timeout-minutes: 20
