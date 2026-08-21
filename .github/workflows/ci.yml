@@ -16,6 +16,22 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - name: no leaked tokens
+        run: |
+          set +e
+          git grep -I -E --line-number \
+            'hf_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|xai-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}' \
+            -- ':!package-lock.json'
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "possible secret in the tree" >&2
+            exit 1
+          fi
+          if [ "$status" -gt 1 ]; then
+            echo "git grep failed" >&2
+            exit 1
+          fi
       - run: npm run typecheck
       - run: node scripts/mission-smoke.mjs
       - run: node scripts/probe-audio.mjs
