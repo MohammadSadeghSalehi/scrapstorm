@@ -47,7 +47,7 @@ To score a model: reintroduce one trap in a worktree, give it the ticket, run
 |---|---|---|
 | **C1** | Lap in `GameSimulation` on this gold tree. Spec: `benches/spec-c1.md`. | Empty-repo eval is local: point the same oracle at a candidate. |
 | **C2** | Subsystem files present. Restore specs: `benches/c2/`. | Ablation is a copy you delete from; CI does not delete source. |
-| **C3** | Optional. `SCRAPSTORM_STILL=/path/to.png`. | Playwright. Never in CI. Never two browsers. |
+| **C3** | Default still `docs/github/play-race.jpg` (JPEG/PNG, not a stub). Override with `SCRAPSTORM_STILL`. | Playwright. Never in CI. Never two browsers. |
 | **C4** | Static: `dprMax <= 1.5`, composer still mounted, `SceneRenderer` for low. | Live FPS. That needs a GPU and is a local protocol only. |
 
 ## Cost

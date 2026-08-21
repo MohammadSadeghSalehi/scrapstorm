@@ -854,7 +854,8 @@ export function querySetpieceColliders(
  * convention `collideVehiclesWithProps` uses for a prop's normal, so the
  * deflection response is shared rather than mirrored.
  *
- * Reused object: one contact is resolved before the next is asked for.
+ * Fresh object per query. A module-level `contact` was cheaper, and it made
+ * `.filter()` / `.push(hit)` silently keep N copies of the LAST result.
  */
 export interface Contact {
   hit: boolean;
@@ -863,7 +864,7 @@ export interface Contact {
   pen: number;
 }
 
-const contact: Contact = { hit: false, nx: 0, nz: 0, pen: 0 };
+const MISS: Contact = { hit: false, nx: 0, nz: 0, pen: 0 };
 
 export function capsuleContact(
   c: StaticCollider,
@@ -879,8 +880,7 @@ export function capsuleContact(
    * first, which reads as the hole you just made stopping you.
    */
   if (c.destroyed) {
-    contact.hit = false;
-    return contact;
+    return { ...MISS };
   }
   const sx = c.x1 - c.x0;
   const sz = c.z1 - c.z0;
@@ -901,14 +901,15 @@ export function capsuleContact(
   const d2 = dx * dx + dz * dz;
   const sum = c.r + radius;
   if (d2 >= sum * sum || d2 < 1e-8) {
-    contact.hit = false;
-    return contact;
+    return { ...MISS };
   }
   const d = Math.sqrt(d2);
-  contact.hit = true;
-  contact.nx = dx / d;
-  contact.nz = dz / d;
-  contact.pen = sum - d;
+  const result: Contact = {
+    hit: true,
+    nx: dx / d,
+    nz: dz / d,
+    pen: sum - d,
+  };
 
   /*
    * Failure, and why a broken rail is still reported as a hit.
@@ -937,7 +938,7 @@ export function capsuleContact(
     // contact in the same step; any other caller is nowhere near it and simply
     // never breaks anything.
     if (qdx * qdx + qdz * qdz < 4) {
-      const velN = liveProbe.vx * contact.nx + liveProbe.vz * contact.nz;
+      const velN = liveProbe.vx * result.nx + liveProbe.vz * result.nz;
       if (velN > c.breakAt) {
         // Armco and a sheared lamp column are both heavy: slabs and steel that
         // go where the car was going, low spin, and stay put afterwards. A
@@ -959,9 +960,9 @@ export function capsuleContact(
         );
         // Plywood. Reporting a miss is what makes the car pass through with its
         // speed intact — see `resistOnBreak`.
-        if (!c.resistOnBreak) contact.hit = false;
+        if (!c.resistOnBreak) result.hit = false;
       }
     }
   }
-  return contact;
+  return result;
 }

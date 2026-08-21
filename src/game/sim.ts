@@ -32,9 +32,6 @@ import {
   stepWorldProps,
 } from "./worldProps";
 import {
-  // CHECKPOINTS has the same live-binding problem as TRACK_SAMPLES did and
-  // track.ts exports no accessor for it. See the report: one added
-  // `getCheckpoints()` there makes this file fully testable off a real circuit.
   getCheckpoints,
   getGroundHeight,
   getTrackDef,
@@ -498,9 +495,9 @@ function updateCheckpoints(v: VehicleState, state: SimState, dt: number) {
 
   const r = rt(v.id, v);
   r.gateCool = Math.max(0, r.gateCool - dt);
-  // getCheckpoints(), not the CHECKPOINTS binding: `export let` is live under
-  // real ESM but a CJS transpile snapshots it at module init, so after a track
-  // switch this read returned the previous circuit's gates. Exactly the bug
+  // getCheckpoints(), not the CHECKPOINTS binding. `export let` is live under
+  // ESM but a CJS transpile snapshots it at module init, so after a track
+  // switch that read returned the previous circuit's gates. Exactly the bug
   // that made updateWrecks throw, and the reason TRACK_SAMPLES already moved.
   const checkpoints = getCheckpoints();
   const n = checkpoints.length;

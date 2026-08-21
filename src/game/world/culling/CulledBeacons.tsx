@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { TRACK_SAMPLES } from "../../track";
+import { getTrackEpoch, getTrackSamples } from "../../track";
 import { hazardMap } from "../procmat";
 import { qualityManager } from "../quality";
 import {
@@ -27,6 +27,7 @@ export function getLastBeaconCullStats() {
 
 export function CulledBeacons() {
   const tier = qualityManager.get().tier;
+  const epoch = getTrackEpoch();
   const hazard = useMemo(() => hazardMap(), []);
   const pack = useMemo(() => {
     if (tier === "low") return null;
@@ -42,9 +43,10 @@ export function CulledBeacons() {
      * side, low enough to read as track furniture. The signal is preserved;
      * the orb is not.
      */
+    const samples = getTrackSamples();
     const pts: { x: number; y: number; z: number }[] = [];
-    for (let i = 0; i < TRACK_SAMPLES.length; i += 12) {
-      const s = TRACK_SAMPLES[i];
+    for (let i = 0; i < samples.length; i += 12) {
+      const s = samples[i];
       if (s.zone !== "hazard" && s.zone !== "arena") continue;
       const rx = Math.cos(s.yaw);
       const rz = -Math.sin(s.yaw);
@@ -83,7 +85,7 @@ export function CulledBeacons() {
       stream: createInstanceStream(matrices, spheres),
       grid: buildSphereGrid(spheres, 48),
     };
-  }, [hazard, tier]);
+  }, [hazard, tier, epoch]);
 
   const meshRef = useRef<THREE.InstancedMesh | null>(null);
   const cfgRef = useRef(cullConfigForTier(tier));

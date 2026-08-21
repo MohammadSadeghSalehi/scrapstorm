@@ -5,38 +5,10 @@
  */
 import type { Particle, VehicleState } from "./types";
 import { VEHICLE_HITBOX } from "./physics";
-/*
- * ⚠ THESE THREE ARE THE `export let` BINDINGS, AND THAT IS A KNOWN DEFECT.
- *
- * AGENTS.md §4 says to use `getTrackSamples()` / `getEdgeMarkers()` /
- * `getScenery()`, and this file is the last place that does not. Live bindings
- * under real ESM, so THE BROWSER IS CORRECT — but jiti transpiles to CJS and
- * snapshots the namespace property at module init, which is always ash_spire.
- * Every headless run that changes circuit therefore places ASH SPIRE's props,
- * verge posts and scenery blockers on the new one.
- *
- * MEASURED, not suspected. scripts/probe-setpieces.mjs drove the Rustline bore
- * and the car was stopped from 38 m/s to 2.8 m/s in a single step by nothing
- * the collider registry could see: a `barrier` prop of radius 2.08 at
- * (103, 12), which is an Ash Spire tower 400m from where it lives. Swapping the
- * three reads for the accessors moved the headless numbers a long way — Cinder
- * Bowl's AI went from a 3.9-22.8 m/s crawl to a clean 44 m/s, the Foundry Pit
- * race from 204s to 86s, the Dead Mile from 186s to 132s — which is to say the
- * mission ladder's deadlines and its difficulty ordering are all calibrated
- * against a harness that scatters an obstacle course over five of six circuits.
- *
- * NOT FIXED HERE ON PURPOSE. The one-line change is correct and turns
- * mission-smoke red on four checks that are properties of the LADDER
- * (`fp_overtime`'s deadline, `dm_widowmaker`'s survival clock, `cb_clean`'s pace
- * target and the board's difficulty ordering), and re-deriving those needs the
- * missions layer and a balance run. Whoever takes that on: change these three
- * imports to the accessors FIRST, then re-tune, and the numbers above are the
- * scale of the move to expect.
- */
 import {
-  EDGE_MARKERS,
-  TRACK_SAMPLES,
-  SCENERY,
+  getEdgeMarkers,
+  getTrackSamples,
+  getScenery,
   getGroundHeight,
 } from "./track";
 import { VEHICLE_CLASSES } from "./classes";
@@ -130,6 +102,9 @@ function nid(prefix: string) {
 /** Build props for the active track (call on grid / track change). */
 export function spawnWorldProps(): PhysProp[] {
   const props: PhysProp[] = [];
+  const TRACK_SAMPLES = getTrackSamples();
+  const EDGE_MARKERS = getEdgeMarkers();
+  const SCENERY = getScenery();
   // Fresh grid — every post stands again and the road is swept.
   resetEdgeDamage();
   resetDebris();

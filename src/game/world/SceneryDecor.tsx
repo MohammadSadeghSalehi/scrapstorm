@@ -6,10 +6,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import {
-  TRACK_SAMPLES,
-  SCENERY,
   getGroundHeight,
+  getScenery,
   getSurfaceAt,
+  getTrackEpoch,
+  getTrackSamples,
 } from "../track";
 import { loadPhModel, type PhModelKey } from "./polyHavenAssets";
 import { FRAME } from "./framePriority";
@@ -28,12 +29,13 @@ type DecorItem = {
 /** Exported so placement can be asserted against the ground query, not eyeballed. */
 export function buildDecorList(tier: string): DecorItem[] {
   const items: DecorItem[] = [];
-  const n = TRACK_SAMPLES.length;
+  const samples = getTrackSamples();
+  const n = samples.length;
   if (n < 8) return items;
   const stride = tier === "low" ? 14 : tier === "medium" ? 10 : 7;
 
   for (let i = 0; i < n; i += stride) {
-    const s = TRACK_SAMPLES[i];
+    const s = samples[i];
     const rx = Math.cos(s.yaw);
     const rz = -Math.sin(s.yaw);
     const side = i % 2 === 0 ? 1 : -1;
@@ -67,7 +69,7 @@ export function buildDecorList(tier: string): DecorItem[] {
   }
 
   // Landmark pile near start
-  const s0 = TRACK_SAMPLES[0];
+  const s0 = samples[0];
   if (s0) {
     items.push(
       {
@@ -110,8 +112,9 @@ export function buildDecorList(tier: string): DecorItem[] {
   }
 
   // Extra from SCENERY anchors
-  for (let i = 0; i < SCENERY.length; i += 3) {
-    const sc = SCENERY[i];
+  const scenery = getScenery();
+  for (let i = 0; i < scenery.length; i += 3) {
+    const sc = scenery[i];
     items.push({
       key: i % 2 === 0 ? "boulder" : "barrier",
       x: sc.x,
@@ -180,7 +183,8 @@ export function SceneryDecor() {
   const tick = useRef(0);
   const { camera } = useThree();
   const tier = qualityManager.get().tier;
-  const list = useMemo(() => buildDecorList(tier), [tier]);
+  const epoch = getTrackEpoch();
+  const list = useMemo(() => buildDecorList(tier), [tier, epoch]);
 
   useEffect(() => {
     let alive = true;

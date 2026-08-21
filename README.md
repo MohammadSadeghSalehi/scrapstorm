@@ -221,7 +221,7 @@ The sim must stay renderer-free. That is what makes the smoke tests and the benc
 |---|---|---|
 | **A** Regression | **Runs in CI** | Typecheck, mission-smoke, audio DSP, track profile, setpieces, grid. |
 | **B** Agent tickets | **Gold baseline in CI** | Six tickets in `benches/tickets/`. Hidden checks in `benches/track-b.mjs`. |
-| **C** One-shot / few-shot | **Oracles in CI** | C1 lap in `GameSimulation`. C2 subsystem presence. C3 optional still (no browser). C4 `dprMax` / composer contract. |
+| **C** One-shot / few-shot | **Oracles in CI** | C1 lap in `GameSimulation`. C2 subsystem presence. C3 still (`docs/github/play-race.jpg`, no browser). C4 `dprMax` / composer contract. |
 
 See [`benches/README.md`](benches/README.md). Spec for an empty-repo attempt: [`benches/spec-c1.md`](benches/spec-c1.md).
 

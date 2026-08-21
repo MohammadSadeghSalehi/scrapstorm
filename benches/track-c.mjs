@@ -13,6 +13,8 @@
  * Headless. No Playwright. No GPU. No paid APIs. Safe on GitHub-hosted runners.
  */
 import { createJiti } from "jiti";
+import { readFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { src, exists, check, section, summary, ROOT } from "./lib.mjs";
 
 const jiti = createJiti(import.meta.url, { interopDefault: true });
@@ -68,21 +70,16 @@ section("C2 subsystems present (gold tree, pre-ablation)");
   check("missions re-export the catalogue", missions.includes("export"));
 }
 
-section("C3 visual still (optional, no browser)");
+section("C3 visual still (no browser)");
 {
-  const still = process.env.SCRAPSTORM_STILL;
-  if (!still) {
-    check("C3 skipped (set SCRAPSTORM_STILL to a PNG to enable)", true);
-  } else if (!exists(still) && !exists(still.replace(ROOT + "/", ""))) {
-    check("C3 still file exists", false, still);
-  } else {
-    const buf = await import("node:fs").then((fs) =>
-      fs.readFileSync(still.startsWith("/") || still.match(/^[A-Z]:/) ? still : still),
-    );
-    // PNG IHDR is enough to reject an empty/black 1x1 without decoding pixels.
-    check("C3 file looks like a PNG", buf[0] === 0x89 && buf[1] === 0x50);
-    check("C3 file is larger than a black stub", buf.length > 8_000, `${buf.length} bytes`);
-  }
+  const rel = process.env.SCRAPSTORM_STILL ?? "docs/github/play-race.jpg";
+  const path = isAbsolute(rel) ? rel : join(ROOT, rel);
+  check("C3 still exists", exists(rel) || exists(path), path);
+  const buf = readFileSync(path);
+  const png = buf[0] === 0x89 && buf[1] === 0x50;
+  const jpg = buf[0] === 0xff && buf[1] === 0xd8;
+  check("C3 still is a PNG or JPEG, not a black canvas", png || jpg);
+  check("C3 still is larger than a stub", buf.length > 8_000, `${buf.length} bytes`);
 }
 
 section("C4 perf contract (static)");

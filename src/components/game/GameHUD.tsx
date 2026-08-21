@@ -5,7 +5,7 @@ import { memo, useMemo } from "react";
 import type { MatchPhase, SimState, TrackId, VehicleClassId } from "@/game/types";
 import { VEHICLE_CLASSES } from "@/game/classes";
 import { HANDLING, RACE } from "@/game/balance";
-import { TRACK_SAMPLES, TRACK_DEFS } from "@/game/track";
+import { getTrackSamples, TRACK_DEFS } from "@/game/track";
 
 export type RivalHud = {
   id: string;
@@ -238,7 +238,7 @@ function Minimap({
   player: PlayerHud | null;
 }) {
   const path = useMemo(() => {
-    const samples = TRACK_SAMPLES;
+    const samples = getTrackSamples();
     if (!samples.length) return "";
     let minX = Infinity,
       maxX = -Infinity,

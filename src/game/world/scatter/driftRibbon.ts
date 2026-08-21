@@ -15,7 +15,7 @@
  * culling/roadSegments.ts instead, bank term included.
  */
 import * as THREE from "three";
-import { TRACK_SAMPLES } from "../../track";
+import { getTrackSamples } from "../../track";
 import { fbm } from "../terrainHeight";
 import { APRON_M } from "./placement";
 import type { TrackSample } from "../../types";
@@ -70,7 +70,7 @@ function driftMask(x: number, z: number, sideL: number): number {
 }
 
 export function buildDriftRibbon(): THREE.BufferGeometry | null {
-  const samples = TRACK_SAMPLES;
+  const samples = getTrackSamples();
   const n = samples.length;
   if (n < 8) return null;
 

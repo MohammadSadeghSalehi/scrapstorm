@@ -34,21 +34,35 @@ section("T02 getTrackSamples live binding");
   check("getTrackSamples is exported", track.includes("export function getTrackSamples"));
   const sim = src("src/game/sim.ts");
   check("sim.ts calls getTrackSamples", sim.includes("getTrackSamples()"));
-  const atmo = src("src/game/world/Atmosphere.tsx");
-  check("Atmosphere does not snapshot TRACK_SAMPLES", !/\bTRACK_SAMPLES\b/.test(atmo));
+  const consumers = [
+    "src/components/game/GameHUD.tsx",
+    "src/game/worldProps.ts",
+    "src/game/world/culling/CulledBeacons.tsx",
+    "src/game/world/SceneryDecor.tsx",
+    "src/game/world/scatter/driftRibbon.ts",
+    "src/game/world/Atmosphere.tsx",
+  ];
+  for (const f of consumers) {
+    check(
+      `${f} does not import the TRACK_SAMPLES binding`,
+      !/import\s*\{[^}]*\bTRACK_SAMPLES\b/.test(src(f)),
+    );
+  }
   const profile = src("scripts/check-track-profile.mjs");
   check("track-profile gate uses the accessor", profile.includes("getTrackSamples()"));
 }
 
 section("T03 capsuleContact aliasing");
 {
+  const cc = src("src/game/setpieceColliders.ts");
+  check(
+    "capsuleContact has no module-level shared Contact",
+    !/const contact: Contact = /.test(cc),
+  );
+  check("misses return a fresh copy", cc.includes("return { ...MISS }"));
   const wp = src("src/game/worldProps.ts");
   check(
-    "worldProps reads contact fields before the next query",
-    wp.includes("hit.nx") && wp.includes("hit.nz") && wp.includes("hit.pen"),
-  );
-  check(
-    "worldProps does not stash the shared contact object",
+    "worldProps does not stash the contact object",
     !/contacts\.push\(\s*hit\s*\)/.test(wp) && !/hits\.push\(\s*hit\s*\)/.test(wp),
   );
 }
