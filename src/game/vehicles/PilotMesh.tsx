@@ -5,8 +5,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { PILOT_URL } from "./GltfCar";
+import { createGltfLoader } from "../world/gltfLoaders";
 import { FRAME } from "../world/framePriority";
 
 export function PilotMesh({
@@ -24,7 +24,7 @@ export function PilotMesh({
 
   useEffect(() => {
     let alive = true;
-    const loader = new GLTFLoader();
+    const loader = createGltfLoader();
     loader.load(
       PILOT_URL,
       (gltf) => {

@@ -6,43 +6,53 @@ canvas demo.
 The point is whether the model can keep physics, rendering, assets, and frame
 time honest. A black canvas at 160 fps is a fail.
 
-## Track A — regression (runs today)
+Nothing here calls a paid API. Nothing here launches a browser. CI is GitHub
+Actions on `ubuntu-latest` (free for a public repo).
+
+```bash
+npm run bench        # A + B + C
+npm run bench:smoke  # A only
+npm run bench:b
+npm run bench:c
+```
+
+## Track A — regression (runs in CI)
 
 Headless. No browser. No GPU.
 
-```bash
-npm run bench:smoke
-```
+Wraps: typecheck, mission-smoke, track profile, setpiece footprints, audio DSP,
+grid geometry.
 
-Wraps the existing gates: typecheck, mission-smoke, track profile, setpiece
-footprints, audio DSP, grid geometry.
+## Track B — agent tickets (gold baseline in CI)
 
-CI runs the same set on every push to `main`.
+Player-visible specs: `benches/tickets/T01`–`T06`. Hidden checks:
+`benches/track-b.mjs`. Prompts for an eval must include the ticket, not the
+hidden file.
 
-## Track B — agent tickets (specified, not frozen)
+To score a model: reintroduce one trap in a worktree, give it the ticket, run
+`node benches/track-b.mjs`. Gold `main` must pass.
 
-Each ticket is a git tag `bench/Txx-<slug>`, a failing tree, a player-visible
-spec in `benches/tickets/`, and hidden tests. Prompts must not include the
-patch.
+| Ticket | Trap |
+|---|---|
+| T01 | Meshopt GLB silent fallback (`new GLTFLoader`) |
+| T02 | `export let` / jiti snapshot of `TRACK_SAMPLES` |
+| T03 | shared mutable `capsuleContact` result |
+| T04 | r3f `useFrame` priority > 0 black canvas |
+| T05 | ground height vs road-plane `y` |
+| T06 | race-gate watchdog / ticking while held |
 
-Candidates from this codebase's real traps (see `AGENTS.md`):
+## Track C — one-shot / few-shot (oracles in CI)
 
-- Meshopt GLB silent fallback
-- `export let` / jiti snapshot of track samples
-- shared mutable `capsuleContact`
-- r3f `useFrame` priority > 0 black canvas
-- ground height vs road-plane `y`
-- race-gate watchdog firing before the world mounts
+| Item | What runs | What does not |
+|---|---|---|
+| **C1** | Lap in `GameSimulation` on this gold tree. Spec: `benches/spec-c1.md`. | Empty-repo eval is local: point the same oracle at a candidate. |
+| **C2** | Subsystem files present. Restore specs: `benches/c2/`. | Ablation is a copy you delete from; CI does not delete source. |
+| **C3** | Optional. `SCRAPSTORM_STILL=/path/to.png`. | Playwright. Never in CI. Never two browsers. |
+| **C4** | Static: `dprMax <= 1.5`, composer still mounted, `SceneRenderer` for low. | Live FPS. That needs a GPU and is a local protocol only. |
 
-Do not add tickets until those tags are frozen.
+## Cost
 
-## Track C — one-shot / few-shot development (specified)
-
-- **C1** From a 2–3 page spec, empty repo: playable combat racer.
-- **C2** This repo minus one subsystem (tires, missions, scatter, audio).
-- **C3** Visual match to a reference still (optional, VLM + human).
-- **C4** Perf budget: do not drop below 40 fps at 1280×720 medium; no raising
-  `dprMax`, no disabling the composer.
-
-Oracles: `tsc`, a lap completed in `GameSimulation`, a non-black Playwright
-still. Never two browsers at once.
+- GitHub Actions: public repo, hosted `ubuntu-latest`, no extra runners.
+- Hugging Face dataset: public, read is free, no token to play.
+- No Vercel, Cloudflare, Neon, or ElevenLabs required to run or to CI.
+- Playwright is a devDependency for local capture only and is not invoked here.

@@ -1,14 +1,20 @@
 name: ci
 
+# Public GitHub Actions minutes are free. This workflow is headless: no
+# Playwright, no GPU, no paid runners, no cloud deploy.
+
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,9 +38,4 @@ jobs:
             echo "git grep failed" >&2
             exit 1
           fi
-      - run: npm run typecheck
-      - run: node scripts/mission-smoke.mjs
-      - run: node scripts/probe-audio.mjs
-      - run: node scripts/check-track-profile.mjs
-      - run: node scripts/check-setpiece-footprints.mjs
-      - run: node scripts/balance-grid.mjs
+      - run: npm run bench

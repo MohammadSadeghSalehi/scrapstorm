@@ -25,7 +25,7 @@
  * Sources are transpiled with the repo's own TypeScript — no new dependencies,
  * and no dev server or renderer (software GL has frozen this machine before).
  */
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +51,12 @@ const MODULES = [
 ];
 
 function build() {
-  execFileSync(
+  // Audio modules only. tsc still type-checks import-type edges into the
+  // renderer graph (track.ts → world → meshopt), which reports TS2305 under
+  // --moduleResolution node. --noEmitOnError false still emits the audio
+  // CommonJS files this probe loads. execFileSync used to treat tsc's exit 2
+  // as fatal even when emit succeeded, which is why CI never got past here.
+  const r = spawnSync(
     process.execPath,
     [
       join(ROOT, "node_modules/typescript/bin/tsc"),
@@ -68,8 +73,12 @@ function build() {
       "--noEmitOnError",
       "false",
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    { encoding: "utf8", cwd: ROOT },
   );
+  if (r.status !== 0) {
+    const msg = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
+    if (msg) console.log("tsc (non-fatal, audio emit still used):\n" + msg.split("\n").slice(0, 8).join("\n"));
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -320,6 +329,9 @@ function main() {
     if (!p) throw new Error(`probe: ${n} was not emitted by tsc`);
     return require_(p);
   };
+  if (!emitted.get("explosion.js")) {
+    throw new Error("probe: tsc did not emit audio modules");
+  }
 
   const { ExplosionRack } = load("explosion.js");
   const { EngineVoice, ENGINE_PROFILES } = load("engineModel.js");

@@ -159,12 +159,28 @@ node scripts/gen-music.mjs
 node scripts/gen-vo.mjs
 ```
 
-**Headless gates** (no browser, no GPU):
+**Headless gates** (no browser, no GPU, no paid APIs):
 
 ```bash
-npm run typecheck
-npm run bench:smoke
+npm run bench
 ```
+
+That is Track A + B + C. Same command CI runs.
+
+---
+
+## Cost
+
+There is nothing to pay for.
+
+| Piece | Bill |
+|---|---|
+| Clone + `npm run dev` | Your machine. No account. |
+| Hugging Face assets | Public dataset. Read is free. No token to play. |
+| GitHub Actions | Public repo, `ubuntu-latest`, headless. Free. |
+| Neon / Vercel / Cloudflare / ElevenLabs | Not required. Do not set `DATABASE_URL` or deploy anywhere unless you choose to. |
+
+Playwright is a devDependency for local capture. CI never launches it.
 
 ---
 
@@ -199,15 +215,15 @@ The sim must stay renderer-free. That is what makes the smoke tests and the benc
 
 ## Scrapstorm-Bench
 
-`benches/` scores models on a real-time 3D game, not a toy canvas. A black canvas at 160 fps is a fail.
+`benches/` scores models on a real-time 3D game, not a toy canvas. A black canvas at 160 fps is a fail. CI runs `npm run bench` (A + B + C). No Playwright, no GPU, no paid APIs.
 
 | Track | Status | What it is |
 |---|---|---|
-| **A** Regression | **Runs today** | Headless gates. `npm run bench:smoke`. Same set in CI on every push to `main`. |
-| **B** Agent tickets | Specified, not frozen | Git tags `bench/Txx-*`, a failing tree, a player-visible spec, hidden tests. Not added until those tags are frozen. |
-| **C** One-shot / few-shot | Specified | From a 2–3 page spec to a playable combat racer, or this repo minus one subsystem. Oracles: `tsc`, a lap in `GameSimulation`, a non-black Playwright still. |
+| **A** Regression | **Runs in CI** | Typecheck, mission-smoke, audio DSP, track profile, setpieces, grid. |
+| **B** Agent tickets | **Gold baseline in CI** | Six tickets in `benches/tickets/`. Hidden checks in `benches/track-b.mjs`. |
+| **C** One-shot / few-shot | **Oracles in CI** | C1 lap in `GameSimulation`. C2 subsystem presence. C3 optional still (no browser). C4 `dprMax` / composer contract. |
 
-See [`benches/README.md`](benches/README.md).
+See [`benches/README.md`](benches/README.md). Spec for an empty-repo attempt: [`benches/spec-c1.md`](benches/spec-c1.md).
 
 ---
 

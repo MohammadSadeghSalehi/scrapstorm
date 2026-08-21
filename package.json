@@ -20,7 +20,10 @@
     "assets": "node scripts/fetch-assets.mjs",
     "assets:upload": "node scripts/upload-assets.mjs",
     "setup": "npm ci && node scripts/fetch-assets.mjs",
-    "bench:smoke": "node benches/track-a.mjs"
+    "bench:smoke": "node benches/track-a.mjs",
+    "bench:b": "node benches/track-b.mjs",
+    "bench:c": "node benches/track-c.mjs",
+    "bench": "node benches/track-a.mjs && node benches/track-b.mjs && node benches/track-c.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.3",
