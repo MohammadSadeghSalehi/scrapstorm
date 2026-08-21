@@ -38,12 +38,10 @@ if (!py) {
 const code = `
 from huggingface_hub import HfApi, create_repo
 from pathlib import Path
-import os, shutil
+import os
 repo = os.environ["SCRAPSTORM_ASSETS_REPO"]
 src = Path(os.environ["SCRAPSTORM_ASSETS_DIR"])
 card = Path(os.environ.get("SCRAPSTORM_DATASET_CARD", ""))
-if card.exists():
-    shutil.copyfile(card, src / "README.md")
 api = HfApi()
 create_repo(repo, repo_type="dataset", exist_ok=True, private=False)
 print("uploading", src, "->", repo)
@@ -52,8 +50,16 @@ api.upload_folder(
     repo_id=repo,
     repo_type="dataset",
     commit_message="Sync Scrapstorm League runtime assets",
-    ignore_patterns=[".git", ".gitattributes", ".cache"],
+    ignore_patterns=[".git", ".gitattributes", ".cache", "README.md"],
 )
+if card.exists():
+    api.upload_file(
+        path_or_fileobj=str(card),
+        path_in_repo="README.md",
+        repo_id=repo,
+        repo_type="dataset",
+        commit_message="Sync dataset card",
+    )
 print("uploaded", repo)
 `;
 const r = spawnSync(py, ["-c", code], {
