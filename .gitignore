@@ -15,15 +15,20 @@ tmp/
 /tmp/
 *.tsbuildinfo
 
-# --- Heavy art assets: restored locally from the part tarballs, never committed ---
-# (see AAA_PUNCHLIST.md / assemble-assets.sh; keeps the clone small)
+# --- Heavy art: restored by scripts/fetch-assets.mjs from Hugging Face ---
 public/assets/meshes/
 public/assets/textures/
 public/assets/hdri/
 public/assets/audio/
-# keep the small runtime + attribution files:
+public/assets/ui/
+public/assets/video/
+# keep attribution in git:
 !public/assets/SOURCES.md
 !public/assets/LICENSE.txt
+
+# Local capture / trailer sessions (not the game)
+x-trailer/
+refs/vids/
 
 # Claude Code: share the dev-server launch config, keep local permissions out.
 .claude/settings.local.json

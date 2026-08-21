@@ -1,2 +1,2 @@
-Vendored assets are free / open licenses only (CC0 or Khronos sample terms).
-See SOURCES.md for per-file attribution.
+Vendored assets are free / open licenses only (CC0, CC BY 4.0, or original MIT).
+See SOURCES.md and the repository NOTICE file for per-file attribution.

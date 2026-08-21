@@ -733,6 +733,15 @@ export function ScrapstormApp() {
             sim.restartRace();
             setSceneEpoch(sim.worldEpoch);
           },
+          setTrack: (id: TrackId) => {
+            closeRaceGate("QA setTrack");
+            sim.setTrack(id);
+            setSceneEpoch(sim.worldEpoch);
+            setMenuState(snapshotMenu(sim.state));
+          },
+          setTimeOfDay: (id: "default" | "sunset" | "night" | null) => {
+            loaded.setTimeOfDay(id);
+          },
         };
 
         setMenuState(snapshotMenu(sim.state));
@@ -1036,7 +1045,6 @@ export function ScrapstormApp() {
            * on the board or it would arm a mission the player did not choose.
            */
           if (getRaceGate().generation !== gen) return;
-          beginWorldWarm();
           if (def) {
             const c = careerRef.current;
             runRef.current = armMission(def, {
@@ -1097,6 +1105,22 @@ export function ScrapstormApp() {
           if (rival) pre.push(rival === "marrow" ? "antagonist" : "rival");
           pre.push("grid");
           playCutscenes(pre, () => {
+            /*
+             * World warm starts HERE, not after prepareRaceAssets.
+             *
+             * beginWorldWarm arms a 12s watchdog. The grid clip alone is ~10s,
+             * and cold-open + rival on top of that used to burn the whole
+             * budget while RaceWorld was not even mounted. The watchdog then
+             * released the gate, setPhase("countdown") mounted the world, and
+             * the countdown ran while shaders compiled — the laggy 3-2-1 the
+             * loading screen exists to hide. Arm the watchdog only when the
+             * world actually mounts so the settle+compile work happens behind
+             * the overlay, then the lights start on a finished frame.
+             */
+            if (getRaceGate().generation !== gen) return;
+            beginWorldWarm();
+            shellPhaseRef.current = "countdown";
+            setShellPhase("countdown");
             sim.setPhase("countdown");
           });
           lastHit.current = 999;
@@ -1277,6 +1301,8 @@ export function ScrapstormApp() {
      */
     openRaceGate({ assets: false });
     simRef.current?.restartRace();
+    shellPhaseRef.current = "countdown";
+    setShellPhase("countdown");
     setSceneEpoch(simRef.current?.worldEpoch ?? 0);
     refreshHud();
   };
@@ -1383,7 +1409,10 @@ export function ScrapstormApp() {
         nothing needed the video dimmed for legibility in the first place.
       */}
       {!inRace && shellPhase === "menu" && (
-        <CutsceneLoop id="menu-loop" opacity={1} />
+        <>
+          <div className="absolute inset-0 z-[4] bg-[#0c0a09]" />
+          <CutsceneLoop id="menu-loop" opacity={1} className="z-[5]" />
+        </>
       )}
 
       <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(10,10,11,0.55)_100%)]" />

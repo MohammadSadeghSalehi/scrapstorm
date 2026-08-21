@@ -21,7 +21,7 @@ import { FRAME } from "./framePriority";
 import { buildRidgeRange } from "./ridgeRange";
 import { clonePbrPack, preloadPbrLibrary } from "./webgl2/textureLibrary";
 import { getMaxAnisotropy } from "./webgl2/configure";
-import { TRACK_SAMPLES, getGroundHeight } from "../track";
+import { getGroundHeight, getTrackSamples } from "../track";
 import { mulberry32 } from "./scatter/placement";
 import {
   FAR_INNER_R,
@@ -47,7 +47,7 @@ import {
 /** Bounding-box centre of the circuit — where the world-locked mid range sits. */
 function circuitCentre() {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-  for (const s of TRACK_SAMPLES) {
+  for (const s of getTrackSamples()) {
     if (s.x < minX) minX = s.x;
     if (s.x > maxX) maxX = s.x;
     if (s.z < minZ) minZ = s.z;
@@ -86,13 +86,14 @@ function alongTrack(
   nearM: number,
   farM: number,
 ): Placed {
-  const n = TRACK_SAMPLES.length;
+  const samples = getTrackSamples();
+  const n = samples.length;
   if (n < 2) {
     const x = (rng() - 0.5) * 160;
     const z = (rng() - 0.5) * 160;
     return { x, z, ground: getGroundHeight(x, z) };
   }
-  const s = TRACK_SAMPLES[Math.floor(rng() * n) % n]!;
+  const s = samples[Math.floor(rng() * n) % n]!;
   const side = rng() < 0.5 ? -1 : 1;
   const off = s.width * 0.5 + nearM + rng() * (farM - nearM);
   // Right-of-centreline, matching the EDGE_MARKERS convention.

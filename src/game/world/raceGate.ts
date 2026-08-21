@@ -67,7 +67,7 @@ const ASSET_SHARE = 0.72;
  * them.
  */
 const ASSET_BUDGET_MS = 45_000;
-const WORLD_BUDGET_MS = 12_000;
+const WORLD_BUDGET_MS = 18_000;
 
 type Listener = (s: RaceGateSnapshot) => void;
 

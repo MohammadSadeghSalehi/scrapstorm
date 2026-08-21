@@ -1016,7 +1016,9 @@ function SceneRenderer() {
  * Only `on` and `tier` remain state, and both genuinely need a new chain.
  */
 function PostFxLive({ sim }: { sim: GameSimulation }) {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(
+    () => getRaceGate().held && getRaceGate().phase === "world",
+  );
   const [tier, setTier] = useState(qualityManager.get().tier);
   const [PostFX, setPostFX] = useState<null | typeof import("./PostFX").PostFX>(
     null,
@@ -1041,7 +1043,12 @@ function PostFxLive({ sim }: { sim: GameSimulation }) {
 
   useFrame(() => {
     const p = sim.state.phase;
-    const active = p === "racing" || p === "countdown" || p === "paused";
+    const gate = getRaceGate();
+    const active =
+      p === "racing" ||
+      p === "countdown" ||
+      p === "paused" ||
+      (gate.held && gate.phase === "world");
     if (active !== on) setOn(active);
     const t = qualityManager.get().tier;
     if (t !== tier) setTier(t);
@@ -1254,7 +1261,6 @@ function ShaderWarmup() {
       }
     };
     timers.push(window.setTimeout(warm, 600));
-    timers.push(window.setTimeout(warm, 4000));
     return () => {
       cancelled = true;
       for (const t of timers) window.clearTimeout(t);
@@ -1274,10 +1280,10 @@ function ShaderWarmup() {
  * chain still compiles on the first green frame. This is the window the
  * asynchronous stragglers get to announce themselves.
  */
-const WARM_MIN_MS = 900;
+const WARM_MIN_MS = 1800;
 
 /** Frames with no new geometry, texture or program before we call it settled. */
-const WARM_STABLE_FRAMES = 20;
+const WARM_STABLE_FRAMES = 36;
 
 /**
  * When to stop waiting for the scene to settle and compile anyway.
@@ -1287,10 +1293,10 @@ const WARM_STABLE_FRAMES = 20;
  * starting is strictly better than holding a loading screen over a scene that
  * will never be quiet.
  */
-const WARM_SETTLE_BUDGET_MS = 6000;
+const WARM_SETTLE_BUDGET_MS = 8000;
 
 /** Frames drawn after the compile, so the driver actually links and uploads. */
-const WARM_FLUSH_FRAMES = 3;
+const WARM_FLUSH_FRAMES = 24;
 
 /** Frames held so the "Compiling shaders" caption reaches the screen first. */
 const WARM_ARM_FRAMES = 2;
@@ -1422,6 +1428,19 @@ function WorldWarmup() {
 
     if (s.stage === "flush") {
       setWorldProgress(0.9 + (1 - s.flush / WARM_FLUSH_FRAMES) * 0.1, "Grid ready");
+      /*
+       * A second compile once the composer has had a few real draws. The first
+       * pass often runs before EffectComposer has created its programs; those
+       * then JIT on the first countdown frame. Re-compile halfway through the
+       * flush so they land while the overlay is still up.
+       */
+      if (s.flush === Math.ceil(WARM_FLUSH_FRAMES / 2)) {
+        try {
+          gl.compile(scene, camera);
+        } catch {
+          /* best-effort */
+        }
+      }
       s.flush -= 1;
       if (s.flush > 0) return;
       s.stage = "done";
@@ -1767,16 +1786,15 @@ function RaceWorld({
       <CullStatsPublisher />
       <EnvLighting />
       <Atmosphere />
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.25, 0]} receiveShadow>
-        <planeGeometry args={[900, 900]} />
-        <meshStandardMaterial
-          color={env.surfaces.sand}
-          roughness={1}
-          metalness={0}
-          emissive="#8a6038"
-          emissiveIntensity={0.0}
-        />
-      </mesh>
+      {/*
+        No giant 900×900 sand disc here. TrackMesh already draws the heightmap
+        plus sphere-culled sand tiles. The disc sat at y = -0.25, never culled,
+        and overdrew the whole desert every frame — the same fill-rate cost as a
+        full-screen pass. When the camera pulled away at race end the heightmap
+        LOD dropped and this wallpaper was what you saw: a fogged ribbon with
+        no dunes, no props, no car. Removing it is both a visual and a budget
+        fix.
+      */}
       <PbrBootstrap>
         <TrackMesh trackEpoch={trackEpoch} />
       </PbrBootstrap>
@@ -1816,19 +1834,47 @@ function WorldContent({
   onPauseToggle: () => void;
 }) {
   const lastInput = useRef<PlayerInput | null>(null);
-  const [showcase, setShowcase] = useState(
-    () =>
-      sim.state.phase === "menu" ||
-      sim.state.phase === "garage" ||
-      sim.state.phase === "finished",
-  );
+  const [mode, setMode] = useState<"idle" | "showcase" | "race">(() => {
+    const p = sim.state.phase;
+    if (p === "garage" || p === "finished") return "showcase";
+    if (p === "menu") return "idle";
+    return "race";
+  });
   useFrame(() => {
     const p = sim.state.phase;
-    const sc = p === "menu" || p === "garage" || p === "finished";
-    if (sc !== showcase) setShowcase(sc);
+    const next =
+      p === "garage" || p === "finished"
+        ? "showcase"
+        : p === "menu"
+          ? "idle"
+          : "race";
+    if (next !== mode) setMode(next);
   }, FRAME.LATE);
 
-  return showcase ? (
+  /*
+   * MENU IS IDLE. The front screen's picture is the looping cutscene, not the
+   * garage pad. ShowcaseWorld used to stay mounted behind that video, and the
+   * 40m circle plus the orbiting car punched through every gap: letterbox,
+   * the first frames before the mp4 decoded, and the transparent centre of
+   * the vignette. A black empty scene plus SimDriver keeps the sim alive
+   * without drawing the disc.
+   */
+  if (mode === "idle") {
+    return (
+      <>
+        <color attach="background" args={["#0c0a09"]} />
+        <SimDriver
+          sim={sim}
+          input={input}
+          onHud={onHud}
+          onPauseToggle={onPauseToggle}
+          lastInput={lastInput}
+        />
+      </>
+    );
+  }
+
+  return mode === "showcase" ? (
     <>
       <ShowcaseWorld sim={sim} />
       <SimDriver

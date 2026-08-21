@@ -1,5 +1,5 @@
 {
-  "name": "app-builder-workspace",
+  "name": "scrapstorm-league",
   "private": true,
   "sideEffects": false,
   "type": "module",
@@ -16,7 +16,11 @@
     "preview": "vite preview --host 0.0.0.0 --port 8080",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "assets": "node scripts/fetch-assets.mjs",
+    "assets:upload": "node scripts/upload-assets.mjs",
+    "setup": "npm ci && node scripts/fetch-assets.mjs",
+    "bench:smoke": "node benches/track-a.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.3",
