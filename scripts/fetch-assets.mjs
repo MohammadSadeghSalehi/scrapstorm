@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEST = join(ROOT, "public", "assets");
-const REPO = process.env.SCRAPSTORM_ASSETS_REPO ?? "MohammadSadeghSalehi/scrapstorm-assets";
+const REPO = process.env.SCRAPSTORM_ASSETS_REPO ?? "Sadegh97/scrapstorm-assets";
 
 mkdirSync(DEST, { recursive: true });
 

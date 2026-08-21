@@ -8,7 +8,7 @@ This repository is **source only**. Meshes, textures, HDRIs, audio, UI, and
 cutscene video live on Hugging Face so a clone stays small.
 
 **GitHub:** [MohammadSadeghSalehi/scrapstorm](https://github.com/MohammadSadeghSalehi/scrapstorm)
-**Assets:** [MohammadSadeghSalehi/scrapstorm-assets](https://huggingface.co/datasets/MohammadSadeghSalehi/scrapstorm-assets)
+**Assets:** [Sadegh97/scrapstorm-assets](https://huggingface.co/datasets/Sadegh97/scrapstorm-assets)
 
 There is no hosted demo and no paid cloud. You run it locally.
 

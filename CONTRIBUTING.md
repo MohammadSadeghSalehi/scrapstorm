@@ -42,7 +42,7 @@ import `three` into the sim graph.
 ## Assets
 
 Binaries are not in git. `node scripts/fetch-assets.mjs` restores
-`public/assets/` from Hugging Face. New art: add the file to the HF dataset,
+`public/assets/` from Hugging Face (`Sadegh97/scrapstorm-assets`). New art: add the file to the HF dataset,
 add a sha256 line to the manifest, cite the license in `NOTICE` and
 `public/assets/SOURCES.md`.
 

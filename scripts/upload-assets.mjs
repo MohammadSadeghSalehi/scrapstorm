@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = join(ROOT, "public", "assets");
-const REPO = process.env.SCRAPSTORM_ASSETS_REPO ?? "MohammadSadeghSalehi/scrapstorm-assets";
+const REPO = process.env.SCRAPSTORM_ASSETS_REPO ?? "Sadegh97/scrapstorm-assets";
 
 if (!existsSync(join(SRC, "meshes")) && !existsSync(join(SRC, "textures"))) {
   console.error("public/assets looks empty. Nothing to upload.");

@@ -4,7 +4,7 @@ Scrapstorm League — third-party notices
 The source code in this repository is MIT-licensed (see LICENSE).
 
 Runtime art is not stored in git. It is fetched into public/assets/ from
-the Hugging Face dataset `MohammadSadeghSalehi/scrapstorm-assets`.
+the Hugging Face dataset `Sadegh97/scrapstorm-assets`.
 Per-file origin lives in public/assets/SOURCES.md after restore.
 
 Code
